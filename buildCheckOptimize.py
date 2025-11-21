@@ -373,8 +373,22 @@ def analyze_header_dependencies(build_dir: str, quick: bool = False) -> List[Opt
         return optimizations  # Skip if not available
     
     compile_commands_path = os.path.join(build_dir, 'compile_commands.json')
-    if not os.path.exists(compile_commands_path):
-        return optimizations
+    build_ninja_path = os.path.join(build_dir, 'build.ninja')
+    
+    # Generate compile_commands.json if needed
+    if not os.path.exists(compile_commands_path) or (os.path.exists(build_ninja_path) and os.path.getmtime(build_ninja_path) > os.path.getmtime(compile_commands_path)):
+        try:
+            result = subprocess.run(
+                ["ninja", "-t", "compdb"],
+                capture_output=True,
+                text=True,
+                cwd=build_dir,
+                check=True
+            )
+            with open(compile_commands_path, 'w', encoding='utf-8') as f:
+                f.write(result.stdout)
+        except (subprocess.CalledProcessError, IOError):
+            return optimizations  # Skip if generation fails
     
     # For quick mode, just provide generic recommendations
     if quick:

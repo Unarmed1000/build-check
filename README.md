@@ -692,7 +692,9 @@ If you have multiple versions, the tools will automatically try:
 
 ### "compile_commands.json not found"
 
-Generate it from your build directory:
+Most tools now auto-generate `compile_commands.json` from your `build.ninja` file.
+
+If you need to generate it manually:
 ```bash
 cd build/
 ninja -t compdb > compile_commands.json

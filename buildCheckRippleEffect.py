@@ -60,7 +60,7 @@ PERFORMANCE:
 REQUIREMENTS:
     - Python 3.7+
     - git repository
-    - ninja build directory with compile_commands.json
+    - ninja build directory (compile_commands.json auto-generated)
     - clang-scan-deps (clang-19, clang-18, or clang-XX)
     - networkx: pip install networkx
 
@@ -252,9 +252,33 @@ def analyze_ripple_effect(build_dir: str, changed_headers: list[str], changed_so
         raise ValueError(f"Build directory does not exist: {build_dir}")
     
     compile_commands = os.path.realpath(os.path.join(build_dir, 'compile_commands.json'))
+    build_ninja = os.path.realpath(os.path.join(build_dir, 'build.ninja'))
+    
     # Validate compile_commands is within build_dir
     if not compile_commands.startswith(build_dir + os.sep):
         raise ValueError(f"Path traversal detected: compile_commands.json")
+    
+    # Generate compile_commands.json if needed
+    if not os.path.exists(compile_commands) or (os.path.exists(build_ninja) and os.path.getmtime(build_ninja) > os.path.getmtime(compile_commands)):
+        logging.info("Generating compile_commands.json...")
+        if verbose:
+            print(f"{Fore.CYAN}Generating compile_commands.json...{Style.RESET_ALL}")
+        try:
+            result = subprocess.run(
+                ["ninja", "-t", "compdb"],
+                capture_output=True,
+                text=True,
+                cwd=build_dir,
+                check=True
+            )
+            with open(compile_commands, 'w', encoding='utf-8') as f:
+                f.write(result.stdout)
+            logging.debug(f"Generated: {compile_commands}")
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to generate compile_commands.json: {e.stderr}") from e
+        except IOError as e:
+            raise IOError(f"Failed to write compile_commands.json: {e}") from e
+    
     if not os.path.isfile(compile_commands):
         raise ValueError(f"compile_commands.json not found in {build_dir}")
     
@@ -596,18 +620,44 @@ Requires: git, clang-scan-deps, networkx (pip install networkx)
             print(f"{Fore.RED}Error: '{build_dir}' is not a directory{Style.RESET_ALL}", file=sys.stderr)
             sys.exit(1)
         
-        # Check for compile_commands.json
+        # Check for build.ninja and generate compile_commands.json if needed
+        build_ninja = os.path.realpath(os.path.join(build_dir, 'build.ninja'))
+        if not os.path.isfile(build_ninja):
+            logging.error(f"build.ninja not found in {build_dir}")
+            print(f"{Fore.RED}Error: build.ninja not found in '{build_dir}'{Style.RESET_ALL}", file=sys.stderr)
+            print(f"{Fore.YELLOW}Hint: This script requires a Ninja build directory{Style.RESET_ALL}", file=sys.stderr)
+            sys.exit(1)
+        
         compile_commands = os.path.realpath(os.path.join(build_dir, 'compile_commands.json'))
         # Validate compile_commands is within build_dir
         if not compile_commands.startswith(build_dir + os.sep):
             logging.error("Path traversal detected in compile_commands.json path")
             print(f"{Fore.RED}Error: Path traversal detected{Style.RESET_ALL}", file=sys.stderr)
             sys.exit(1)
-        if not os.path.isfile(compile_commands):
-            logging.error(f"compile_commands.json not found in {build_dir}")
-            print(f"{Fore.RED}Error: compile_commands.json not found in '{build_dir}'{Style.RESET_ALL}", file=sys.stderr)
-            print(f"{Fore.YELLOW}Hint: This script requires a Ninja build with compile_commands.json{Style.RESET_ALL}", file=sys.stderr)
-            sys.exit(1)
+        
+        # Generate compile_commands.json if needed
+        if not os.path.exists(compile_commands) or os.path.getmtime(build_ninja) > os.path.getmtime(compile_commands):
+            logging.info("Generating compile_commands.json...")
+            print(f"{Fore.CYAN}Generating compile_commands.json...{Style.RESET_ALL}")
+            try:
+                result = subprocess.run(
+                    ["ninja", "-t", "compdb"],
+                    capture_output=True,
+                    text=True,
+                    cwd=build_dir,
+                    check=True
+                )
+                with open(compile_commands, 'w', encoding='utf-8') as f:
+                    f.write(result.stdout)
+                logging.debug(f"Generated: {compile_commands}")
+            except subprocess.CalledProcessError as e:
+                logging.error(f"Failed to generate compile_commands.json: {e.stderr}")
+                print(f"{Fore.RED}Error: Failed to generate compile_commands.json{Style.RESET_ALL}", file=sys.stderr)
+                sys.exit(1)
+            except IOError as e:
+                logging.error(f"Failed to write compile_commands.json: {e}")
+                print(f"{Fore.RED}Error: Failed to write compile_commands.json{Style.RESET_ALL}", file=sys.stderr)
+                sys.exit(1)
         
         logging.info(f"Using build directory: {build_dir}")
     except Exception as e:

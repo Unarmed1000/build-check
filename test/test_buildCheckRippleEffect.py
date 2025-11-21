@@ -138,12 +138,13 @@ class TestBuildCheckRippleEffect:
                 "/nonexistent/build", [], []
             )
     
-    def test_analyze_ripple_effect_missing_compile_commands(self, temp_dir):
-        """Test error handling when compile_commands.json is missing."""
+    def test_analyze_ripple_effect_missing_build_ninja(self, temp_dir):
+        """Test error handling when build.ninja is missing (needed to generate compile_commands.json)."""
         build_dir = Path(temp_dir) / "build"
         build_dir.mkdir()
         
-        with pytest.raises(ValueError, match="compile_commands.json not found"):
+        # Should fail because build.ninja is missing (ninja -t compdb will fail)
+        with pytest.raises(RuntimeError, match="Failed to generate compile_commands.json"):
             buildCheckRippleEffect.analyze_ripple_effect(
                 str(build_dir), [], []
             )
