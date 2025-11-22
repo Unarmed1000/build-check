@@ -139,6 +139,13 @@ EXAMPLES:
     # Filter to specific directory/module
     ./buildCheckDSM.py ../build/release/ --filter "FslBase/*"
 
+    # Exclude third-party libraries and generated files
+    ./buildCheckDSM.py ../build/release/ --exclude "*/ThirdParty/*" --exclude "*/build/*"
+    ./buildCheckDSM.py ../build/release/ --exclude "*_generated.h" --exclude "*/test/*"
+
+    # Combine filter and exclude (include FslBase, but exclude tests)
+    ./buildCheckDSM.py ../build/release/ --filter "FslBase/*" --exclude "*/test/*"
+
     # Cluster by directory structure
     ./buildCheckDSM.py ../build/release/ --cluster-by-directory
 
@@ -184,7 +191,7 @@ Note: This tool provides the architectural "big picture" view that complements t
       - GEXF (.gexf): Gephi
       - DOT (.dot): Graphviz (requires pydot: pip install pydot)
 """
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import os
 import sys
@@ -212,7 +219,7 @@ from lib.constants import (
     EXIT_KEYBOARD_INTERRUPT,
     BuildCheckError,
 )
-from lib.file_utils import filter_headers_by_pattern, cluster_headers_by_directory
+from lib.file_utils import filter_headers_by_pattern, cluster_headers_by_directory, exclude_headers_by_patterns
 from lib.library_parser import map_headers_to_libraries
 from lib.export_utils import export_dsm_to_csv, export_dependency_graph
 from lib.ninja_utils import validate_build_directory_with_feedback
@@ -237,8 +244,8 @@ from lib.dsm_serialization import save_dsm_results, load_dsm_results
 from lib.clang_utils import build_include_graph
 
 # Explicitly export functions for testing
-__all__ = ['filter_headers_by_pattern', 'cluster_headers_by_directory', 'apply_all_filters', 
-           'apply_exclude_filters', 'DSMAnalysisResults']
+__all__ = ['filter_headers_by_pattern', 'cluster_headers_by_directory', 'exclude_headers_by_patterns',
+           'apply_all_filters', 'apply_exclude_filters', 'DSMAnalysisResults']
 
 
 def validate_and_prepare_args(args: argparse.Namespace) -> Tuple[str, str]:
@@ -359,10 +366,48 @@ def apply_all_filters(
     if not filtered_headers:
         raise ValueError("No headers found after filtering")
 
+    # Apply exclude patterns if specified
+    if hasattr(args, 'exclude') and args.exclude:
+        filtered_headers, excluded_count, no_match_patterns = apply_exclude_filters(
+            filtered_headers, args.exclude, project_root
+        )
+        
+        if excluded_count > 0:
+            print_success(f"Excluded {excluded_count} headers matching {len(args.exclude)} pattern(s)", prefix=False)
+        
+        # Warn about patterns that matched nothing
+        for pattern in no_match_patterns:
+            print_warning(f"Exclude pattern '{pattern}' matched no headers", prefix=False)
+    
+    if not filtered_headers:
+        raise ValueError("No headers found after filtering and exclusions")
+
     return filtered_headers
 
 
-
+def apply_exclude_filters(
+    headers: Set[str],
+    exclude_patterns: List[str],
+    project_root: str
+) -> tuple[Set[str], int, List[str]]:
+    """Apply exclude patterns to filter out unwanted headers.
+    
+    Args:
+        headers: Set of header paths
+        exclude_patterns: List of glob patterns to exclude
+        project_root: Project root directory for relative paths
+        
+    Returns:
+        Tuple of (filtered_headers, excluded_count, patterns_with_no_matches)
+    """
+    if not exclude_patterns:
+        return headers, 0, []
+    
+    logging.info("Applying %d exclude pattern(s)", len(exclude_patterns))
+    for pattern in exclude_patterns:
+        logging.debug("  Exclude pattern: %s", pattern)
+    
+    return exclude_headers_by_patterns(headers, exclude_patterns, project_root)
 
 
 def main() -> int:
@@ -462,6 +507,17 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
     )
 
     parser.add_argument(
+        '--exclude',
+        type=str,
+        action='append',
+        metavar='PATTERN',
+        help='Exclude headers matching glob pattern (can be used multiple times). '
+             'Useful for excluding third-party libraries, generated files, or test code. '
+             'Supports glob patterns: * (any chars), ** (recursive), ? (single char). '
+             'Examples: "*/ThirdParty/*", "*/build/*", "*_generated.h", "*/test/*"'
+    )
+
+    parser.add_argument(
         '--cluster-by-directory',
         action='store_true',
         help='Group headers by directory in output'
@@ -553,6 +609,10 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
 
         print_success(f"Built directed include graph with {len(all_headers)} headers in {elapsed:.1f}s", prefix=False)
 
+        # Keep unfiltered data for saving baselines
+        unfiltered_headers: Set[str] = all_headers.copy()
+        unfiltered_include_graph: DefaultDict[str, Set[str]] = header_to_headers
+
         # Phase 3: Setup library mapping (if requested)
         header_to_lib: Dict[str, str] = setup_library_mapping(args, all_headers)
 
@@ -605,14 +665,23 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
         if args.save_results:
             save_dsm_results(
                 results,
+                unfiltered_headers,
+                unfiltered_include_graph,
                 args.save_results,
                 build_dir,
-                args.filter
+                args.filter,
+                args.exclude
             )
 
         # Load and compare with baseline (if requested)
         if args.load_baseline:
-            baseline_results = load_dsm_results(args.load_baseline, build_dir)
+            baseline_results = load_dsm_results(
+                args.load_baseline, 
+                build_dir,
+                args.filter,
+                args.exclude,
+                project_root
+            )
             return run_differential_analysis_with_baseline(results, baseline_results, project_root)
 
         return EXIT_SUCCESS

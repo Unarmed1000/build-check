@@ -31,6 +31,50 @@ def filter_headers_by_pattern(headers: Set[str], pattern: str, project_root: str
     return filtered
 
 
+def exclude_headers_by_patterns(headers: Set[str], exclude_patterns: List[str], project_root: str) -> tuple[Set[str], int, List[str]]:
+    """Exclude headers matching any of the provided glob patterns.
+    
+    Args:
+        headers: Set of header paths
+        exclude_patterns: List of glob patterns to exclude (e.g., ["*/ThirdParty/*", "*/test/*"])
+        project_root: Root directory of the project
+        
+    Returns:
+        Tuple of (filtered_headers, excluded_count, patterns_with_no_matches)
+        - filtered_headers: Set of headers after exclusions
+        - excluded_count: Number of headers excluded
+        - patterns_with_no_matches: List of patterns that matched no headers
+    """
+    if not exclude_patterns:
+        return headers, 0, []
+    
+    filtered: Set[str] = set()
+    pattern_match_counts: Dict[str, int] = {pattern: 0 for pattern in exclude_patterns}
+    
+    for header in headers:
+        rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else header
+        
+        # Check if header matches any exclude pattern
+        excluded = False
+        for pattern in exclude_patterns:
+            if fnmatch.fnmatch(rel_path, pattern):
+                excluded = True
+                pattern_match_counts[pattern] += 1
+                break
+        
+        if not excluded:
+            filtered.add(header)
+    
+    excluded_count = len(headers) - len(filtered)
+    patterns_with_no_matches = [pattern for pattern, count in pattern_match_counts.items() if count == 0]
+    
+    logger.info(f"Excluded {excluded_count} headers using {len(exclude_patterns)} patterns")
+    for pattern, count in pattern_match_counts.items():
+        logger.debug(f"Pattern '{pattern}' matched {count} headers")
+    
+    return filtered, excluded_count, patterns_with_no_matches
+
+
 def cluster_headers_by_directory(headers: List[str], project_root: str) -> Dict[str, List[str]]:
     """Group headers by their parent directory.
     

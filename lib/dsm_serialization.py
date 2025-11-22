@@ -54,7 +54,7 @@ from .color_utils import print_error, print_success, print_warning
 logger = logging.getLogger(__name__)
 
 # Current schema version - increment when format changes
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 def _get_git_commit() -> str:
@@ -131,17 +131,26 @@ def _serialize_matrix_statistics(stats: MatrixStatistics) -> Dict[str, Any]:
 
 def save_dsm_results(
     results: DSMAnalysisResults,
+    unfiltered_headers: Set[str],
+    unfiltered_include_graph: DefaultDict[str, Set[str]],
     filename: str,
     build_directory: str,
-    filter_pattern: Optional[str] = None
+    filter_pattern: Optional[str] = None,
+    exclude_patterns: Optional[List[str]] = None
 ) -> None:
     """Save DSM analysis results to compressed JSON file.
     
+    Saves the UNFILTERED header set and include graph to allow applying different
+    filters when loading the baseline. This makes baselines more flexible and reusable.
+    
     Args:
-        results: DSMAnalysisResults to save
+        results: DSMAnalysisResults to save (computed from filtered headers)
+        unfiltered_headers: Complete set of headers before any filtering
+        unfiltered_include_graph: Complete include graph before any filtering
         filename: Output filename (will be gzip compressed)
         build_directory: Absolute path to build directory
-        filter_pattern: Optional filter pattern that was applied
+        filter_pattern: Optional filter pattern that was applied (saved for reference)
+        exclude_patterns: Optional list of exclude patterns that were applied (saved for reference)
         
     Raises:
         IOError: If file cannot be written
@@ -152,9 +161,12 @@ def save_dsm_results(
     metadata = {
         "build_directory": os.path.abspath(build_directory),
         "filter_pattern": filter_pattern or "",
+        "exclude_patterns": sorted(exclude_patterns or []),
         "git_commit": _get_git_commit(),
         "hostname": _get_hostname(),
         "timestamp": datetime.now().isoformat(),
+        "unfiltered_header_count": len(unfiltered_headers),
+        "filtered_header_count": len(results.sorted_headers),
     }
     
     # Serialize metrics (sorted by header name)
@@ -179,6 +191,13 @@ def save_dsm_results(
     # Serialize layers (already lists, just ensure determinism)
     layers_list = [sorted(layer) for layer in results.layers]
     
+    # Serialize unfiltered data (for re-applying filters on load)
+    unfiltered_headers_list = sorted(list(unfiltered_headers))
+    unfiltered_include_graph_dict = {
+        header: sorted(list(deps))
+        for header, deps in sorted(unfiltered_include_graph.items())
+    }
+    
     # Build complete data structure with sorted keys
     data = {
         "_description": "DSM analysis results - DO NOT EDIT MANUALLY",
@@ -202,6 +221,8 @@ def save_dsm_results(
         },
         "sorted_headers": results.sorted_headers,
         "stats": _serialize_matrix_statistics(results.stats),
+        "unfiltered_headers": unfiltered_headers_list,
+        "unfiltered_include_graph": unfiltered_include_graph_dict,
     }
     
     # Write to gzip-compressed JSON with sorted keys
@@ -258,16 +279,25 @@ def _deserialize_matrix_statistics(data: Dict[str, Any]) -> MatrixStatistics:
 
 def load_dsm_results(
     filename: str,
-    current_build_directory: str
+    current_build_directory: str,
+    filter_pattern: Optional[str] = None,
+    exclude_patterns: Optional[List[str]] = None,
+    project_root: Optional[str] = None
 ) -> DSMAnalysisResults:
-    """Load DSM analysis results from compressed JSON file.
+    """Load DSM analysis results from compressed JSON file and apply filters.
+    
+    Loads the unfiltered baseline data and re-applies filters, allowing users to
+    compare with different filter settings than the original baseline.
     
     Args:
         filename: Input filename (gzip compressed JSON)
         current_build_directory: Current build directory for validation
+        filter_pattern: Optional filter pattern to apply (inherits from baseline if None)
+        exclude_patterns: Optional exclude patterns to apply (inherits from baseline if None)
+        project_root: Project root for filter path resolution (required if filters specified)
         
     Returns:
-        DSMAnalysisResults instance
+        DSMAnalysisResults instance with filters applied
         
     Raises:
         ValueError: If schema version mismatches or validation fails
@@ -316,55 +346,59 @@ def load_dsm_results(
     logger.debug("Baseline timestamp: %s", metadata.get("timestamp", "unknown"))
     logger.debug("Baseline git commit: %s", metadata.get("git_commit", "unknown"))
     
-    # Deserialize metrics
-    metrics = {
-        header: _deserialize_dsm_metrics(metric_data)
-        for header, metric_data in data["metrics"].items()
-    }
+    # Load unfiltered data
+    unfiltered_headers = set(data.get("unfiltered_headers", data["sorted_headers"]))
+    unfiltered_include_graph_data = data.get("unfiltered_include_graph", data["header_to_headers"])
     
-    # Deserialize cycles (convert lists back to sets)
-    cycles = [set(cycle) for cycle in data["cycles"]]
+    # Inherit filter settings from baseline if not specified
+    baseline_filter = metadata.get("filter_pattern", "")
+    baseline_excludes = metadata.get("exclude_patterns", [])
     
-    # Deserialize graph
-    graph_data = data["graph"]
-    directed_graph: Any = json_graph.node_link_graph(graph_data, directed=True)
+    if filter_pattern is None:
+        filter_pattern = baseline_filter
+        if baseline_filter:
+            logger.info("Inheriting filter pattern from baseline: %s", baseline_filter)
     
-    # Deserialize other fields
-    feedback_edges = [tuple(edge) for edge in data["feedback_edges"]]
-    headers_in_cycles = set(data["headers_in_cycles"])
-    layers = [list(layer) for layer in data["layers"]]
-    header_to_layer = {k: int(v) for k, v in data["header_to_layer"].items()}
-    stats = _deserialize_matrix_statistics(data["stats"])
-    sorted_headers = data["sorted_headers"]
+    if exclude_patterns is None:
+        exclude_patterns = baseline_excludes
+        if baseline_excludes:
+            logger.info("Inheriting exclude patterns from baseline: %s", baseline_excludes)
     
-    # Deserialize dependency mappings (convert lists back to sets)
-    reverse_deps = {
-        header: set(deps)
-        for header, deps in data["reverse_deps"].items()
-    }
+    # Apply filters to unfiltered data
+    filtered_headers = unfiltered_headers
     
-    header_to_headers = defaultdict(set)
-    for header, deps in data["header_to_headers"].items():
-        header_to_headers[header] = set(deps)
+    if filter_pattern and project_root:
+        from lib.file_utils import filter_headers_by_pattern
+        filtered_headers = filter_headers_by_pattern(filtered_headers, filter_pattern, project_root)
+        logger.info("Applied filter '%s': %d -> %d headers", filter_pattern, len(unfiltered_headers), len(filtered_headers))
     
-    # Construct DSMAnalysisResults
-    results = DSMAnalysisResults(
-        metrics=metrics,
-        cycles=cycles,
-        headers_in_cycles=headers_in_cycles,
-        feedback_edges=feedback_edges,
-        directed_graph=directed_graph,
-        layers=layers,
-        header_to_layer=header_to_layer,
-        has_cycles=data["has_cycles"],
-        stats=stats,
-        sorted_headers=sorted_headers,
-        reverse_deps=reverse_deps,
-        header_to_headers=header_to_headers,
+    if exclude_patterns and project_root:
+        from lib.file_utils import exclude_headers_by_patterns
+        filtered_headers, excluded_count, _ = exclude_headers_by_patterns(filtered_headers, exclude_patterns, project_root)
+        logger.info("Applied %d exclude patterns: excluded %d headers", len(exclude_patterns), excluded_count)
+    
+    if not filtered_headers:
+        raise ValueError("No headers remaining after applying filters to baseline")
+    
+    # Rebuild include graph with only filtered headers
+    unfiltered_include_graph = defaultdict(set)
+    for header, deps in unfiltered_include_graph_data.items():
+        unfiltered_include_graph[header] = set(deps)
+    
+    # Re-run DSM analysis on filtered data
+    from lib.dsm_analysis import run_dsm_analysis
+    logger.info("Re-computing DSM analysis on filtered baseline (%d headers)", len(filtered_headers))
+    results = run_dsm_analysis(
+        filtered_headers,
+        unfiltered_include_graph,
+        compute_layers=True,
+        show_progress=False
     )
     
     file_size = os.path.getsize(filename)
     size_kb = file_size / 1024
     print_success(f"Loaded baseline DSM analysis results from {filename} ({size_kb:.1f} KB)")
+    logger.info("Baseline: %d headers (filtered from %d unfiltered headers)", 
+                len(results.sorted_headers), len(unfiltered_headers))
     
     return results
