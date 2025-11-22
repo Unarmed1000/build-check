@@ -619,64 +619,15 @@ def build_include_graph_from_clang_scan(build_dir: str) -> Tuple['nx.DiGraph[Any
     
     print(f"{Colors.CYAN}Running clang-scan-deps using {num_cores} cores...{Colors.RESET}")
     
-    # Run clang-scan-deps with parallel jobs
-    # Try multiple versions of clang-scan-deps
-    clang_cmd: str | None = None
-    for cmd in CLANG_SCAN_DEPS_COMMANDS:
-        try:
-            subprocess.run([cmd, "--version"], capture_output=True, check=True, timeout=5)
-            clang_cmd = cmd
-            logging.info(f"Found {cmd}")
-            break
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-            continue
+    # Use cached clang-scan-deps execution from lib
+    from lib.clang_utils import run_clang_scan_deps
     
-    if not clang_cmd:
-        logging.error("No clang-scan-deps found")
-        versions_str = ', '.join(CLANG_SCAN_DEPS_COMMANDS)
-        raise RuntimeError(
-            f"clang-scan-deps not found. Please install one of: {versions_str}\n"
-            "Ubuntu/Debian: sudo apt install clang-19\n"
-            "Fedora: sudo dnf install clang-tools-extra"
-        )
-    
-    logging.info(f"Executing {clang_cmd}")
     try:
-        result: subprocess.CompletedProcess[str] = subprocess.run(
-            [clang_cmd, "-compilation-database=" + filtered_db, "-format=make", "-j", str(num_cores)],
-            capture_output=True,
-            text=True,
-            cwd=build_dir,
-            timeout=CLANG_SCAN_DEPS_TIMEOUT
-        )
-        logging.debug(f"{clang_cmd} completed with return code {result.returncode}")
-    except subprocess.TimeoutExpired:
-        timeout_minutes = CLANG_SCAN_DEPS_TIMEOUT // 60
-        logging.error(f"{clang_cmd} timed out after {timeout_minutes} minutes")
-        raise RuntimeError(
-            f"{clang_cmd} timed out after {timeout_minutes} minutes. "
-            "The project may be too large or clang is hanging."
-        ) from None
-    except FileNotFoundError:
-        logging.error(f"{clang_cmd} not found after version check")
-        raise RuntimeError(f"{clang_cmd} disappeared. This should not happen.") from None
-    except Exception as e:
-        logging.error(f"Failed to run {clang_cmd}: {e}")
-        raise RuntimeError(f"{clang_cmd} execution failed: {e}") from e
-    
-    if result.returncode != 0:
-        logging.warning(f"clang-scan-deps had errors (return code {result.returncode})")
-        print(f"{Colors.YELLOW}Warning: clang-scan-deps had some errors (possibly missing dependencies like OpenCV){Colors.RESET}")
-        if result.stderr:
-            logging.debug(f"clang-scan-deps stderr: {result.stderr[:500]}...")
-            # Show first few errors but continue
-            error_lines = result.stderr.split('\n')[:10]
-            for line in error_lines:
-                if line.strip():
-                    print(f"  {Colors.DIM}{line}{Colors.RESET}")
-            if len(result.stderr.split('\n')) > 10:
-                print(f"  {Colors.DIM}... (additional errors omitted){Colors.RESET}")
-        print(f"{Colors.CYAN}Continuing with partial results...{Colors.RESET}")
+        output, elapsed = run_clang_scan_deps(build_dir, filtered_db, timeout=CLANG_SCAN_DEPS_TIMEOUT)
+        logging.info(f"clang-scan-deps completed in {elapsed:.2f}s")
+    except RuntimeError as e:
+        logging.error(f"clang-scan-deps failed: {e}")
+        raise
     
     project_root: str = os.path.dirname(os.path.abspath(__file__))
     
@@ -686,7 +637,7 @@ def build_include_graph_from_clang_scan(build_dir: str) -> Tuple['nx.DiGraph[Any
         edges: List[Tuple[str, str]]
         all_headers: Set[str]
         source_to_headers: DefaultDict[str, Set[str]]
-        edges, all_headers, source_to_headers = parse_scan_deps_chunk(result.stdout, project_root)
+        edges, all_headers, source_to_headers = parse_scan_deps_chunk(output, project_root)
         
         # Create directed graph for header-to-header relationships (if we had them)
         # Note: clang-scan-deps gives us transitive deps, not direct include relationships

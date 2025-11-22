@@ -8,6 +8,8 @@ import time
 from typing import Any, Optional
 from dataclasses import dataclass
 
+from lib.color_utils import print_info
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,10 +103,12 @@ def is_cache_valid(
     filtered_stat = os.stat(filtered_db_path)
     if filtered_stat.st_mtime != metadata.filtered_db_mtime:
         logger.debug(f"Cache invalid: filtered DB mtime changed")
+        print_info("🔄 Cache invalidated: build configuration changed")
         return False
     
     if filtered_stat.st_size != metadata.filtered_db_size:
         logger.debug(f"Cache invalid: filtered DB size changed")
+        print_info("🔄 Cache invalidated: build configuration changed")
         return False
     
     # Check build.ninja if provided
@@ -112,6 +116,7 @@ def is_cache_valid(
         build_ninja_mtime = os.path.getmtime(build_ninja_path)
         if metadata.build_ninja_mtime is None or build_ninja_mtime != metadata.build_ninja_mtime:
             logger.debug(f"Cache invalid: build.ninja mtime changed")
+            print_info("🔄 Cache invalidated: build.ninja changed")
             return False
     
     # Check cache age if limit is specified
@@ -120,6 +125,7 @@ def is_cache_valid(
         age_hours = age_seconds / 3600
         if age_hours > max_age_hours:
             logger.debug(f"Cache invalid: age {age_hours:.1f}h exceeds limit {max_age_hours}h")
+            print_info(f"🔄 Cache invalidated: too old ({age_hours:.1f}h > {max_age_hours}h limit)")
             return False
     
     return True

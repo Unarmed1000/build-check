@@ -293,6 +293,7 @@ def run_clang_scan_deps(build_dir: str, filtered_db: str, timeout: int = 300) ->
     if cached_result is not None:
         output, elapsed = cached_result
         logger.info(f"Using cached clang-scan-deps output (original scan took {elapsed:.2f}s)")
+        print_info(f"📦 Loading from cache (original scan took {elapsed:.2f}s)")
         return output, elapsed
     
     # Cache miss - run clang-scan-deps
@@ -304,6 +305,7 @@ def run_clang_scan_deps(build_dir: str, filtered_db: str, timeout: int = 300) ->
     
     num_cores = mp.cpu_count()
     logger.info(f"Running {clang_cmd} using {num_cores} cores...")
+    print_info(f"🔄 Cache miss - running {clang_cmd} (this may take a while)...")
     
     start_time = time.time()
     try:
@@ -327,10 +329,13 @@ def run_clang_scan_deps(build_dir: str, filtered_db: str, timeout: int = 300) ->
     
     # Save to cache
     cache_result = (result.stdout, elapsed)
-    save_cache(cache_path, cache_result, filtered_db, build_ninja_path)
+    if save_cache(cache_path, cache_result, filtered_db, build_ninja_path):
+        print_success(f"💾 Saved results to cache ({elapsed:.2f}s scan time)")
     
     # Periodic cleanup of old caches
-    cleanup_old_caches(build_dir, MAX_CACHE_AGE_HOURS)
+    removed = cleanup_old_caches(build_dir, MAX_CACHE_AGE_HOURS)
+    if removed > 0:
+        print_info(f"🧹 Cleaned up {removed} old cache file(s)")
     
     return result.stdout, elapsed
 
@@ -539,28 +544,9 @@ def build_include_graph(build_dir: str, verbose: bool = True) -> IncludeGraphSca
         if not os.path.exists(filtered_db):
             raise FileNotFoundError(f"Filtered compile commands not found: {filtered_db}")
         
-        num_cores = mp.cpu_count()
-        logger.info(f"Running {clang_cmd} using {num_cores} cores to build include graph...")
-        
-        start_time = time.time()
-        try:
-            result = subprocess.run(
-                [clang_cmd, f"-compilation-database={filtered_db}", "-format=make", "-j", str(num_cores)],
-                capture_output=True,
-                text=True,
-                cwd=build_dir,
-                timeout=300  # 5 minute timeout
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"{clang_cmd} timed out after 300 seconds") from None
-        
-        elapsed = time.time() - start_time
-        
-        if result.returncode != 0:
-            error_msg = f"{clang_cmd} failed with code {result.returncode}"
-            if result.stderr:
-                error_msg += f"\nError output: {result.stderr[:1000]}"
-            raise RuntimeError(error_msg)
+        # Use cached clang-scan-deps execution
+        logger.info(f"Running {clang_cmd} using cached execution to build include graph...")
+        output, elapsed = run_clang_scan_deps(build_dir, filtered_db, timeout=300)
         
         # Parse makefile-style output to build include graph
         # Format is: target.o: source.cpp header1.hpp header2.hpp ...
@@ -571,7 +557,7 @@ def build_include_graph(build_dir: str, verbose: bool = True) -> IncludeGraphSca
         current_target = None
         current_deps: List[str] = []
         
-        for line in result.stdout.splitlines():
+        for line in output.splitlines():
             # Check if this is a target line (ends with :)
             if ':' in line and not line.strip().startswith('/'):
                 # This is a target line
