@@ -7,6 +7,8 @@ from collections import defaultdict
 from typing import Dict, List, Set, DefaultDict, Optional, Callable, Union, ItemsView, Tuple, Any
 from dataclasses import dataclass
 
+from lib.color_utils import Colors
+
 logger = logging.getLogger(__name__)
 
 
@@ -93,6 +95,68 @@ class SourceDependencyMap:
     def __repr__(self) -> str:
         """String representation of the map."""
         return f"SourceDependencyMap(targets={len(self._target_to_dependencies)})"
+
+
+def compute_header_usage(source_to_deps: Dict[str, Set[str]]) -> Dict[str, int]:
+    """Count how many source files include each header (directly or transitively).
+    
+    Args:
+        source_to_deps: Mapping of source files to their dependencies
+        
+    Returns:
+        Dictionary mapping headers to usage count
+    """
+    header_usage_count: Dict[str, int] = defaultdict(int)
+    print(f"{Colors.DIM}  Analyzing {len(source_to_deps)} source files...{Colors.RESET}")
+    
+    for idx, (source, deps) in enumerate(source_to_deps.items(), 1):
+        if idx % 100 == 0:
+            print(f"\r{Colors.DIM}  Progress: {idx}/{len(source_to_deps)} sources analyzed{Colors.RESET}", end='', flush=True)
+        for dep in deps:
+            if dep.endswith(('.h', '.hpp', '.hxx')) and not dep.startswith('/usr/') and not dep.startswith('/lib/'):
+                header_usage_count[dep] += 1
+    
+    if len(source_to_deps) >= 100:
+        print()  # New line after progress
+    
+    return dict(header_usage_count)
+
+
+def identify_problematic_headers(
+    header_transitive_deps: Dict[str, int],
+    header_usage_count: Dict[str, int],
+    header_reverse_impact: Dict[str, int],
+    header_max_chain_length: Dict[str, int],
+    threshold: int
+) -> List[Tuple[str, int, int, int, int]]:
+    """Identify headers exceeding the threshold.
+    
+    Args:
+        header_transitive_deps: Transitive dependency counts
+        header_usage_count: Usage counts per header
+        header_reverse_impact: Reverse impact counts
+        header_max_chain_length: Maximum chain lengths
+        threshold: Minimum transitive dependency count
+        
+    Returns:
+        List of tuples (header, trans_count, usage_count, reverse_impact, chain_length)
+    """
+    from lib.color_utils import print_warning
+    
+    problematic = []
+    print(f"{Colors.BLUE}Checking for headers exceeding threshold ({threshold})...{Colors.RESET}")
+    
+    for header, trans_count in header_transitive_deps.items():
+        if trans_count > threshold:
+            usage_count = header_usage_count.get(header, 0)
+            reverse_impact = header_reverse_impact.get(header, 0)
+            chain_length = header_max_chain_length.get(header, 0)
+            problematic.append((header, trans_count, usage_count, reverse_impact, chain_length))
+    
+    if problematic:
+        print_warning(f"  Found {len(problematic)} headers exceeding threshold", prefix=False)
+    
+    return sorted(problematic, key=lambda x: x[1], reverse=True)
 
 
 @dataclass

@@ -153,8 +153,8 @@ from lib.clang_utils import (
     extract_include_paths, compute_transitive_deps, build_include_graph,
     VALID_SOURCE_EXTENSIONS, VALID_HEADER_EXTENSIONS
 )
-from lib.graph_utils import build_dependency_graph
-from lib.dependency_utils import find_dependency_fanout, DependencyAnalysisResult, SourceDependencyMap
+from lib.graph_utils import build_dependency_graph, compute_reverse_dependencies, compute_transitive_metrics, compute_chain_lengths
+from lib.dependency_utils import find_dependency_fanout, DependencyAnalysisResult, SourceDependencyMap, compute_header_usage, identify_problematic_headers
 
 __all__ = ['build_include_graph', 'analyze_dependency_hell']
 
@@ -231,77 +231,27 @@ def analyze_dependency_hell(build_dir: str, rebuild_targets: List[str], threshol
     
     print(f"{Colors.BLUE}Computing transitive dependencies for all headers...{Colors.RESET}")
     
-    # Count how many source files include each header (directly or transitively)
-    header_usage_count: Dict[str, int] = defaultdict(int)
-    print(f"{Colors.DIM}  Analyzing {len(source_to_deps)} source files...{Colors.RESET}")
-    for idx, (source, deps) in enumerate(source_to_deps.items(), 1):
-        if idx % 100 == 0:
-            print(f"\r{Colors.DIM}  Progress: {idx}/{len(source_to_deps)} sources analyzed{Colors.RESET}", end='', flush=True)
-        for dep in deps:
-            if dep.endswith(('.h', '.hpp', '.hxx')) and not dep.startswith('/usr/') and not dep.startswith('/lib/'):
-                header_usage_count[dep] += 1
-    if len(source_to_deps) >= 100:
-        print()  # New line after progress
+    # Count header usage across all source files
+    # Convert List[str] to Set[str] for compute_header_usage
+    source_to_deps_sets = {src: set(deps) for src, deps in source_to_deps.items()}
+    header_usage_count = compute_header_usage(source_to_deps_sets)
     
-    # Compute reverse dependencies (how many headers depend on each header)
-    print(f"{Colors.BLUE}Computing reverse dependencies (rebuild blast radius)...{Colors.RESET}")
-    reverse_deps = defaultdict(set)  # headers that depend on this header (transitively)
-    if G is not None:
-        nodes = list(G.nodes())
-        print(f"{Colors.DIM}  Analyzing {len(nodes)} headers...{Colors.RESET}")
-        for idx, node in enumerate(nodes, 1):
-            if idx % 50 == 0:
-                print(f"\r{Colors.DIM}  Progress: {idx}/{len(nodes)} headers analyzed{Colors.RESET}", end='', flush=True)
-            # Get all ancestors (headers that include this one transitively)
-            ancestors = nx.ancestors(G, node)
-            reverse_deps[node] = ancestors
-        if len(nodes) >= 50:
-            print()  # New line after progress
-    
-    # Identify base types: headers with zero out-degree (don't include any project headers)
-    base_types = set()
-    header_transitive_deps: Dict[str, int] = {}
-    header_reverse_impact: Dict[str, int] = {}
-    header_max_chain_length: Dict[str, int] = {}
+    # Compute reverse dependencies using transitive closure
+    reverse_deps, tc = compute_reverse_dependencies(G)
     
     # Only process project headers
     project_headers = [h for h in all_headers 
                       if not h.startswith('/usr/') and not h.startswith('/lib/')]
     
     print(f"{Colors.BLUE}Computing rebuild impact metrics...{Colors.RESET}")
-    for header in project_headers:
-        # Base type = no outgoing edges (doesn't include other project headers)
-        out_degree = G.out_degree(header) if G is not None and header in G else 0
-        if out_degree == 0:
-            base_types.add(header)
-        
-        # Compute transitive dependencies using NetworkX descendants
-        if G is not None and header in G:
-            descendants = nx.descendants(G, header)
-            header_transitive_deps[header] = len(descendants)
-            
-            # Reverse impact: how many headers depend on this one
-            header_reverse_impact[header] = len(reverse_deps[header])
-            
-            # Longest chain through this header
-            # Find longest path from this node to any leaf (base type)
-            try:
-                # Get all paths from this header to base types
-                max_chain = 0
-                for base in base_types:
-                    if base in descendants:
-                        try:
-                            path_len = nx.shortest_path_length(G, header, base)
-                            max_chain = max(max_chain, int(path_len))
-                        except nx.NetworkXNoPath:
-                            pass
-                header_max_chain_length[header] = max_chain
-            except nx.NetworkXError:
-                header_max_chain_length[header] = 0
-        else:
-            header_transitive_deps[header] = 0
-            header_reverse_impact[header] = 0
-            header_max_chain_length[header] = 0
+    
+    # Compute transitive dependencies and identify base types
+    base_types, header_transitive_deps, header_reverse_impact = compute_transitive_metrics(
+        G, tc, project_headers, reverse_deps
+    )
+    
+    # Compute maximum chain lengths
+    header_max_chain_length = compute_chain_lengths(G, project_headers, base_types)
     
     elapsed = time.time() - start_time
     print(f"{Colors.BLUE}Finished dependency analysis in {elapsed:.2f}s{Colors.RESET}")
@@ -313,17 +263,15 @@ def analyze_dependency_hell(build_dir: str, rebuild_targets: List[str], threshol
         for bt in sorted(base_types):
             print_success(f"  {bt}", prefix=False)
     
-    problematic = []
-    print(f"{Colors.BLUE}Checking for headers exceeding threshold ({threshold})...{Colors.RESET}")
-    for header, trans_count in header_transitive_deps.items():
-        if trans_count > threshold:
-            usage_count = header_usage_count.get(header, 0)
-            reverse_impact = header_reverse_impact.get(header, 0)
-            chain_length = header_max_chain_length.get(header, 0)
-            problematic.append((header, trans_count, usage_count, reverse_impact, chain_length))
+    # Identify problematic headers
+    problematic = identify_problematic_headers(
+        header_transitive_deps,
+        header_usage_count,
+        header_reverse_impact,
+        header_max_chain_length,
+        threshold
+    )
     
-    if problematic:
-        print_warning(f"  Found {len(problematic)} headers exceeding threshold", prefix=False)
     print(f"{Colors.BLUE}Dependency analysis complete.{Colors.RESET}")
     
     return DependencyAnalysisResult(
@@ -336,11 +284,11 @@ def analyze_dependency_hell(build_dir: str, rebuild_targets: List[str], threshol
     )
 
 
-def main() -> int:
-    """Main entry point for the dependency hell analyzer.
+def parse_arguments() -> argparse.Namespace:
+    """Parse command line arguments.
     
     Returns:
-        Exit code (0 for success, non-zero for failure)
+        Parsed arguments namespace
     """
     parser = argparse.ArgumentParser(
         description='Comprehensive dependency analysis: find headers causing dependency hell.',
@@ -405,53 +353,55 @@ Requires: clang-scan-deps, networkx (pip install networkx)
              'Faster and more focused on recent modifications'
     )
     
-    args = parser.parse_args()
-    build_dir = args.build_directory
+    return parser.parse_args()
 
-    # Validate arguments
-    if args.threshold <= 0:
-        logger.error(f"Invalid threshold: {args.threshold}. Must be positive.")
-        return 1
+
+def get_changed_headers(build_dir: str, project_root: str) -> Set[str]:
+    """Get changed header files from rebuild root causes.
     
-    if args.top <= 0:
-        logger.error(f"Invalid top value: {args.top}. Must be positive.")
-        return 1
-
-    print(f"{Colors.CYAN}Starting dependency hell analysis...{Colors.RESET}")
-    if not os.path.isdir(build_dir):
-        logger.error(f"Build directory not found: {build_dir}")
-        return 1
-    
-    build_dir = os.path.abspath(build_dir)
-
+    Args:
+        build_dir: Path to the build directory
+        project_root: Path to the project root
+        
+    Returns:
+        Set of changed header file paths
+        
+    Raises:
+        RuntimeError: If extraction fails
+    """
+    print(f"{Colors.BLUE}Extracting changed headers from rebuild root causes...{Colors.RESET}")
     try:
-        project_root = str(Path(build_dir).parent.parent.parent)
+        rebuild_entries, reasons, root_causes = extract_rebuild_info(build_dir)
+        changed_headers = set(root_causes.keys())
     except Exception as e:
-        logger.error(f"Failed to determine project root: {e}")
-        return 1
+        raise RuntimeError(f"Failed to extract rebuild info: {e}") from e
 
-    # Get changed files if --changed is specified
-    changed_headers: Set[str] = set()
-    if args.changed:
-        print(f"{Colors.BLUE}Extracting changed headers from rebuild root causes...{Colors.RESET}")
-        try:
-            rebuild_entries, reasons, root_causes = extract_rebuild_info(build_dir)
-            changed_headers = set(root_causes.keys())
-        except Exception as e:
-            logger.error(f"Failed to extract rebuild info: {e}")
-            return 1
+    if not changed_headers:
+        print_warning("\nNo changed header files found in rebuild root causes", prefix=False)
+        return set()
 
-        if not changed_headers:
-            print_warning("\nNo changed header files found in rebuild root causes", prefix=False)
-            return 0
+    print(f"\n{Colors.CYAN}Found {len(changed_headers)} changed headers to analyze:{Colors.RESET}")
+    for header in sorted(changed_headers):
+        display_header = header
+        if header.startswith(project_root):
+            display_path = os.path.relpath(header, project_root)
+        print(f"  {Colors.MAGENTA}{display_header}{Colors.RESET}")
+    
+    return changed_headers
 
-        print(f"\n{Colors.CYAN}Found {len(changed_headers)} changed headers to analyze:{Colors.RESET}")
-        for header in sorted(changed_headers):
-            display_header = header
-            if header.startswith(project_root):
-                display_header = os.path.relpath(header, project_root)
-            print(f"  {Colors.MAGENTA}{display_header}{Colors.RESET}")
 
+def collect_rebuild_targets(build_dir: str) -> List[str]:
+    """Collect rebuild targets from ninja.
+    
+    Args:
+        build_dir: Path to the build directory
+        
+    Returns:
+        List of rebuild target file paths
+        
+    Raises:
+        RuntimeError: If ninja command fails
+    """
     print(f"{Colors.BLUE}Running ninja dry-run to collect rebuild targets...{Colors.RESET}")
     # Run ninja -n -d explain to get what would rebuild
     try:
@@ -464,14 +414,11 @@ Requires: clang-scan-deps, networkx (pip install networkx)
             timeout=60
         )
     except subprocess.CalledProcessError as e:
-        logger.error(f"Ninja command failed: {e.stderr}")
-        return 1
+        raise RuntimeError(f"Ninja command failed: {e.stderr}") from e
     except subprocess.TimeoutExpired:
-        logger.error("Ninja command timed out after 60 seconds")
-        return 1
+        raise RuntimeError("Ninja command timed out after 60 seconds")
     except FileNotFoundError:
-        logger.error("Ninja not found. Please ensure ninja is installed and in PATH.")
-        return 1
+        raise RuntimeError("Ninja not found. Please ensure ninja is installed and in PATH.")
 
     lines = result.stderr.splitlines()
 
@@ -520,106 +467,111 @@ Requires: clang-scan-deps, networkx (pip install networkx)
             logger.warning(f"Failed to get ninja targets: {e}")
 
     if not rebuild_targets:
-        logger.error("No compilation targets found.")
-        return 1
+        raise RuntimeError("No compilation targets found.")
+    
+    return rebuild_targets
 
-    mode_desc = f"changed headers only" if args.changed else "all headers"
-    print(f"\n{Colors.CYAN}Analyzing dependency hell ({len(rebuild_targets)} targets, {mode_desc})...{Colors.RESET}")
+
+def display_detailed_analysis(
+    problematic: List[Tuple[str, int, int, int, int]],
+    cooccurrence: Dict[str, Dict[str, int]],
+    project_root: str
+) -> None:
+    """Display detailed per-header analysis.
     
-    try:
-        analysis_result = analyze_dependency_hell(build_dir, rebuild_targets, args.threshold)
-    except Exception as e:
-        logger.error(f"Analysis failed: {e}")
-        logger.debug("Exception details:", exc_info=True)
-        return 1
+    Args:
+        problematic: List of problematic headers with metrics
+        cooccurrence: Cooccurrence matrix
+        project_root: Path to the project root
+    """
+    print(f"\n{Colors.BRIGHT}Detailed Analysis (showing all {len(problematic)} headers):{Colors.RESET}")
     
-    problematic = analysis_result.problematic
-    source_to_deps = analysis_result.source_to_deps
-    base_types = analysis_result.base_types
-    header_usage_count = analysis_result.header_usage_count
-    header_reverse_impact = analysis_result.header_reverse_impact
-    header_max_chain_length = analysis_result.header_max_chain_length
-    
-    # Filter to only changed headers if requested
-    if args.changed and changed_headers:
-        original_count = len(problematic)
-        problematic = [(h, c, u, r, ch) for h, c, u, r, ch in problematic if h in changed_headers]
-        if len(problematic) < original_count:
-            filtered_out = original_count - len(problematic)
-            print(f"{Colors.BLUE}Filtered to {len(problematic)} changed headers (excluded {filtered_out} unchanged headers){Colors.RESET}")
-    
-    if not problematic:
-        if args.changed:
-            print_warning(f"\nNo changed headers exceed threshold (threshold={args.threshold})", prefix=False)
-            print(f"{Colors.CYAN}The changed headers are base types or have fewer than {args.threshold} transitive dependencies{Colors.RESET}")
-        else:
-            print_success(f"\nNo headers with excessive dependencies found (threshold={args.threshold})", prefix=False)
-        return 0
-    
-    # Always compute cooccurrence for all problematic headers to get accurate severity breakdown
-    # This is needed for severity calculation even when not in detailed mode
-    all_problematic_headers = [h for h, _, _, _, _ in problematic]
-    
-    source_dep_map = SourceDependencyMap(source_to_deps)
-    
-    cooccurrence = find_dependency_fanout(
-        all_problematic_headers, source_dep_map,
-        is_header_filter=lambda d: d.endswith(VALID_HEADER_EXTENSIONS),
-        is_system_filter=is_system_header_lib
-    )
-    
-    # Show detailed analysis if requested
-    if args.detailed:
-        print(f"\n{Colors.BRIGHT}Detailed Analysis (showing all {len(problematic)} headers):{Colors.RESET}")
+    for header, dep_count, usage_count, reverse_impact, chain_length in problematic:
+        display_path = header
+        if header.startswith(project_root):
+            display_path = os.path.relpath(header, project_root)
         
-        for header, dep_count, usage_count, reverse_impact, chain_length in problematic:
-            display_path = header
-            if header.startswith(project_root):
-                display_path = os.path.relpath(header, project_root)
-            
-            # Calculate fanout (how many other headers it pulls in frequently)
-            fanout = len([h for h, count in cooccurrence[header].items() if count > FANOUT_THRESHOLD]) if header in cooccurrence else 0
-            
-            # Rebuild cost: if this header changes, how expensive is the rebuild?
-            rebuild_cost = usage_count * (1 + reverse_impact)
-            
-            # Combined score for severity
-            combined_score = dep_count + (fanout * 10)
-            
-            if combined_score > SEVERITY_CRITICAL:
-                severity = f"{Colors.RED}CRITICAL{Colors.RESET}"
-            elif combined_score > SEVERITY_HIGH:
-                severity = f"{Colors.YELLOW}HIGH{Colors.RESET}"
-            else:
-                severity = f"{Colors.CYAN}MODERATE{Colors.RESET}"
-            
-            print(f"\n  {Colors.MAGENTA}{display_path}{Colors.RESET}")
-            print(f"    Transitive deps: {Colors.BRIGHT}{dep_count}{Colors.RESET}, Fanout: {fanout}, Usage: {usage_count} sources")
-            print(f"    Reverse impact: {reverse_impact} headers depend on this, Max chain: {chain_length}, Rebuild cost: {rebuild_cost:,}")
-            print(f"    Severity: {severity}")
-            
-            # Show top cooccurring headers
-            if header in cooccurrence:
-                top_cooccur = sorted(cooccurrence[header].items(), key=lambda x: x[1], reverse=True)[:5]
-                if top_cooccur:
-                    print(f"    Frequently pulls in:")
-                    for coheader, count in top_cooccur:
-                        display_co = coheader
-                        if coheader.startswith(project_root):
-                            display_co = os.path.relpath(coheader, project_root)
-                        print(f"      {Colors.DIM}{display_co}{Colors.RESET} ({count} times)")
+        # Calculate fanout (how many other headers it pulls in frequently)
+        fanout = len([h for h, count in cooccurrence[header].items() if count > FANOUT_THRESHOLD]) if header in cooccurrence else 0
+        
+        # Rebuild cost: if this header changes, how expensive is the rebuild?
+        rebuild_cost = usage_count * (1 + reverse_impact)
+        
+        # Combined score for severity
+        combined_score = dep_count + (fanout * 10)
+        
+        if combined_score > SEVERITY_CRITICAL:
+            severity = f"{Colors.RED}CRITICAL{Colors.RESET}"
+        elif combined_score > SEVERITY_HIGH:
+            severity = f"{Colors.YELLOW}HIGH{Colors.RESET}"
+        else:
+            severity = f"{Colors.CYAN}MODERATE{Colors.RESET}"
+        
+        print(f"\n  {Colors.MAGENTA}{display_path}{Colors.RESET}")
+        print(f"    Transitive deps: {Colors.BRIGHT}{dep_count}{Colors.RESET}, Fanout: {fanout}, Usage: {usage_count} sources")
+        print(f"    Reverse impact: {reverse_impact} headers depend on this, Max chain: {chain_length}, Rebuild cost: {rebuild_cost:,}")
+        print(f"    Severity: {severity}")
+        
+        # Show top cooccurring headers
+        if header in cooccurrence:
+            top_cooccur = sorted(cooccurrence[header].items(), key=lambda x: x[1], reverse=True)[:5]
+            if top_cooccur:
+                print(f"    Frequently pulls in:")
+                for coheader, count in top_cooccur:
+                    display_co = coheader
+                    if coheader.startswith(project_root):
+                        display_co = os.path.relpath(coheader, project_root)
+                    print(f"      {Colors.DIM}{display_co}{Colors.RESET} ({count} times)")
+
+
+def calculate_summary_statistics(
+    problematic: List[Tuple[str, int, int, int, int]],
+    cooccurrence: Dict[str, Dict[str, int]]
+) -> Tuple[int, int, int]:
+    """Calculate severity breakdown statistics.
     
-    # Calculate summary statistics
+    Args:
+        problematic: List of problematic headers with metrics
+        cooccurrence: Cooccurrence matrix
+        
+    Returns:
+        Tuple of (critical_count, high_count, moderate_count)
+    """
     total_problematic = len(problematic)
     critical_count = len([h for h, dc, _, _, _ in problematic if dc + (len([x for x, c in cooccurrence[h].items() if c > FANOUT_THRESHOLD]) * 10) > SEVERITY_CRITICAL])
     high_count = len([h for h, dc, _, _, _ in problematic if SEVERITY_HIGH < (dc + (len([x for x, c in cooccurrence[h].items() if c > FANOUT_THRESHOLD]) * 10)) <= SEVERITY_CRITICAL])
     moderate_count = total_problematic - critical_count - high_count
+    return critical_count, high_count, moderate_count
+
+
+def display_summary_output(
+    problematic: List[Tuple[str, int, int, int, int]],
+    cooccurrence: Dict[str, Dict[str, int]],
+    rebuild_targets_count: int,
+    threshold: int,
+    top_n: int,
+    project_root: str,
+    show_detailed_hint: bool
+) -> None:
+    """Display summary output with ranked lists.
+    
+    Args:
+        problematic: List of problematic headers with metrics
+        cooccurrence: Cooccurrence matrix
+        rebuild_targets_count: Number of rebuild targets analyzed
+        threshold: Threshold used for analysis
+        top_n: Number of items to show in each list
+        project_root: Path to the project root
+        show_detailed_hint: Whether to show hint about --detailed flag
+    """
+    critical_count, high_count, moderate_count = calculate_summary_statistics(problematic, cooccurrence)
+    total_problematic = len(problematic)
     
     # Print summary last
     print(f"\n{Colors.BRIGHT}═══ Dependency Hell Summary ═══{Colors.RESET}")
-    print(f"  Analyzed: {len(rebuild_targets)} rebuild targets")
+    print(f"  Analyzed: {rebuild_targets_count} rebuild targets")
     print(f"  Method: clang-scan-deps (parallel, optimized)")
-    print(f"  Found: {total_problematic} headers with >{args.threshold} transitive dependencies")
+    print(f"  Found: {total_problematic} headers with >{threshold} transitive dependencies")
     print(f"  Severity breakdown: {Colors.RED}{critical_count} CRITICAL{Colors.RESET}, "
           f"{Colors.YELLOW}{high_count} HIGH{Colors.RESET}, "
           f"{Colors.CYAN}{moderate_count} MODERATE{Colors.RESET}")
@@ -628,10 +580,10 @@ Requires: clang-scan-deps, networkx (pip install networkx)
     print(f"  {Colors.BRIGHT}Rebuild Cost{Colors.RESET} = usage × (1 + dependents) - measures rebuild impact if header changes")
     print(f"  {Colors.BRIGHT}Hub Headers{Colors.RESET} = reverse dependency count - shows architectural bottlenecks")
     
-    # Show top 10 worst offenders
+    # Show top N worst offenders
     if problematic:
-        print(f"\n  {Colors.BRIGHT}Top {args.top} Worst Offenders (by dependency count):{Colors.RESET}")
-        for i, (header, dep_count, usage_count, reverse_impact, chain_length) in enumerate(problematic[:args.top], 1):
+        print(f"\n  {Colors.BRIGHT}Top {top_n} Worst Offenders (by dependency count):{Colors.RESET}")
+        for i, (header, dep_count, usage_count, reverse_impact, chain_length) in enumerate(problematic[:top_n], 1):
             display_path = header
             if header.startswith(project_root):
                 display_path = os.path.relpath(header, project_root)
@@ -650,9 +602,9 @@ Requires: clang-scan-deps, networkx (pip install networkx)
             print(f"    {Colors.DIM}{i:2}.{Colors.RESET} {severity_color}{display_path}{Colors.RESET} ({dep_count} deps, {usage_count} uses)")
         
         # Show top N by impact (deps * usage)
-        print(f"\n  {Colors.BRIGHT}Top {args.top} by Build Impact (deps × usage count):{Colors.RESET}")
+        print(f"\n  {Colors.BRIGHT}Top {top_n} by Build Impact (deps × usage count):{Colors.RESET}")
         by_impact = sorted(problematic, key=lambda x: x[1] * x[2], reverse=True)
-        for i, (header, dep_count, usage_count, reverse_impact, chain_length) in enumerate(by_impact[:args.top], 1):
+        for i, (header, dep_count, usage_count, reverse_impact, chain_length) in enumerate(by_impact[:top_n], 1):
             display_path = header
             if header.startswith(project_root):
                 display_path = os.path.relpath(header, project_root)
@@ -669,10 +621,10 @@ Requires: clang-scan-deps, networkx (pip install networkx)
             
             print(f"    {Colors.DIM}{i:2}.{Colors.RESET} {impact_color}{display_path}{Colors.RESET} ({dep_count} deps × {usage_count} uses = {impact:,} total)")
         
-        # NEW: Show top N by rebuild cost (what causes most expensive rebuilds if changed)
-        print(f"\n  {Colors.BRIGHT}Top {args.top} by Rebuild Cost (if changed, what causes worst rebuild):{Colors.RESET}")
+        # Show top N by rebuild cost (what causes most expensive rebuilds if changed)
+        print(f"\n  {Colors.BRIGHT}Top {top_n} by Rebuild Cost (if changed, what causes worst rebuild):{Colors.RESET}")
         by_rebuild_cost = sorted(problematic, key=lambda x: x[2] * (1 + x[3]), reverse=True)
-        for i, (header, dep_count, usage_count, reverse_impact, chain_length) in enumerate(by_rebuild_cost[:args.top], 1):
+        for i, (header, dep_count, usage_count, reverse_impact, chain_length) in enumerate(by_rebuild_cost[:top_n], 1):
             display_path = header
             if header.startswith(project_root):
                 display_path = os.path.relpath(header, project_root)
@@ -690,10 +642,10 @@ Requires: clang-scan-deps, networkx (pip install networkx)
             print(f"    {Colors.DIM}{i:2}.{Colors.RESET} {cost_color}{display_path}{Colors.RESET} "
                   f"({usage_count} uses × {reverse_impact} dependents = {rebuild_cost:,} source rebuilds)")
         
-        # NEW: Show top N hub headers (most headers depend on these)
-        print(f"\n  {Colors.BRIGHT}Top {args.top} Hub Headers (most other headers depend on these):{Colors.RESET}")
+        # Show top N hub headers (most headers depend on these)
+        print(f"\n  {Colors.BRIGHT}Top {top_n} Hub Headers (most other headers depend on these):{Colors.RESET}")
         by_hub = sorted(problematic, key=lambda x: x[3], reverse=True)
-        for i, (header, dep_count, usage_count, reverse_impact, chain_length) in enumerate(by_hub[:args.top], 1):
+        for i, (header, dep_count, usage_count, reverse_impact, chain_length) in enumerate(by_hub[:top_n], 1):
             display_path = header
             if header.startswith(project_root):
                 display_path = os.path.relpath(header, project_root)
@@ -709,8 +661,110 @@ Requires: clang-scan-deps, networkx (pip install networkx)
             print(f"    {Colors.DIM}{i:2}.{Colors.RESET} {hub_color}{display_path}{Colors.RESET} "
                   f"({reverse_impact} headers depend on this, max chain: {chain_length})")
     
-    if not args.detailed and total_problematic > 0:
+    if show_detailed_hint:
         print(f"\n  {Colors.DIM}Use --detailed to see per-header analysis{Colors.RESET}")
+
+
+def main() -> int:
+    """Main entry point for the dependency hell analyzer.
+    
+    Returns:
+        Exit code (0 for success, non-zero for failure)
+    """
+    args = parse_arguments()
+    build_dir = args.build_directory
+
+    # Validate arguments
+    if args.threshold <= 0:
+        logger.error(f"Invalid threshold: {args.threshold}. Must be positive.")
+        return 1
+    
+    if args.top <= 0:
+        logger.error(f"Invalid top value: {args.top}. Must be positive.")
+        return 1
+
+    print(f"{Colors.CYAN}Starting dependency hell analysis...{Colors.RESET}")
+    if not os.path.isdir(build_dir):
+        logger.error(f"Build directory not found: {build_dir}")
+        return 1
+    
+    build_dir = os.path.abspath(build_dir)
+
+    try:
+        project_root = str(Path(build_dir).parent.parent.parent)
+    except Exception as e:
+        logger.error(f"Failed to determine project root: {e}")
+        return 1
+
+    # Get changed files if --changed is specified
+    changed_headers: Set[str] = set()
+    if args.changed:
+        try:
+            changed_headers = get_changed_headers(build_dir, project_root)
+            if not changed_headers:
+                return 0
+        except RuntimeError as e:
+            logger.error(str(e))
+            return 1
+
+    try:
+        rebuild_targets = collect_rebuild_targets(build_dir)
+    except RuntimeError as e:
+        logger.error(str(e))
+        return 1
+
+    mode_desc = f"changed headers only" if args.changed else "all headers"
+    print(f"\n{Colors.CYAN}Analyzing dependency hell ({len(rebuild_targets)} targets, {mode_desc})...{Colors.RESET}")
+    
+    try:
+        analysis_result = analyze_dependency_hell(build_dir, rebuild_targets, args.threshold)
+    except Exception as e:
+        logger.error(f"Analysis failed: {e}")
+        logger.debug("Exception details:", exc_info=True)
+        return 1
+    
+    problematic = analysis_result.problematic
+    source_to_deps = analysis_result.source_to_deps
+    
+    # Filter to only changed headers if requested
+    if args.changed and changed_headers:
+        original_count = len(problematic)
+        problematic = [(h, c, u, r, ch) for h, c, u, r, ch in problematic if h in changed_headers]
+        if len(problematic) < original_count:
+            filtered_out = original_count - len(problematic)
+            print(f"{Colors.BLUE}Filtered to {len(problematic)} changed headers (excluded {filtered_out} unchanged headers){Colors.RESET}")
+    
+    if not problematic:
+        if args.changed:
+            print_warning(f"\nNo changed headers exceed threshold (threshold={args.threshold})", prefix=False)
+            print(f"{Colors.CYAN}The changed headers are base types or have fewer than {args.threshold} transitive dependencies{Colors.RESET}")
+        else:
+            print_success(f"\nNo headers with excessive dependencies found (threshold={args.threshold})", prefix=False)
+        return 0
+    
+    # Always compute cooccurrence for all problematic headers to get accurate severity breakdown
+    all_problematic_headers = [h for h, _, _, _, _ in problematic]
+    source_dep_map = SourceDependencyMap(source_to_deps)
+    cooccurrence = find_dependency_fanout(
+        all_problematic_headers, source_dep_map,
+        is_header_filter=lambda d: d.endswith(VALID_HEADER_EXTENSIONS),
+        is_system_filter=is_system_header_lib
+    )
+    
+    # Show detailed analysis if requested
+    if args.detailed:
+        display_detailed_analysis(problematic, cooccurrence, project_root)
+    
+    # Display summary output
+    display_summary_output(
+        problematic,
+        cooccurrence,
+        len(rebuild_targets),
+        args.threshold,
+        args.top,
+        project_root,
+        show_detailed_hint=not args.detailed and len(problematic) > 0
+    )
     
     return 0
 

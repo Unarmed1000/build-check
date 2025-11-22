@@ -115,6 +115,14 @@ TRUNCATE_OUTPUT_KB = 60  # Truncate terminal output after this size (KB)
 COMPILE_COMMANDS_JSON = 'compile_commands.json'  # Standard compilation database filename
 
 # =============================================================================
+# Cache Constants
+# =============================================================================
+
+CACHE_DIR = '.buildcheck_cache'  # Cache directory name in build directory
+CLANG_SCAN_DEPS_CACHE_FILE = 'clang_scan_deps_output.pickle'  # Cached clang-scan-deps output
+MAX_CACHE_AGE_HOURS = 168  # Maximum cache age in hours (7 days)
+
+# =============================================================================
 # Graph Export Constants
 # =============================================================================
 

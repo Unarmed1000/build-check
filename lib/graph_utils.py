@@ -5,6 +5,7 @@ import os
 import logging
 from typing import Dict, Set, List, Tuple, Optional, Any
 from dataclasses import dataclass
+from collections import defaultdict
 from lib.color_utils import Colors, print_warning
 
 import networkx as nx
@@ -50,6 +51,144 @@ def build_dependency_graph(include_graph: Dict[str, Set[str]], all_headers: Set[
     
     logger.debug(f"Built graph with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges")
     return G
+
+
+def compute_reverse_dependencies(G: Any) -> Tuple[Dict[str, Set[str]], Optional[Any]]:
+    """Compute reverse dependencies using transitive closure.
+    
+    Args:
+        G: NetworkX directed graph
+        
+    Returns:
+        Tuple of (reverse_deps dict, transitive_closure graph)
+    """
+    reverse_deps: Dict[str, Set[str]] = defaultdict(set)
+    tc: Optional[Any] = None
+    
+    print(f"{Colors.BLUE}Computing reverse dependencies (rebuild blast radius)...{Colors.RESET}")
+    print(f"{Colors.DIM}  Computing transitive closure...{Colors.RESET}")
+    
+    try:
+        is_dag = nx.is_directed_acyclic_graph(G)
+        if is_dag:
+            tc = nx.transitive_closure_dag(G)
+        else:
+            logger.warning("Circular includes detected - using general transitive closure")
+            tc = nx.transitive_closure(G)
+        
+        if tc is not None:
+            for node in G.nodes():
+                reverse_deps[node] = set(tc.predecessors(node))  # type: ignore[attr-defined]
+        print(f"{Colors.DIM}  Computed reverse dependencies for {len(reverse_deps)} headers{Colors.RESET}")
+    except (MemoryError, nx.NetworkXError) as e:
+        logger.warning(f"Transitive closure failed ({type(e).__name__}), using slower per-node computation")
+        tc = None
+        for node in G.nodes():
+            reverse_deps[node] = nx.ancestors(G, node)
+    
+    return dict(reverse_deps), tc
+
+
+def compute_transitive_metrics(
+    G: Any,
+    tc: Optional[Any],
+    project_headers: List[str],
+    reverse_deps: Dict[str, Set[str]]
+) -> Tuple[Set[str], Dict[str, int], Dict[str, int]]:
+    """Compute transitive dependencies and identify base types.
+    
+    Args:
+        G: NetworkX directed graph
+        tc: Transitive closure graph (if available)
+        project_headers: List of project header files
+        reverse_deps: Reverse dependency mapping
+        
+    Returns:
+        Tuple of (base_types, header_transitive_deps, header_reverse_impact)
+    """
+    base_types = set()
+    header_transitive_deps: Dict[str, int] = {}
+    header_reverse_impact: Dict[str, int] = {}
+    
+    print(f"{Colors.DIM}  Computing transitive dependencies...{Colors.RESET}")
+    
+    if tc is not None:
+        # Use precomputed transitive closure
+        for header in project_headers:
+            if header in G:
+                out_degree = G.out_degree(header)
+                if out_degree == 0:
+                    base_types.add(header)
+                
+                descendants = set(tc.successors(header)) if header in tc else set()
+                header_transitive_deps[header] = len(descendants)
+                header_reverse_impact[header] = len(reverse_deps.get(header, set()))
+    else:
+        # Fallback to individual queries
+        for header in project_headers:
+            if header in G:
+                out_degree = G.out_degree(header)
+                if out_degree == 0:
+                    base_types.add(header)
+                descendants = nx.descendants(G, header)
+                header_transitive_deps[header] = len(descendants)
+                header_reverse_impact[header] = len(reverse_deps.get(header, set()))
+    
+    return base_types, header_transitive_deps, header_reverse_impact
+
+
+def compute_chain_lengths(
+    G: Any,
+    project_headers: List[str],
+    base_types: Set[str]
+) -> Dict[str, int]:
+    """Compute maximum chain lengths for headers.
+    
+    Args:
+        G: NetworkX directed graph
+        project_headers: List of project header files
+        base_types: Set of base type headers
+        
+    Returns:
+        Dictionary mapping headers to maximum chain length
+    """
+    header_max_chain_length: Dict[str, int] = {}
+    
+    print(f"{Colors.DIM}  Computing maximum chain lengths...{Colors.RESET}")
+    
+    if not base_types:
+        for header in project_headers:
+            header_max_chain_length[header] = 0
+        return header_max_chain_length
+    
+    try:
+        if nx.is_directed_acyclic_graph(G):
+            for header in project_headers:
+                if header not in G:
+                    header_max_chain_length[header] = 0
+                    continue
+                
+                max_chain = 0
+                descendants = set(nx.descendants(G, header))
+                reachable_bases = descendants & base_types
+                
+                if reachable_bases:
+                    try:
+                        paths = nx.single_source_shortest_path_length(G, header)
+                        max_chain = max(paths.get(base, 0) for base in reachable_bases)
+                    except nx.NetworkXError:
+                        max_chain = 0
+                
+                header_max_chain_length[header] = max_chain
+        else:
+            for header in project_headers:
+                header_max_chain_length[header] = 0
+    except (MemoryError, nx.NetworkXError) as e:
+        logger.warning(f"Chain length computation failed ({type(e).__name__}): setting to 0")
+        for header in project_headers:
+            header_max_chain_length[header] = 0
+    
+    return header_max_chain_length
 
 
 def find_strongly_connected_components(graph: 'nx.DiGraph[Any]') -> List[Set[str]]:

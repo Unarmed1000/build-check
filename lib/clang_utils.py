@@ -240,7 +240,12 @@ def extract_include_paths(compile_db_path: str) -> Set[str]:
 
 
 def run_clang_scan_deps(build_dir: str, filtered_db: str, timeout: int = 300) -> Tuple[str, float]:
-    """Run clang-scan-deps to analyze dependencies.
+    """Run clang-scan-deps to analyze dependencies with persistent caching.
+    
+    This function caches the expensive clang-scan-deps output to disk to avoid
+    redundant scanning across multiple tool invocations. The cache is invalidated
+    when either the filtered compile_commands.json or build.ninja is modified,
+    or when it exceeds the maximum age.
     
     Args:
         build_dir: Path to the build directory
@@ -254,7 +259,43 @@ def run_clang_scan_deps(build_dir: str, filtered_db: str, timeout: int = 300) ->
         RuntimeError: If clang-scan-deps is not found or fails
     """
     import time
+    from lib.constants import CLANG_SCAN_DEPS_CACHE_FILE, MAX_CACHE_AGE_HOURS
+    from lib.cache_utils import (
+        ensure_cache_dir,
+        get_cache_path,
+        load_cache,
+        save_cache,
+        cleanup_old_caches
+    )
     
+    # Ensure cache directory exists
+    ensure_cache_dir(build_dir)
+    
+    # Get cache path
+    cache_path = get_cache_path(build_dir, CLANG_SCAN_DEPS_CACHE_FILE)
+    
+    # Get build.ninja path for validation
+    build_ninja_path: Optional[str]
+    build_ninja_path_candidate = os.path.join(build_dir, 'build.ninja')
+    if not os.path.exists(build_ninja_path_candidate):
+        build_ninja_path = None
+    else:
+        build_ninja_path = build_ninja_path_candidate
+    
+    # Try to load from cache
+    cached_result = load_cache(
+        cache_path,
+        filtered_db,
+        build_ninja_path,
+        MAX_CACHE_AGE_HOURS
+    )
+    
+    if cached_result is not None:
+        output, elapsed = cached_result
+        logger.info(f"Using cached clang-scan-deps output (original scan took {elapsed:.2f}s)")
+        return output, elapsed
+    
+    # Cache miss - run clang-scan-deps
     clang_cmd = find_clang_scan_deps()
     if not clang_cmd:
         raise RuntimeError(
@@ -283,6 +324,13 @@ def run_clang_scan_deps(build_dir: str, filtered_db: str, timeout: int = 300) ->
         if result.stderr:
             error_msg += f"\nError output: {result.stderr[:1000]}"
         raise RuntimeError(error_msg)
+    
+    # Save to cache
+    cache_result = (result.stdout, elapsed)
+    save_cache(cache_path, cache_result, filtered_db, build_ninja_path)
+    
+    # Periodic cleanup of old caches
+    cleanup_old_caches(build_dir, MAX_CACHE_AGE_HOURS)
     
     return result.stdout, elapsed
 
