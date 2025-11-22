@@ -334,6 +334,83 @@ def parse_clang_scan_deps_output(output: str, all_headers: Set[str]) -> Dict[str
     return source_to_deps
 
 
+def build_header_to_header_graph(all_headers: Set[str]) -> DefaultDict[str, Set[str]]:
+    """Build header-to-header include graph by parsing header files.
+    
+    Parses each header file to extract #include directives and resolves them
+    to absolute paths of project headers. Uses multiple resolution strategies:
+    1. Relative to the header's directory
+    2. Basename lookup with path suffix matching
+    
+    Args:
+        all_headers: Set of all project header file paths
+        
+    Returns:
+        DefaultDict mapping each header to the set of headers it directly includes
+    """
+    import re
+    
+    header_to_direct_includes: DefaultDict[str, Set[str]] = defaultdict(set)
+    include_pattern = re.compile(r'^\s*#\s*include\s+["<]([^">]+)[">]')
+    
+    # Build a lookup dict for fast header name resolution
+    # Map: basename -> list of full paths (for quick lookup)
+    header_basename_map: DefaultDict[str, List[str]] = defaultdict(list)
+    for header in all_headers:
+        basename = os.path.basename(header)
+        header_basename_map[basename].append(header)
+    
+    # Parse each header file to find what it includes
+    for header in all_headers:
+        try:
+            with open(header, 'r', encoding='utf-8', errors='ignore') as f:
+                header_dir = os.path.dirname(header)
+                
+                for line in f:
+                    match = include_pattern.match(line)
+                    if match:
+                        included_file = match.group(1)
+                        included_basename = os.path.basename(included_file)
+                        
+                        # Try to resolve the included file to an absolute path
+                        resolved_path = None
+                        
+                        # Strategy 1: Check if it's relative to the current header's directory
+                        candidate = os.path.normpath(os.path.join(header_dir, included_file))
+                        if candidate in all_headers:
+                            resolved_path = candidate
+                        
+                        # Strategy 2: Look up by basename in our header map
+                        if not resolved_path and included_basename in header_basename_map:
+                            candidates = header_basename_map[included_basename]
+                            # If there's only one match, use it
+                            if len(candidates) == 1:
+                                resolved_path = candidates[0]
+                            else:
+                                # Multiple matches - try to find the best one
+                                # Prefer headers with matching path suffix
+                                for candidate in candidates:
+                                    if candidate.endswith(included_file.replace('\\', '/')):
+                                        resolved_path = candidate
+                                        break
+                                # If still no match, use first candidate
+                                if not resolved_path:
+                                    resolved_path = candidates[0]
+                        
+                        # Add to graph if resolved and is a project header
+                        if resolved_path and resolved_path in all_headers:
+                            header_to_direct_includes[header].add(resolved_path)
+                        
+        except (IOError, OSError) as e:
+            logger.debug(f"Could not read header {header}: {e}")
+            continue
+    
+    total_edges = sum(len(deps) for deps in header_to_direct_includes.values())
+    logger.info(f"Built include graph with {total_edges} direct header-to-header dependencies")
+    
+    return header_to_direct_includes
+
+
 def compute_transitive_deps(header: str, include_graph: Dict[str, Set[str]], 
                             visited: Optional[Set[str]] = None, depth: int = 0) -> Set[str]:
     """Compute all transitive dependencies of a header using NetworkX.
@@ -484,15 +561,17 @@ def build_include_graph(build_dir: str, verbose: bool = True) -> IncludeGraphSca
         logger.info(f"Scanned {len(source_to_deps)} source files in {elapsed:.2f}s")
         logger.info(f"Found {len(all_headers)} unique project headers")
         
+        # Build header-to-header include graph by parsing header files
+        logger.info("Building header-to-header include graph...")
+        header_to_direct_includes = build_header_to_header_graph(all_headers)
+        
+        total_edges = sum(len(deps) for deps in header_to_direct_includes.values())
+        
         if verbose:
             print_success(f"Scanned {len(source_to_deps)} source files in {elapsed:.2f}s")
             print_info("Building include graph from clang-scan-deps output...")
             print_highlight(f"Found {len(all_headers)} unique project headers")
-            print_success(f"Built dependency graph with {len(all_headers)} headers")
-        
-        # Note: The include_graph returned here represents the full transitive dependency closure
-        # from clang-scan-deps, not just direct includes. This is actually more useful for
-        # dependency analysis as it shows the complete impact of including a header.
+            print_success(f"Built dependency graph with {len(all_headers)} headers and {total_edges} dependencies")
         
         return IncludeGraphScanResult(
             source_to_deps=source_to_deps,

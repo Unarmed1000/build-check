@@ -55,9 +55,23 @@ fi
 
 # Check ninja (optional but useful)
 echo -n "✓ Checking ninja... "
+NINJA_FOUND=false
+# Try different ways to find ninja
 if command -v ninja >/dev/null 2>&1; then
     echo -e "${GREEN}OK${NC}"
-else
+    NINJA_FOUND=true
+elif command -v ninja-build >/dev/null 2>&1; then
+    echo -e "${GREEN}OK (ninja-build)${NC}"
+    NINJA_FOUND=true
+elif [ -x /usr/bin/ninja ]; then
+    echo -e "${GREEN}OK (/usr/bin/ninja)${NC}"
+    NINJA_FOUND=true
+elif [ -x /usr/local/bin/ninja ]; then
+    echo -e "${GREEN}OK (/usr/local/bin/ninja)${NC}"
+    NINJA_FOUND=true
+fi
+
+if [ "$NINJA_FOUND" = false ]; then
     echo -e "${YELLOW}MISSING (optional, needed for ninja build analysis)${NC}"
     OPTIONAL_MISSING+=("ninja")
 fi

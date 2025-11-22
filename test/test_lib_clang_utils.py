@@ -331,3 +331,229 @@ def temp_dir() -> Any:
     """Create a temporary directory for testing."""
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Path(tmpdir)
+
+
+class TestBuildIncludeGraph:
+    """Tests for build_include_graph integration."""
+    
+    def test_include_graph_is_populated(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Test that build_include_graph actually populates the include graph.
+        
+        This is a regression test for a bug where the include_graph dictionary
+        was initialized but never populated, resulting in all headers having
+        Fan-out: 0 and Fan-in: 0.
+        """
+        from lib.clang_utils import build_include_graph
+        import json
+        
+        # Create a mock build directory structure
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        
+        # Create source directory with headers
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        
+        # Create header files with actual include statements
+        base_header = src_dir / "base.hpp"
+        base_header.write_text("""
+#ifndef BASE_HPP
+#define BASE_HPP
+// Base header with no dependencies
+#endif
+""")
+        
+        middle_header = src_dir / "middle.hpp"
+        middle_header.write_text("""
+#ifndef MIDDLE_HPP
+#define MIDDLE_HPP
+#include "base.hpp"
+// Middle header includes base
+#endif
+""")
+        
+        top_header = src_dir / "top.hpp"
+        top_header.write_text("""
+#ifndef TOP_HPP
+#define TOP_HPP
+#include "middle.hpp"
+#include "base.hpp"
+// Top header includes both middle and base
+#endif
+""")
+        
+        # Create a source file
+        source_file = src_dir / "main.cpp"
+        source_file.write_text("""
+#include "top.hpp"
+int main() { return 0; }
+""")
+        
+        # Create compile_commands.json
+        compile_commands = [
+            {
+                "directory": str(build_dir),
+                "command": f"/usr/bin/c++ -c -o main.o {source_file}",
+                "file": str(source_file)
+            }
+        ]
+        compile_db = build_dir / "compile_commands.json"
+        compile_db.write_text(json.dumps(compile_commands, indent=2))
+        
+        # Create filtered compile commands (would normally be created by the function)
+        filtered_db = build_dir / "compile_commands_filtered.json"
+        filtered_db.write_text(json.dumps(compile_commands, indent=2))
+        
+        # Mock clang-scan-deps output
+        clang_output = f"""main.o: {source_file} \\
+  {base_header} \\
+  {middle_header} \\
+  {top_header}
+"""
+        
+        # Mock subprocess.run to return our test data
+        import subprocess
+        original_run = subprocess.run
+        
+        def mock_run(*args: Any, **kwargs: Any) -> Any:
+            # Check if this is a clang-scan-deps call
+            if args and args[0] and 'clang-scan-deps' in str(args[0][0]):
+                # Return our mock output
+                class MockResult:
+                    returncode = 0
+                    stdout = clang_output
+                    stderr = ""
+                return MockResult()
+            # For other commands (like ninja), use original
+            return original_run(*args, **kwargs)
+        
+        monkeypatch.setattr("subprocess.run", mock_run)
+        
+        # Mock find_clang_scan_deps to return a valid command
+        def mock_find_clang() -> str:
+            return "clang-scan-deps-19"
+        
+        monkeypatch.setattr("lib.clang_utils.find_clang_scan_deps", mock_find_clang)
+        
+        # Run build_include_graph
+        result = build_include_graph(str(build_dir), verbose=False)
+        
+        # Verify that headers were discovered
+        assert len(result.all_headers) == 3, f"Expected 3 headers, got {len(result.all_headers)}"
+        assert str(base_header) in result.all_headers
+        assert str(middle_header) in result.all_headers
+        assert str(top_header) in result.all_headers
+        
+        # CRITICAL: Verify that include_graph is actually populated
+        # This is the bug we're testing for - the graph should NOT be empty
+        assert len(result.include_graph) > 0, \
+            "REGRESSION: include_graph is empty! The bug has returned."
+        
+        # Verify specific relationships
+        # middle.hpp should include base.hpp
+        if str(middle_header) in result.include_graph:
+            middle_deps = result.include_graph[str(middle_header)]
+            assert str(base_header) in middle_deps, \
+                f"middle.hpp should include base.hpp. Found: {middle_deps}"
+        
+        # top.hpp should include middle.hpp and base.hpp
+        if str(top_header) in result.include_graph:
+            top_deps = result.include_graph[str(top_header)]
+            assert len(top_deps) >= 1, \
+                f"top.hpp should have dependencies. Found: {top_deps}"
+            # Should include at least one of the headers
+            assert str(middle_header) in top_deps or str(base_header) in top_deps, \
+                f"top.hpp should include middle.hpp or base.hpp. Found: {top_deps}"
+        
+        # Verify that we can calculate fan-out metrics
+        from lib.graph_utils import calculate_dsm_metrics, build_reverse_dependencies
+        
+        reverse_deps = build_reverse_dependencies(result.include_graph, result.all_headers)
+        
+        # At least one header should have non-zero fan-out
+        has_nonzero_fanout = False
+        for header in result.all_headers:
+            metrics = calculate_dsm_metrics(header, result.include_graph, reverse_deps)
+            if metrics.fan_out > 0:
+                has_nonzero_fanout = True
+                break
+        
+        assert has_nonzero_fanout, \
+            "REGRESSION: No headers have non-zero fan-out! Include graph is not being built correctly."
+    
+    def test_include_graph_handles_missing_headers(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Test that include_graph handles references to non-existent headers gracefully."""
+        from lib.clang_utils import build_include_graph
+        import json
+        
+        # Create a mock build directory structure
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        
+        # Create source directory with headers
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        
+        # Create a header that includes a non-existent file
+        header = src_dir / "test.hpp"
+        header.write_text("""
+#ifndef TEST_HPP
+#define TEST_HPP
+#include "nonexistent.hpp"
+#endif
+""")
+        
+        # Create a source file
+        source_file = src_dir / "main.cpp"
+        source_file.write_text("""
+#include "test.hpp"
+int main() { return 0; }
+""")
+        
+        # Create compile_commands.json
+        compile_commands = [
+            {
+                "directory": str(build_dir),
+                "command": f"/usr/bin/c++ -c -o main.o {source_file}",
+                "file": str(source_file)
+            }
+        ]
+        compile_db = build_dir / "compile_commands.json"
+        compile_db.write_text(json.dumps(compile_commands, indent=2))
+        
+        filtered_db = build_dir / "compile_commands_filtered.json"
+        filtered_db.write_text(json.dumps(compile_commands, indent=2))
+        
+        # Mock clang-scan-deps output
+        clang_output = f"""main.o: {source_file} \\
+  {header}
+"""
+        
+        # Mock subprocess.run
+        import subprocess
+        
+        def mock_run(*args: Any, **kwargs: Any) -> Any:
+            if args and args[0] and 'clang-scan-deps' in str(args[0][0]):
+                class MockResult:
+                    returncode = 0
+                    stdout = clang_output
+                    stderr = ""
+                return MockResult()
+            return subprocess.CompletedProcess(args, 0, "", "")
+        
+        monkeypatch.setattr("subprocess.run", mock_run)
+        
+        def mock_find_clang() -> str:
+            return "clang-scan-deps-19"
+        
+        monkeypatch.setattr("lib.clang_utils.find_clang_scan_deps", mock_find_clang)
+        
+        # Run build_include_graph - should not crash
+        result = build_include_graph(str(build_dir), verbose=False)
+        
+        # Should have found the header
+        assert len(result.all_headers) == 1
+        assert str(header) in result.all_headers
+        
+        # Include graph should exist (even if empty for this header)
+        assert result.include_graph is not None
