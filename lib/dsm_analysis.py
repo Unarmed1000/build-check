@@ -29,19 +29,10 @@ and reused across the codebase. Extracted from buildCheckDSM.py for better modul
 
 import os
 import logging
-from typing import Dict, Set, List, Tuple, Any, DefaultDict, TYPE_CHECKING
+from typing import Dict, Set, List, Tuple, Any, DefaultDict
 from collections import defaultdict
 
-if TYPE_CHECKING:
-    import networkx as nx
-    NX_AVAILABLE: bool = True
-else:
-    try:
-        import networkx as nx
-        NX_AVAILABLE = True
-    except ImportError:
-        nx = None  # type: ignore[assignment]
-        NX_AVAILABLE = False
+import networkx as nx
 
 from .color_utils import Colors, print_error, print_warning, print_success
 from .constants import (
@@ -57,36 +48,9 @@ from .constants import (
 )
 from .file_utils import cluster_headers_by_directory
 from .dsm_types import MatrixStatistics, DSMAnalysisResults, DSMDelta
-
-if TYPE_CHECKING:
-    from .graph_utils import DSMMetrics
+from .graph_utils import DSMMetrics
 
 logger = logging.getLogger(__name__)
-
-# Verification flag (cached to avoid repeated checks)
-_requirements_verified = False
-
-
-def verify_requirements() -> None:
-    """Verify that networkx is installed with correct version.
-    
-    This should be called by scripts that use dsm_analysis before heavy processing.
-    Raises ImportError if requirements are not met. Results are cached.
-    
-    Raises:
-        ImportError: If networkx is missing or version is too old
-    """
-    global _requirements_verified
-    
-    if _requirements_verified:
-        return
-    
-    from lib.package_verification import check_package_version
-    
-    # This will raise ImportError if networkx is missing or too old
-    check_package_version('networkx', raise_on_error=True)
-    
-    _requirements_verified = True
 
 # Export types for mypy
 __all__ = [

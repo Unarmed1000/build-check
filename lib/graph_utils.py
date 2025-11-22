@@ -3,67 +3,13 @@
 
 import os
 import logging
-from typing import Dict, Set, List, Tuple, Optional, Any, TYPE_CHECKING
+from typing import Dict, Set, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from lib.color_utils import Colors, print_warning
 
-if TYPE_CHECKING:
-    import networkx as nx
-else:
-    try:
-        import networkx as nx
-        NX_AVAILABLE = True
-    except ImportError:
-        nx = None  # type: ignore[assignment]
-        NX_AVAILABLE = False
+import networkx as nx
 
 logger = logging.getLogger(__name__)
-
-# Verification flag (cached to avoid repeated checks)
-_requirements_verified = False
-
-
-def _check_nx_available() -> None:
-    """Internal helper to check if networkx is available at runtime.
-    
-    Raises:
-        ImportError: If networkx is not available
-    """
-    if not NX_AVAILABLE:
-        from lib.package_verification import PACKAGE_REQUIREMENTS
-        min_ver = PACKAGE_REQUIREMENTS.get('networkx', '2.8.8')
-        raise ImportError(
-            f"networkx is required for graph operations. "
-            f"Install with: pip install 'networkx>={min_ver}'"
-        )
-
-# Module-level variable to track NX availability at type-checking time
-if TYPE_CHECKING:
-    NX_AVAILABLE = True
-else:
-    pass  # Already defined above
-
-
-def verify_requirements() -> None:
-    """Verify that networkx is installed with correct version.
-    
-    This should be called by scripts that use graph_utils before heavy processing.
-    Raises ImportError if requirements are not met. Results are cached.
-    
-    Raises:
-        ImportError: If networkx is missing or version is too old
-    """
-    global _requirements_verified
-    
-    if _requirements_verified:
-        return
-    
-    from lib.package_verification import check_package_version
-    
-    # This will raise ImportError if networkx is missing or too old
-    check_package_version('networkx', raise_on_error=True)
-    
-    _requirements_verified = True
 
 
 @dataclass
@@ -91,12 +37,7 @@ def build_dependency_graph(include_graph: Dict[str, Set[str]], all_headers: Set[
         
     Returns:
         NetworkX DiGraph
-        
-    Raises:
-        ImportError: If networkx is not available
     """
-    _check_nx_available()
-    
     G: nx.DiGraph[Any] = nx.DiGraph()
     
     # Add all headers as nodes (batch operation)
@@ -119,12 +60,7 @@ def find_strongly_connected_components(graph: 'nx.DiGraph[Any]') -> List[Set[str
         
     Returns:
         List of sets, each containing nodes in a cycle
-        
-    Raises:
-        ImportError: If networkx is not available
     """
-    _check_nx_available()
-    
     sccs = list(nx.strongly_connected_components(graph))
     
     # Filter out single-node SCCs without self-loops
@@ -152,12 +88,7 @@ def build_reverse_dependencies(header_to_headers: Dict[str, Set[str]],
         
     Returns:
         Reverse dependencies (header -> headers that include it)
-        
-    Raises:
-        ImportError: If networkx is not available
     """
-    _check_nx_available()
-    
     # Build graph and reverse it using NetworkX (more efficient)
     G: nx.DiGraph[Any] = nx.DiGraph()
     G.add_nodes_from(all_headers)
@@ -193,12 +124,7 @@ def compute_layers(header_to_headers: Dict[str, Set[str]],
         
     Returns:
         Tuple of (layers list, header->layer mapping, has_cycles flag)
-        
-    Raises:
-        ImportError: If networkx is not available
     """
-    _check_nx_available()
-    
     graph: nx.DiGraph[Any] = nx.DiGraph()
     graph.add_nodes_from(all_headers)
     
@@ -236,12 +162,7 @@ def analyze_cycles(header_to_headers: Dict[str, Set[str]],
         
     Returns:
         Tuple of (cycles, headers_in_cycles, feedback_edges, directed_graph)
-        
-    Raises:
-        ImportError: If networkx is not available
     """
-    _check_nx_available()
-    
     # Build directed graph from include relationships
     directed_graph: nx.DiGraph[Any] = nx.DiGraph()
     directed_graph.add_nodes_from(all_headers)
@@ -470,7 +391,7 @@ def compute_pagerank_centrality(graph: 'nx.DiGraph[Any]', alpha: float = 0.85,
     PageRank identifies headers that are important in the dependency structure.
     High PageRank indicates a header that is depended upon by many important headers.
     
-    Note: Requires scipy for optimal performance.
+    Note: NetworkX will use scipy if available for better performance, but works without it.
     
     Args:
         graph: NetworkX DiGraph
@@ -481,7 +402,7 @@ def compute_pagerank_centrality(graph: 'nx.DiGraph[Any]', alpha: float = 0.85,
         Dictionary mapping node → PageRank score
     """
     try:
-        # Use NetworkX's PageRank (requires scipy for best performance)
+        # NetworkX PageRank (uses scipy if available for better performance)
         result: Dict[str, float] = nx.pagerank(graph, alpha=alpha, max_iter=max_iter, tol=1.0e-6)
         return result
     except Exception as e:

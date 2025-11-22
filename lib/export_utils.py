@@ -6,48 +6,14 @@ import csv
 import json
 import logging
 from collections import defaultdict
-from typing import Dict, Set, List, DefaultDict, Any, Optional, TYPE_CHECKING, cast
+from typing import Dict, Set, List, DefaultDict, Any, Optional, cast
 
-if TYPE_CHECKING:
-    import networkx as nx
-    NX_AVAILABLE: bool = True
-else:
-    try:
-        import networkx as nx
-        NX_AVAILABLE = True
-    except ImportError:
-        nx = None  # type: ignore[assignment]
-        NX_AVAILABLE = False
+import networkx as nx
 
 from lib.color_utils import Colors, print_error, print_success
 from lib.graph_utils import DSMMetrics
 
 logger = logging.getLogger(__name__)
-
-# Verification flag (cached to avoid repeated checks)
-_requirements_verified = False
-
-
-def verify_requirements() -> None:
-    """Verify that networkx is installed with correct version.
-    
-    This should be called by scripts that use export_utils graph features before processing.
-    Raises ImportError if requirements are not met. Results are cached.
-    
-    Raises:
-        ImportError: If networkx is missing or version is too old
-    """
-    global _requirements_verified
-    
-    if _requirements_verified:
-        return
-    
-    from lib.package_verification import check_package_version
-    
-    # This will raise ImportError if networkx is missing or too old
-    check_package_version('networkx', raise_on_error=True)
-    
-    _requirements_verified = True
 
 
 def export_dsm_to_csv(filename: str,
@@ -137,11 +103,6 @@ def export_dependency_graph(filename: str,
         header_to_lib: Optional mapping of headers to library names
         header_to_headers: Optional full dependency mapping to include all edges
     """
-    if not NX_AVAILABLE:
-        logger.error("networkx is required for graph export")
-        print_error("networkx is required for graph export. Install with: pip install networkx")
-        return
-    
     try:
         # Determine format from extension
         ext = os.path.splitext(filename)[1].lower()

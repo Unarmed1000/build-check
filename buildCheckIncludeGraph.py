@@ -744,10 +744,6 @@ def main() -> int:
     Returns:
         Exit code (0 for success, non-zero for failure)
     """
-    # Verify dependencies early
-    from lib.graph_utils import verify_requirements as verify_graph
-    verify_graph()
-    
     # Configure logging
     logging.basicConfig(
         level=logging.INFO,

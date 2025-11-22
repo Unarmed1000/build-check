@@ -322,8 +322,7 @@ def export_to_dot(lib_to_libs: Dict[str, Set[str]],
 
 def main() -> int:
     # Verify dependencies early
-    from lib.graph_utils import verify_requirements as verify_graph
-    verify_graph()
+    pass  # Dependencies assumed to be installed
     
     parser = argparse.ArgumentParser(
         description="Analyze library dependency graph from build.ninja",

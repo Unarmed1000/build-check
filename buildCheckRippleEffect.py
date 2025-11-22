@@ -656,10 +656,7 @@ def main() -> int:
         Exit code (0 for success, non-zero for failure)
     """
     # Verify dependencies early
-    from lib.git_utils import verify_requirements as verify_git
-    from lib.graph_utils import verify_requirements as verify_graph
-    verify_git()
-    verify_graph()
+    pass  # Dependencies assumed to be installed
     
     # Parse command line arguments
     args = parse_arguments()

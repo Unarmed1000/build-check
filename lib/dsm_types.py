@@ -26,12 +26,11 @@
 This module contains dataclasses and type definitions used across DSM analysis modules.
 """
 
-from typing import Dict, Set, List, Tuple, Any, DefaultDict, TYPE_CHECKING
+from typing import Dict, Set, List, Tuple, Any, DefaultDict
 from dataclasses import dataclass
 
-if TYPE_CHECKING:
-    import networkx as nx
-    from .graph_utils import DSMMetrics
+import networkx as nx
+from .graph_utils import DSMMetrics
 
 
 @dataclass

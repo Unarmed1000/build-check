@@ -11,31 +11,6 @@ from git.exc import GitError
 
 logger = logging.getLogger(__name__)
 
-# Verification flag (cached to avoid repeated checks)
-_requirements_verified = False
-
-
-def verify_requirements() -> None:
-    """Verify that GitPython is installed with correct version.
-    
-    This should be called by scripts that use git_utils before heavy processing.
-    Raises ImportError if requirements are not met. Results are cached.
-    
-    Raises:
-        ImportError: If GitPython is missing or version is too old
-    """
-    global _requirements_verified
-    
-    if _requirements_verified:
-        return
-    
-    from lib.package_verification import check_package_version
-    
-    # This will raise ImportError if GitPython is missing or too old
-    check_package_version('GitPython', raise_on_error=True)
-    
-    _requirements_verified = True
-
 
 def _validate_and_convert_path(relative_path: str, repo_dir: str) -> Optional[str]:
     """Validate and convert a relative path to absolute path with security checks.

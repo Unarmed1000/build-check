@@ -583,8 +583,7 @@ def generate_summary_report(optimizations: List[Optimization]) -> str:
 
 def main() -> int:
     # Verify dependencies early
-    from lib.graph_utils import verify_requirements as verify_graph
-    verify_graph()
+    pass  # Dependencies assumed to be installed
     
     parser = argparse.ArgumentParser(
         description="Analyze build system and provide optimization recommendations",

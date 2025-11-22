@@ -45,6 +45,11 @@ PACKAGE_REQUIREMENTS: Dict[str, str] = {
     'colorama': '0.4.6',      # Ubuntu 24.04 LTS (optional - for colored output only)
 }
 
+# Optional packages that enhance performance but are not required
+OPTIONAL_PACKAGES: Dict[str, str] = {
+    'scipy': '1.11.4',        # Ubuntu 24.04 LTS (optional - improves NetworkX PageRank performance)
+}
+
 
 def check_package_version(
     package_name: str,
@@ -204,6 +209,23 @@ def check_all_packages() -> bool:
     except Exception as e:
         print_warning(f"colorama check failed: {e}", prefix=False)
     
+    # Check scipy (optional for NetworkX performance)
+    print("Checking scipy (optional)...")
+    try:
+        is_installed, meets_version, installed_ver = check_package_version(
+            'scipy',
+            OPTIONAL_PACKAGES['scipy'],
+            raise_on_error=False
+        )
+        if is_installed and meets_version:
+            print_success(f"scipy {installed_ver}", prefix=False)
+        elif is_installed:
+            print_warning(f"scipy {installed_ver} (recommended >={OPTIONAL_PACKAGES['scipy']})", prefix=False)
+        else:
+            print_warning("scipy not installed (optional, improves NetworkX PageRank performance)", prefix=False)
+    except Exception as e:
+        print_warning(f"scipy check failed: {e}", prefix=False)
+    
     print()
     print("=" * 40)
     if all_ok:
@@ -215,8 +237,8 @@ def check_all_packages() -> bool:
         print("Install missing packages with:")
         print("  pip install networkx>=2.8.8 GitPython>=3.1.40 packaging>=24.0")
         print()
-        print("Optional (for colored output):")
-        print("  pip install colorama>=0.4.6")
+        print("Optional packages (recommended):")
+        print("  pip install colorama>=0.4.6 scipy>=1.11.4")
         return False
 
 

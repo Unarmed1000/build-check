@@ -44,14 +44,8 @@ from typing import Dict, Set, List, Tuple, Any, Optional, DefaultDict
 from collections import defaultdict
 from dataclasses import asdict
 
-try:
-    import networkx as nx
-    from networkx.readwrite import json_graph
-    NX_AVAILABLE = True
-except ImportError:
-    nx = None  # type: ignore[assignment]
-    json_graph = None  # type: ignore[assignment]
-    NX_AVAILABLE = False
+import networkx as nx
+from networkx.readwrite import json_graph
 
 from .dsm_types import DSMAnalysisResults, MatrixStatistics
 from .graph_utils import DSMMetrics
@@ -150,12 +144,8 @@ def save_dsm_results(
         filter_pattern: Optional filter pattern that was applied
         
     Raises:
-        RuntimeError: If networkx is not available
         IOError: If file cannot be written
     """
-    if not NX_AVAILABLE:
-        raise RuntimeError("networkx is required for DSM serialization")
-    
     logger.info("Saving DSM results to %s", filename)
     
     # Build metadata
@@ -280,13 +270,9 @@ def load_dsm_results(
         DSMAnalysisResults instance
         
     Raises:
-        RuntimeError: If networkx is not available
         ValueError: If schema version mismatches or validation fails
         IOError: If file cannot be read
     """
-    if not NX_AVAILABLE:
-        raise RuntimeError("networkx is required for DSM deserialization")
-    
     logger.info("Loading DSM results from %s", filename)
     
     try:

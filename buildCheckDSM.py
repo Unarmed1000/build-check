@@ -191,8 +191,7 @@ import sys
 import argparse
 import logging
 from typing import Dict, Set, List, Tuple, DefaultDict, Any, Optional
-from lib.graph_utils import verify_requirements as verify_requirement_graph
-from lib.dsm_analysis import verify_requirements as verify_requirement_dsm
+# Dependencies assumed to be installed
 
 # Check networkx availability early with helpful error message
 from lib.package_verification import require_package
@@ -380,10 +379,6 @@ def main() -> int:
     Returns:
         Exit code (0 for success, non-zero for errors)
     """
-    # Verify dependencies early
-    verify_requirement_graph()
-    verify_requirement_dsm()
-    
     # Configure logging
     logging.basicConfig(
         level=logging.INFO,

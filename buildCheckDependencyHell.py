@@ -153,7 +153,7 @@ from lib.clang_utils import (
     extract_include_paths, compute_transitive_deps, build_include_graph,
     VALID_SOURCE_EXTENSIONS, VALID_HEADER_EXTENSIONS
 )
-from lib.graph_utils import build_dependency_graph, verify_requirements as verify_graph
+from lib.graph_utils import build_dependency_graph
 from lib.dependency_utils import find_dependency_fanout, DependencyAnalysisResult, SourceDependencyMap
 
 __all__ = ['build_include_graph', 'analyze_dependency_hell']
@@ -342,9 +342,6 @@ def main() -> int:
     Returns:
         Exit code (0 for success, non-zero for failure)
     """
-    # Verify dependencies early
-    verify_graph()
-    
     parser = argparse.ArgumentParser(
         description='Comprehensive dependency analysis: find headers causing dependency hell.',
         epilog='''

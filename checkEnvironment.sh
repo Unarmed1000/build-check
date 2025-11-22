@@ -44,6 +44,7 @@ echo ""
 
 # Run Python verification for all other packages
 if [ "$CRITICAL_MISSING" = false ]; then
+    cd "$SCRIPT_DIR"
     python3 -m lib.package_verification --check-all
     PYTHON_EXIT=$?
     

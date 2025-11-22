@@ -242,84 +242,8 @@ def test_cli_check_all_failure(capsys: pytest.CaptureFixture[str]) -> None:
             assert mock_check.called
 
 
-def test_lib_git_utils_verify_requirements() -> None:
-    """Test that lib.git_utils.verify_requirements works."""
-    from lib.git_utils import verify_requirements
-    
-    # Should not raise (GitPython is installed in test environment)
-    verify_requirements()
-    
-    # Calling again should be cached (no error)
-    verify_requirements()
-
-
-def test_lib_graph_utils_verify_requirements() -> None:
-    """Test that lib.graph_utils.verify_requirements works."""
-    from lib.graph_utils import verify_requirements
-    
-    # Should not raise (networkx is installed in test environment)
-    verify_requirements()
-    
-    # Calling again should be cached
-    verify_requirements()
-
-
-def test_lib_dsm_analysis_verify_requirements() -> None:
-    """Test that lib.dsm_analysis.verify_requirements works."""
-    from lib.dsm_analysis import verify_requirements
-    
-    # Should not raise (networkx is installed in test environment)
-    verify_requirements()
-    
-    # Calling again should be cached
-    verify_requirements()
-
-
-def test_lib_export_utils_verify_requirements() -> None:
-    """Test that lib.export_utils.verify_requirements works."""
-    from lib.export_utils import verify_requirements
-    
-    # Should not raise (networkx is installed in test environment)
-    verify_requirements()
-    
-    # Calling again should be cached
-    verify_requirements()
-
-
-def test_verify_requirements_caching() -> None:
-    """Test that verify_requirements caches results."""
-    from lib.graph_utils import verify_requirements
-    
-    # Reset the cache flag for this test
-    import lib.graph_utils
-    lib.graph_utils._requirements_verified = False
-    
-    with patch('lib.package_verification.check_package_version') as mock_check:
-        mock_check.return_value = (True, True, '3.0.0')
-        
-        # First call should check
-        verify_requirements()
-        assert mock_check.call_count == 1
-        
-        # Second call should be cached (no additional check)
-        verify_requirements()
-        assert mock_check.call_count == 1  # Still 1, not 2
-
-
-def test_verify_requirements_raises_on_missing() -> None:
-    """Test that verify_requirements raises ImportError when package missing."""
-    import lib.graph_utils
-    
-    # Reset cache
-    lib.graph_utils._requirements_verified = False
-    
-    with patch('lib.package_verification.check_package_version') as mock_check:
-        mock_check.side_effect = ImportError("networkx is not installed")
-        
-        with pytest.raises(ImportError) as exc_info:
-            lib.graph_utils.verify_requirements()
-        
-        assert 'networkx' in str(exc_info.value)
+# Tests for verify_requirements() removed since we now assume dependencies are installed
+# The package imports will fail at module load time if dependencies are missing
 
 
 def test_version_comparison_semantic() -> None:
