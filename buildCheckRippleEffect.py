@@ -20,28 +20,28 @@
 #* LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
 #* EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #****************************************************************************************************************************************************
-"""Analyze the ripple effect of git changes on C/C++ compilation.
+"""Analyze the ripple effect of working directory changes on C/C++ compilation.
 
 PURPOSE:
-    Determines which C/C++ source files will be recompiled based on changes
-    in the last git commit (or specified commit). Uses dependency analysis
+    Determines which C/C++ source files will be recompiled based on uncommitted
+    changes in your working directory compared to HEAD. Uses dependency analysis
     from buildCheckDependencyHell.py to compute transitive impact.
 
 WHAT IT DOES:
-    - Detects changed files from git commit (headers and source files)
+    - Detects changed files in working directory (staged and unstaged)
     - Uses clang-scan-deps to build complete dependency graph
     - For changed headers: finds all source files that transitively depend on them
     - For changed source files: directly marks them for recompilation
     - Calculates total rebuild impact and shows detailed breakdown
 
 USE CASES:
-    - "If I commit this header change, what will rebuild?"
-    - Estimate CI/CD build time impact before pushing
+    - "What will rebuild if I commit these changes?"
+    - Estimate CI/CD build time impact before committing
     - Review code changes with rebuild cost in mind
     - Identify high-impact changes that need extra testing
 
 METHOD:
-    1. Run git diff to get changed files from commit
+    1. Run git diff to get changed files (HEAD vs working directory)
     2. Filter to C/C++ source and header files
     3. Build complete include graph using clang-scan-deps
     4. For each changed header, compute reverse dependencies
@@ -65,167 +65,88 @@ REQUIREMENTS:
     - networkx: pip install networkx
 
 EXAMPLES:
-    # Analyze last commit's impact
+    # Analyze working directory changes (default: vs HEAD)
     ./buildCheckRippleEffect.py ../build/release/
     
-    # Analyze specific commit
-    ./buildCheckRippleEffect.py ../build/release/ --commit abc123
+    # Compare working directory against a specific branch
+    ./buildCheckRippleEffect.py ../build/release/ --from origin/main
+    
+    # Compare against a release tag
+    ./buildCheckRippleEffect.py ../build/release/ --from v2.0.0
+    
+    # Compare against N commits ago
+    ./buildCheckRippleEffect.py ../build/release/ --from HEAD~10
     
     # Specify git repository location
     ./buildCheckRippleEffect.py ../build/release/ --repo ~/projects/myproject
     
-    # Analyze commit range (shows cumulative impact)
-    ./buildCheckRippleEffect.py ../build/release/ --commit HEAD~5..HEAD
+    # Output as JSON
+    ./buildCheckRippleEffect.py ../build/release/ --json results.json
 """
 import subprocess
 import sys
 import os
 import argparse
 import logging
+import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Optional, List, Tuple
+from typing import Any, Optional, List, Tuple, Dict, Set
+from dataclasses import dataclass, asdict
 
-# Import existing functions from buildCheckDependencyHell
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-try:
-    from buildCheckDependencyHell import build_include_graph, build_dependency_graph
-except ImportError as e:
-    print(f"Error: Failed to import buildCheckDependencyHell: {e}", file=sys.stderr)
-    print("Ensure buildCheckDependencyHell.py is in the same directory.", file=sys.stderr)
-    sys.exit(1)
+# Import library modules
+from lib.git_utils import find_git_repo, get_uncommitted_changes, get_working_tree_changes_from_commit, validate_ancestor_relationship, categorize_changed_files
+from lib.ninja_utils import validate_and_prepare_build_dir, validate_build_directory_with_feedback
+from lib.dependency_utils import build_reverse_dependency_map, compute_affected_sources, SourceDependencyMap
+from lib.color_utils import Colors, print_error, print_warning, print_success
 
-try:
-    from colorama import Fore, Style, init
-    init(autoreset=False)
-except ImportError:
-    class Fore:
-        RED = YELLOW = GREEN = BLUE = MAGENTA = CYAN = WHITE = LIGHTBLACK_EX = RESET = ''
-    class Style:
-        RESET_ALL = BRIGHT = DIM = ''
-
-
-def find_git_repo(start_path: str) -> Optional[str]:
-    """Find the git repository root by searching upward from start_path."""
-    current = os.path.realpath(os.path.abspath(start_path))
-    while current != os.path.dirname(current):  # Stop at filesystem root
-        git_dir = os.path.realpath(os.path.join(current, '.git'))
-        # Validate git_dir is within current (prevent path traversal via symlinks)
-        if git_dir.startswith(current + os.sep) or git_dir == os.path.join(current, '.git'):
-            if os.path.isdir(git_dir):
-                return current
-        current = os.path.dirname(current)
-    return None
-
-
-def get_changed_files_from_git(repo_dir: str, commit: str = 'HEAD') -> List[str]:
-    """Get list of changed files from git commit.
+@dataclass
+class RippleEffectResult:
+    """Result of ripple effect analysis.
     
-    Args:
-        repo_dir: Path to git repository
-        commit: Git commit reference (e.g., 'HEAD', 'abc123', 'HEAD~5..HEAD')
-    
-    Returns:
-        List of changed file paths (absolute paths)
+    Attributes:
+        affected_sources: Mapping of changed headers to affected source files
+        total_affected: Set of all affected source files (from headers)
+        direct_sources: Set of directly changed source files
+        source_to_deps: Mapping of source files to their dependencies
+        header_to_sources: Mapping of headers to sources that depend on them
     """
-    try:
-        # Validate repo_dir exists
-        if not os.path.isdir(repo_dir):
-            raise ValueError(f"Repository directory does not exist: {repo_dir}")
-        
-        # Handle commit ranges (e.g., HEAD~5..HEAD)
-        if '..' in commit:
-            cmd = ['git', 'diff', '--name-only', commit]
-        else:
-            # Single commit - compare with parent
-            cmd = ['git', 'diff', '--name-only', f'{commit}~1', commit]
-        
-        logging.debug(f"Running git command: {' '.join(cmd)}")
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=repo_dir,
-            check=True,
-            timeout=30  # Prevent hanging
-        )
-        
-        # Convert relative paths to absolute and validate
-        repo_dir_real = os.path.realpath(repo_dir)
-        changed_files = []
-        for line in result.stdout.strip().split('\n'):
-            if line:
-                abs_path = os.path.realpath(os.path.join(repo_dir, line))
-                # Validate path is within repo_dir (prevent path traversal)
-                if not abs_path.startswith(repo_dir_real + os.sep):
-                    logging.warning(f"Path traversal detected, skipping: {line}")
-                    continue
-                if os.path.exists(abs_path):
-                    changed_files.append(abs_path)
-                else:
-                    logging.warning(f"File from git diff does not exist: {abs_path}")
-        
-        logging.info(f"Found {len(changed_files)} changed files")
-        return changed_files
-    
-    except subprocess.TimeoutExpired:
-        logging.error(f"Git command timed out after 30 seconds")
-        print(f"{Fore.RED}Error: Git command timed out{Style.RESET_ALL}", file=sys.stderr)
-        sys.exit(1)
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Git command failed: {e}")
-        print(f"{Fore.RED}Error running git diff: {e}{Style.RESET_ALL}", file=sys.stderr)
-        if e.stderr:
-            print(f"{Fore.YELLOW}{e.stderr.strip()}{Style.RESET_ALL}", file=sys.stderr)
-        print(f"{Fore.YELLOW}Hint: Ensure '{commit}' is a valid commit reference{Style.RESET_ALL}", file=sys.stderr)
-        sys.exit(1)
-    except ValueError as e:
-        logging.error(str(e))
-        print(f"{Fore.RED}Error: {e}{Style.RESET_ALL}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        logging.exception(f"Unexpected error in get_changed_files_from_git: {e}")
-        print(f"{Fore.RED}Unexpected error: {e}{Style.RESET_ALL}", file=sys.stderr)
-        sys.exit(1)
+    affected_sources: Dict[str, List[str]]
+    total_affected: Set[str]
+    direct_sources: Set[str]
+    source_to_deps: Dict[str, List[str]]
+    header_to_sources: Dict[str, Set[str]]
 
 
-def categorize_changed_files(changed_files: List[str]) -> Tuple[List[str], List[str]]:
-    """Categorize changed files into headers and sources.
+@dataclass
+class RippleEffectData:
+    """Data about ripple effect for working directory changes.
     
-    Args:
-        changed_files: List of file paths to categorize
-    
-    Returns:
-        Tuple of (header_files, source_files)
+    Attributes:
+        changed_headers: List of changed header file paths
+        changed_sources: List of changed source file paths
+        affected_sources_by_header: Mapping of headers to affected source paths
+        all_affected_sources: List of all unique affected source file paths
+        total_sources: Total number of source files in build
+        rebuild_percentage: Percentage of sources affected (0-100)
     """
-    if not isinstance(changed_files, list):
-        raise TypeError(f"changed_files must be a list, got {type(changed_files)}")
-    
-    headers = []
-    sources = []
-    other_files = []
-    
-    for file in changed_files:
-        if not isinstance(file, str):
-            logging.warning(f"Skipping non-string file entry: {file}")
-            continue
-            
-        ext = os.path.splitext(file)[1].lower()
-        if ext in ['.h', '.hpp', '.hxx', '.hh']:
-            headers.append(file)
-        elif ext in ['.cpp', '.c', '.cc', '.cxx', '.C']:
-            sources.append(file)
-        else:
-            other_files.append(file)
-    
-    if other_files:
-        logging.debug(f"Ignored {len(other_files)} non-C/C++ files")
-    
-    logging.info(f"Categorized: {len(headers)} headers, {len(sources)} sources")
-    return headers, sources
+    changed_headers: List[str]
+    changed_sources: List[str]
+    affected_sources_by_header: Dict[str, List[str]]
+    all_affected_sources: List[str]
+    total_sources: int
+    rebuild_percentage: float
 
 
-def analyze_ripple_effect(build_dir: str, changed_headers: list[str], changed_sources: list[str], verbose: bool = False) -> dict:
+# Import build_include_graph and build_dependency_graph from library
+from lib.clang_utils import build_include_graph
+from lib.graph_utils import build_dependency_graph
+
+# Explicitly export functions for testing (library functions are imported, not exported)
+__all__ = ['get_ripple_effect_data', 'analyze_ripple_effect', 'print_ripple_report', 'RippleEffectResult', 'RippleEffectData', 'find_git_repo', 'categorize_changed_files']
+
+
+def analyze_ripple_effect(build_dir: str, changed_headers: List[str], changed_sources: List[str], verbose: bool = False) -> RippleEffectResult:
     """Analyze which C/C++ files will recompile due to changes.
     
     Args:
@@ -247,40 +168,7 @@ def analyze_ripple_effect(build_dir: str, changed_headers: list[str], changed_so
         RuntimeError: If dependency graph building fails
     """
     # Validate inputs
-    build_dir = os.path.realpath(os.path.abspath(build_dir))
-    if not os.path.isdir(build_dir):
-        raise ValueError(f"Build directory does not exist: {build_dir}")
-    
-    compile_commands = os.path.realpath(os.path.join(build_dir, 'compile_commands.json'))
-    build_ninja = os.path.realpath(os.path.join(build_dir, 'build.ninja'))
-    
-    # Validate compile_commands is within build_dir
-    if not compile_commands.startswith(build_dir + os.sep):
-        raise ValueError(f"Path traversal detected: compile_commands.json")
-    
-    # Generate compile_commands.json if needed
-    if not os.path.exists(compile_commands) or (os.path.exists(build_ninja) and os.path.getmtime(build_ninja) > os.path.getmtime(compile_commands)):
-        logging.info("Generating compile_commands.json...")
-        if verbose:
-            print(f"{Fore.CYAN}Generating compile_commands.json...{Style.RESET_ALL}")
-        try:
-            result = subprocess.run(
-                ["ninja", "-t", "compdb"],
-                capture_output=True,
-                text=True,
-                cwd=build_dir,
-                check=True
-            )
-            with open(compile_commands, 'w', encoding='utf-8') as f:
-                f.write(result.stdout)
-            logging.debug(f"Generated: {compile_commands}")
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to generate compile_commands.json: {e.stderr}") from e
-        except IOError as e:
-            raise IOError(f"Failed to write compile_commands.json: {e}") from e
-    
-    if not os.path.isfile(compile_commands):
-        raise ValueError(f"compile_commands.json not found in {build_dir}")
+    build_dir, compile_commands = validate_and_prepare_build_dir(build_dir, verbose)
     
     if not isinstance(changed_headers, list) or not isinstance(changed_sources, list):
         raise TypeError("changed_headers and changed_sources must be lists")
@@ -288,11 +176,15 @@ def analyze_ripple_effect(build_dir: str, changed_headers: list[str], changed_so
     logging.info(f"Analyzing {len(changed_headers)} headers and {len(changed_sources)} sources")
     
     if verbose:
-        print(f"{Fore.BLUE}Building dependency graph...{Style.RESET_ALL}")
+        print(f"{Colors.BLUE}Building dependency graph...{Colors.RESET}")
     
     # Build complete include graph
     try:
-        source_to_deps, include_graph, all_headers, scan_time = build_include_graph(build_dir)
+        scan_result = build_include_graph(build_dir)
+        source_to_deps = scan_result.source_to_deps
+        include_graph = scan_result.include_graph
+        all_headers = scan_result.all_headers
+        scan_time = scan_result.scan_time
     except Exception as e:
         logging.error(f"Failed to build include graph: {e}")
         raise RuntimeError(f"Failed to build dependency graph: {e}") from e
@@ -302,38 +194,23 @@ def analyze_ripple_effect(build_dir: str, changed_headers: list[str], changed_so
         raise RuntimeError("No compilation units found - check compile_commands.json")
     
     if verbose:
-        print(f"{Fore.GREEN}Dependency graph built in {scan_time:.2f}s{Style.RESET_ALL}")
+        print_success(f"Dependency graph built in {scan_time:.2f}s")
     
     # Build reverse dependency map: header -> list of sources that depend on it
     if verbose:
-        print(f"{Fore.BLUE}Computing reverse dependencies...{Style.RESET_ALL}")
-    header_to_sources = defaultdict(set)
+        print(f"{Colors.BLUE}Computing reverse dependencies...{Colors.RESET}")
     
-    for source, deps in source_to_deps.items():
-        # Extract the source file path from the target
-        # Targets are like "path/to/file.cpp.o", we want "path/to/file.cpp"
-        source_file = source
-        if source.endswith('.o'):
-            # Strip .o and check if it's a valid source
-            source_file = source[:-2]
-        
-        # Add this source to all headers it depends on (transitively)
-        for dep in deps:
-            if dep.endswith(('.h', '.hpp', '.hxx')):
-                header_to_sources[dep].add(source_file)
+    dependency_map = SourceDependencyMap(source_to_deps)
+    header_to_sources = build_reverse_dependency_map(dependency_map)
     
     if verbose:
-        print(f"{Fore.GREEN}Reverse dependency map built{Style.RESET_ALL}")
+        print_success("Reverse dependency map built")
     
     # Analyze impact of changed headers
-    affected_sources = {}
+    affected_sources = compute_affected_sources(changed_headers, header_to_sources)
     total_affected = set()
-    
-    for header in changed_headers:
-        sources = header_to_sources.get(header, set())
-        if sources:
-            affected_sources[header] = sorted(sources)
-            total_affected.update(sources)
+    for sources in affected_sources.values():
+        total_affected.update(sources)
     
     # Changed source files are directly affected
     direct_sources = set(changed_sources)
@@ -341,40 +218,34 @@ def analyze_ripple_effect(build_dir: str, changed_headers: list[str], changed_so
     if verbose:
         print()
     
-    return {
-        'affected_sources': affected_sources,
-        'total_affected': total_affected,
-        'direct_sources': direct_sources,
-        'source_to_deps': source_to_deps,
-        'header_to_sources': header_to_sources
-    }
+    return RippleEffectResult(
+        affected_sources=affected_sources,
+        total_affected=total_affected,
+        direct_sources=direct_sources,
+        source_to_deps=source_to_deps,
+        header_to_sources=header_to_sources
+    )
 
 
-def print_ripple_report(changed_headers: list[str], changed_sources: list[str], analysis_result: dict, repo_dir: str) -> None:
+def print_ripple_report(changed_headers: List[str], changed_sources: List[str], analysis_result: RippleEffectResult, repo_dir: str) -> None:
     """Print formatted ripple effect report.
     
     Args:
         changed_headers: List of changed header files
         changed_sources: List of changed source files
-        analysis_result: Dictionary containing analysis results
+        analysis_result: RippleEffectResult containing analysis results
         repo_dir: Path to git repository for relative path display
     """
-    # Validate required keys in analysis_result
-    required_keys = ['affected_sources', 'total_affected', 'direct_sources', 'source_to_deps']
-    missing_keys = [k for k in required_keys if k not in analysis_result]
-    if missing_keys:
-        raise ValueError(f"analysis_result missing required keys: {missing_keys}")
-    
-    affected_sources = analysis_result['affected_sources']
-    total_affected = analysis_result['total_affected']
-    direct_sources = analysis_result['direct_sources']
-    source_to_deps = analysis_result['source_to_deps']
+    affected_sources = analysis_result.affected_sources
+    total_affected = analysis_result.total_affected
+    direct_sources = analysis_result.direct_sources
+    source_to_deps = analysis_result.source_to_deps
     
     # Calculate total unique sources that will rebuild
     all_affected = total_affected.union(direct_sources)
     total_sources = len(source_to_deps)
     
-    print(f"\n{Style.BRIGHT}═══ Git Change Ripple Effect Analysis ═══{Style.RESET_ALL}\n")
+    print(f"\n{Colors.BRIGHT}═══ Git Change Ripple Effect Analysis ═══{Colors.RESET}\n")
     
     # Summary statistics
     total_changed = len(changed_headers) + len(changed_sources)
@@ -382,45 +253,45 @@ def print_ripple_report(changed_headers: list[str], changed_sources: list[str], 
     
     # Color code based on impact
     if len(all_affected) > 100:
-        impact_color = Fore.RED
+        impact_color = Colors.RED
         severity = "HIGH IMPACT"
     elif len(all_affected) > 50:
-        impact_color = Fore.YELLOW
+        impact_color = Colors.YELLOW
         severity = "MODERATE IMPACT"
     else:
-        impact_color = Fore.CYAN
+        impact_color = Colors.CYAN
         severity = "LOW IMPACT"
     
-    print(f"{Style.BRIGHT}Summary:{Style.RESET_ALL}")
-    print(f"  Changed files: {Fore.CYAN}{total_changed}{Style.RESET_ALL} ({len(changed_headers)} headers, {len(changed_sources)} sources)")
-    print(f"  Affected sources: {impact_color}{len(all_affected)}{Style.RESET_ALL} / {total_sources} ({rebuild_pct:.1f}%)")
-    print(f"  Severity: {impact_color}{severity}{Style.RESET_ALL}\n")
+    print(f"{Colors.BRIGHT}Summary:{Colors.RESET}")
+    print(f"  Changed files: {Colors.CYAN}{total_changed}{Colors.RESET} ({len(changed_headers)} headers, {len(changed_sources)} sources)")
+    print(f"  Affected sources: {impact_color}{len(all_affected)}{Colors.RESET} / {total_sources} ({rebuild_pct:.1f}%)")
+    print(f"  Severity: {impact_color}{severity}{Colors.RESET}\n")
     
     # Show changed files
     if changed_headers:
-        print(f"{Style.BRIGHT}Changed Headers ({len(changed_headers)}):{Style.RESET_ALL}")
+        print(f"{Colors.BRIGHT}Changed Headers ({len(changed_headers)}):{Colors.RESET}")
         for header in sorted(changed_headers):
             display_path = os.path.relpath(header, repo_dir) if header.startswith(repo_dir) else header
             num_affected = len(affected_sources.get(header, []))
             
             if num_affected > 20:
-                color = Fore.RED
+                color = Colors.RED
             elif num_affected > 10:
-                color = Fore.YELLOW
+                color = Colors.YELLOW
             else:
-                color = Fore.CYAN
+                color = Colors.CYAN
             
-            print(f"  {color}{display_path}{Style.RESET_ALL} → affects {num_affected} sources")
+            print(f"  {color}{display_path}{Colors.RESET} → affects {num_affected} sources")
     
     if changed_sources:
-        print(f"\n{Style.BRIGHT}Changed Sources ({len(changed_sources)}):{Style.RESET_ALL}")
+        print(f"\n{Colors.BRIGHT}Changed Sources ({len(changed_sources)}):{Colors.RESET}")
         for source in sorted(changed_sources):
             display_path = os.path.relpath(source, repo_dir) if source.startswith(repo_dir) else source
-            print(f"  {Fore.MAGENTA}{display_path}{Style.RESET_ALL} → directly recompiles")
+            print(f"  {Colors.MAGENTA}{display_path}{Colors.RESET} → directly recompiles")
     
     # Detailed breakdown by header
     if changed_headers and affected_sources:
-        print(f"\n{Style.BRIGHT}Detailed Ripple Effect:{Style.RESET_ALL}")
+        print(f"\n{Colors.BRIGHT}Detailed Ripple Effect:{Colors.RESET}")
         
         # Sort headers by impact (most affected sources first)
         sorted_headers = sorted(affected_sources.items(), key=lambda x: len(x[1]), reverse=True)
@@ -430,13 +301,13 @@ def print_ripple_report(changed_headers: list[str], changed_sources: list[str], 
             num_affected = len(sources)
             
             if num_affected > 20:
-                color = Fore.RED
+                color = Colors.RED
             elif num_affected > 10:
-                color = Fore.YELLOW
+                color = Colors.YELLOW
             else:
-                color = Fore.CYAN
+                color = Colors.CYAN
             
-            print(f"\n  {color}{display_path}{Style.RESET_ALL} → {num_affected} affected sources:")
+            print(f"\n  {color}{display_path}{Colors.RESET} → {num_affected} affected sources:")
             
             # Show up to 10 affected sources
             for source in sources[:10]:
@@ -444,20 +315,20 @@ def print_ripple_report(changed_headers: list[str], changed_sources: list[str], 
                 # Remove .o extension if present
                 if display_source.endswith('.o'):
                     display_source = display_source[:-2]
-                print(f"    {Style.DIM}{display_source}{Style.RESET_ALL}")
+                print(f"    {Colors.DIM}{display_source}{Colors.RESET}")
             
             if num_affected > 10:
-                print(f"    {Style.DIM}... and {num_affected - 10} more{Style.RESET_ALL}")
+                print(f"    {Colors.DIM}... and {num_affected - 10} more{Colors.RESET}")
 
 
-def get_ripple_effect_data(build_dir: str, repo_dir: str, commit: str = 'HEAD') -> dict:
+def get_ripple_effect_data(build_dir: str, repo_dir: str, from_ref: Optional[str] = None) -> RippleEffectData:
     """
     Get structured ripple effect analysis data without printing.
     
     Args:
         build_dir: Path to ninja build directory
         repo_dir: Path to git repository
-        commit: Git commit reference to analyze
+        from_ref: Git reference to compare against (default: None = HEAD, uncommitted only)
     
     Returns:
         dict with keys:
@@ -469,7 +340,7 @@ def get_ripple_effect_data(build_dir: str, repo_dir: str, commit: str = 'HEAD') 
             - rebuild_percentage: percentage of sources affected
     
     Raises:
-        ValueError: If build_dir or repo_dir are invalid
+        ValueError: If build_dir or repo_dir are invalid, or if from_ref is not an ancestor
         RuntimeError: If analysis fails
     """
     # Validate inputs
@@ -477,46 +348,49 @@ def get_ripple_effect_data(build_dir: str, repo_dir: str, commit: str = 'HEAD') 
         raise ValueError(f"Invalid build_dir: {build_dir}")
     if not repo_dir or not isinstance(repo_dir, str):
         raise ValueError(f"Invalid repo_dir: {repo_dir}")
-    if not commit or not isinstance(commit, str):
-        raise ValueError(f"Invalid commit: {commit}")
     
-    logging.info(f"Getting ripple effect data for commit: {commit}")
+    logging.info(f"Getting ripple effect data for working directory changes{' from ' + from_ref if from_ref else ''}")
     
     # Get changed files from git
     try:
-        changed_files = get_changed_files_from_git(repo_dir, commit)
+        if from_ref:
+            # Validate that from_ref is a linear ancestor of HEAD
+            validate_ancestor_relationship(repo_dir, from_ref)
+            changed_files, _ = get_working_tree_changes_from_commit(repo_dir, from_ref)
+        else:
+            changed_files = get_uncommitted_changes(repo_dir)
     except Exception as e:
         logging.error(f"Failed to get changed files: {e}")
         raise
     
     if not changed_files:
-        return {
-            'changed_headers': [],
-            'changed_sources': [],
-            'affected_sources_by_header': {},
-            'all_affected_sources': [],
-            'total_sources': 0,
-            'rebuild_percentage': 0.0
-        }
+        return RippleEffectData(
+            changed_headers=[],
+            changed_sources=[],
+            affected_sources_by_header={},
+            all_affected_sources=[],
+            total_sources=0,
+            rebuild_percentage=0.0
+        )
     
     # Categorize changed files
     changed_headers, changed_sources = categorize_changed_files(changed_files)
     
     if not changed_headers and not changed_sources:
-        return {
-            'changed_headers': [],
-            'changed_sources': [],
-            'affected_sources_by_header': {},
-            'all_affected_sources': [],
-            'total_sources': 0,
-            'rebuild_percentage': 0.0
-        }
+        return RippleEffectData(
+            changed_headers=[],
+            changed_sources=[],
+            affected_sources_by_header={},
+            all_affected_sources=[],
+            total_sources=0,
+            rebuild_percentage=0.0
+        )
     
     # Analyze ripple effect (verbose=False to suppress progress messages)
     analysis_result = analyze_ripple_effect(build_dir, changed_headers, changed_sources, verbose=False)
     
-    affected_sources = analysis_result.get('affected_sources', {})
-    source_to_deps = analysis_result.get('source_to_deps', {})
+    affected_sources = analysis_result.affected_sources
+    source_to_deps = analysis_result.source_to_deps
     total_sources = len(source_to_deps)
     
     # Collect all affected sources
@@ -526,36 +400,46 @@ def get_ripple_effect_data(build_dir: str, repo_dir: str, commit: str = 'HEAD') 
     
     rebuild_pct = (len(all_affected) * 100.0 / total_sources) if total_sources > 0 else 0.0
     
-    return {
-        'changed_headers': sorted(changed_headers),
-        'changed_sources': sorted(changed_sources),
-        'affected_sources_by_header': {k: sorted(v) for k, v in sorted(affected_sources.items())},
-        'all_affected_sources': sorted(all_affected),
-        'total_sources': total_sources,
-        'rebuild_percentage': rebuild_pct
-    }
+    return RippleEffectData(
+        changed_headers=sorted(changed_headers),
+        changed_sources=sorted(changed_sources),
+        affected_sources_by_header={k: sorted(v) for k, v in sorted(affected_sources.items())},
+        all_affected_sources=sorted(all_affected),
+        total_sources=total_sources,
+        rebuild_percentage=rebuild_pct
+    )
 
 
-def main() -> None:
-    """Main entry point for the script."""
+def parse_arguments() -> argparse.Namespace:
+    """Parse and return command line arguments.
+    
+    Returns:
+        Parsed command line arguments
+    """
     parser = argparse.ArgumentParser(
-        description='Analyze ripple effect of git changes on C/C++ compilation.',
+        description='Analyze ripple effect of working directory changes on C/C++ compilation.',
         prog='buildCheckRippleEffect.py',
         epilog='''
-This tool helps you understand the rebuild impact of git commits before pushing.
+This tool helps you understand the rebuild impact of your current changes before committing.
 
 Examples:
-  # Analyze last commit
+  # Analyze uncommitted changes (default)
   %(prog)s ../build/release/
   
-  # Analyze specific commit
-  %(prog)s ../build/release/ --commit abc123
+  # Compare working directory against a branch
+  %(prog)s ../build/release/ --from origin/main
   
-  # Analyze commit range
-  %(prog)s ../build/release/ --commit HEAD~5..HEAD
+  # Compare against a release tag
+  %(prog)s ../build/release/ --from v2.0.0
+  
+  # Compare against 10 commits ago
+  %(prog)s ../build/release/ --from HEAD~10
   
   # Specify git repository
   %(prog)s ../build/release/ --repo ~/projects/myproject
+  
+  # Output as JSON
+  %(prog)s ../build/release/ --json results.json
 
 Requires: git, clang-scan-deps, networkx (pip install networkx)
         ''',
@@ -575,10 +459,13 @@ Requires: git, clang-scan-deps, networkx (pip install networkx)
     )
     
     parser.add_argument(
-        '--commit',
-        default='HEAD',
-        help='Git commit to analyze (default: HEAD). Supports commit hashes, '
-             'references (HEAD~1), or ranges (HEAD~5..HEAD)'
+        '--from',
+        dest='from_ref',
+        metavar='REF',
+        default=None,
+        help='Git reference to compare working directory against (must be a linear ancestor of HEAD). '
+             'Default: HEAD (shows only uncommitted changes). '
+             'Examples: origin/main, v2.0.0, HEAD~10'
     )
     
     parser.add_argument(
@@ -600,154 +487,152 @@ Requires: git, clang-scan-deps, networkx (pip install networkx)
         help='Set logging level (default: WARNING)'
     )
     
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def setup_logging(log_level_str: str) -> None:
+    """Configure logging settings.
     
-    # Setup logging
-    log_level = getattr(logging, args.log_level)
+    Args:
+        log_level_str: Logging level as string (DEBUG, INFO, etc.)
+    """
+    log_level = getattr(logging, log_level_str)
     logging.basicConfig(
         level=log_level,
         format='%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+
+
+def validate_git_repository_path(repo_path: Optional[str], build_dir: str) -> str:
+    """Find or validate the git repository path.
     
-    logging.info("Starting buildCheckRippleEffect analysis")
+    Args:
+        repo_path: User-specified repository path (or None to auto-detect)
+        build_dir: Build directory path (used for auto-detection)
     
-    # Validate build directory
+    Returns:
+        Validated repository directory path
+    
+    Raises:
+        SystemExit: If validation fails
+    """
     try:
-        build_dir = os.path.realpath(os.path.abspath(args.build_directory))
-        if not os.path.isdir(build_dir):
-            logging.error(f"Build directory does not exist: {build_dir}")
-            print(f"{Fore.RED}Error: '{build_dir}' is not a directory{Style.RESET_ALL}", file=sys.stderr)
-            sys.exit(1)
-        
-        # Check for build.ninja and generate compile_commands.json if needed
-        build_ninja = os.path.realpath(os.path.join(build_dir, 'build.ninja'))
-        if not os.path.isfile(build_ninja):
-            logging.error(f"build.ninja not found in {build_dir}")
-            print(f"{Fore.RED}Error: build.ninja not found in '{build_dir}'{Style.RESET_ALL}", file=sys.stderr)
-            print(f"{Fore.YELLOW}Hint: This script requires a Ninja build directory{Style.RESET_ALL}", file=sys.stderr)
-            sys.exit(1)
-        
-        compile_commands = os.path.realpath(os.path.join(build_dir, 'compile_commands.json'))
-        # Validate compile_commands is within build_dir
-        if not compile_commands.startswith(build_dir + os.sep):
-            logging.error("Path traversal detected in compile_commands.json path")
-            print(f"{Fore.RED}Error: Path traversal detected{Style.RESET_ALL}", file=sys.stderr)
-            sys.exit(1)
-        
-        # Generate compile_commands.json if needed
-        if not os.path.exists(compile_commands) or os.path.getmtime(build_ninja) > os.path.getmtime(compile_commands):
-            logging.info("Generating compile_commands.json...")
-            print(f"{Fore.CYAN}Generating compile_commands.json...{Style.RESET_ALL}")
-            try:
-                result = subprocess.run(
-                    ["ninja", "-t", "compdb"],
-                    capture_output=True,
-                    text=True,
-                    cwd=build_dir,
-                    check=True
-                )
-                with open(compile_commands, 'w', encoding='utf-8') as f:
-                    f.write(result.stdout)
-                logging.debug(f"Generated: {compile_commands}")
-            except subprocess.CalledProcessError as e:
-                logging.error(f"Failed to generate compile_commands.json: {e.stderr}")
-                print(f"{Fore.RED}Error: Failed to generate compile_commands.json{Style.RESET_ALL}", file=sys.stderr)
-                sys.exit(1)
-            except IOError as e:
-                logging.error(f"Failed to write compile_commands.json: {e}")
-                print(f"{Fore.RED}Error: Failed to write compile_commands.json{Style.RESET_ALL}", file=sys.stderr)
-                sys.exit(1)
-        
-        logging.info(f"Using build directory: {build_dir}")
-    except Exception as e:
-        logging.exception(f"Error validating build directory: {e}")
-        print(f"{Fore.RED}Error: {e}{Style.RESET_ALL}", file=sys.stderr)
-        sys.exit(1)
-    
-    # Find or validate git repository
-    try:
-        if args.repo:
-            repo_dir = os.path.realpath(os.path.abspath(args.repo))
+        if repo_path:
+            repo_dir = os.path.realpath(os.path.abspath(repo_path))
             if not os.path.isdir(repo_dir):
                 logging.error(f"Repository directory does not exist: {repo_dir}")
-                print(f"{Fore.RED}Error: '{repo_dir}' is not a directory{Style.RESET_ALL}", file=sys.stderr)
-                sys.exit(1)
+                print_error(f"'{repo_dir}' is not a directory")
+                raise ValueError(f"'{repo_dir}' is not a directory")
             git_dir = os.path.realpath(os.path.join(repo_dir, '.git'))
-            # Validate git_dir is within repo_dir (prevent path traversal)
-            if not git_dir.startswith(repo_dir + os.sep):
-                logging.error("Path traversal detected in .git path")
-                print(f"{Fore.RED}Error: Path traversal detected{Style.RESET_ALL}", file=sys.stderr)
-                sys.exit(1)
+            # Validate git_dir is within repo_dir (protect against symlink attacks)
+            try:
+                rel_path = os.path.relpath(git_dir, repo_dir)
+                if rel_path.startswith('..'):
+                    raise ValueError("Path outside repository directory")
+            except (ValueError, OSError) as e:
+                logging.error(f"Path traversal detected in .git path: {e}")
+                print_error("Path traversal detected")
+                raise ValueError("Path traversal detected") from e
             if not os.path.isdir(git_dir):
                 logging.error(f"Not a git repository: {repo_dir}")
-                print(f"{Fore.RED}Error: '{repo_dir}' is not a git repository{Style.RESET_ALL}", file=sys.stderr)
-                sys.exit(1)
+                print_error(f"'{repo_dir}' is not a git repository")
+                raise ValueError(f"'{repo_dir}' is not a git repository")
             logging.info(f"Using git repository: {repo_dir}")
         else:
             # Auto-detect git repo from build directory
-            repo_dir = find_git_repo(build_dir)
-            if not repo_dir:
+            detected_repo = find_git_repo(build_dir)
+            if not detected_repo:
                 logging.error("Could not find git repository")
-                print(f"{Fore.RED}Error: Could not find git repository{Style.RESET_ALL}", file=sys.stderr)
-                print(f"{Fore.YELLOW}Hint: Use --repo to specify the repository path{Style.RESET_ALL}", file=sys.stderr)
-                sys.exit(1)
+                print_error("Could not find git repository")
+                print_warning("Hint: Use --repo to specify the repository path", prefix=False)
+                raise ValueError("Could not find git repository")
+            repo_dir = detected_repo
             logging.info(f"Auto-detected git repository: {repo_dir}")
-            print(f"{Fore.BLUE}Found git repository: {repo_dir}{Style.RESET_ALL}")
+            print(f"{Colors.BLUE}Found git repository: {repo_dir}{Colors.RESET}")
+        return repo_dir
     except Exception as e:
         logging.exception(f"Error validating git repository: {e}")
-        print(f"{Fore.RED}Error: {e}{Style.RESET_ALL}", file=sys.stderr)
-        sys.exit(1)
+        print_error(str(e))
+        raise RuntimeError(f"Error validating git repository: {e}") from e
+
+
+def write_json_output_file(json_path: str, build_dir: str, repo_dir: str, from_ref: Optional[str] = None) -> None:
+    """Generate and write JSON output to file.
     
-    # JSON output mode
-    if args.json:
-        import json
-        try:
-            logging.info(f"Generating JSON output to: {args.json}")
-            result = get_ripple_effect_data(build_dir, repo_dir, args.commit)
-            json_output = json.dumps(result, indent=2)
-            
-            # Ensure output directory exists
-            output_path = Path(args.json)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(args.json, 'w', encoding='utf-8') as f:
-                f.write(json_output)
-            
-            logging.info(f"Successfully wrote JSON output to {args.json}")
-            print(f"{Fore.GREEN}JSON output written to: {args.json}{Style.RESET_ALL}", file=sys.stderr)
-            return
-        except Exception as e:
-            logging.exception(f"Failed to write JSON output: {e}")
-            print(f"{Fore.RED}Error writing JSON output: {e}{Style.RESET_ALL}", file=sys.stderr)
-            sys.exit(1)
+    Args:
+        json_path: Path to output JSON file
+        build_dir: Build directory path
+        repo_dir: Repository directory path
+        from_ref: Git reference to compare against (default: None = HEAD)
     
-    # Get changed files from git
+    Raises:
+        SystemExit: If JSON generation fails
+    """
     try:
-        print(f"{Fore.CYAN}Analyzing git changes for commit: {args.commit}{Style.RESET_ALL}")
-        logging.info(f"Analyzing commit: {args.commit}")
-        changed_files = get_changed_files_from_git(repo_dir, args.commit)
+        logging.info(f"Generating JSON output to: {json_path}")
+        ripple_result = get_ripple_effect_data(build_dir, repo_dir, from_ref)
+        json_output = json.dumps(asdict(ripple_result), indent=2)
+        
+        # Ensure output directory exists
+        output_path = Path(json_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(json_path, 'w', encoding='utf-8') as f:
+            f.write(json_output)
+        
+        logging.info(f"Successfully wrote JSON output to {json_path}")
+        print_success(f"JSON output written to: {json_path}")
+    except Exception as e:
+        logging.exception(f"Failed to write JSON output: {e}")
+        print_error(f"writing JSON output: {e}", prefix=False)
+        raise RuntimeError(f"Failed to write JSON output: {e}") from e
+
+
+def run_analysis_workflow(build_dir: str, repo_dir: str, verbose: bool, from_ref: Optional[str] = None) -> None:
+    """Execute the main ripple effect analysis workflow.
+    
+    Args:
+        build_dir: Build directory path
+        repo_dir: Repository directory path
+        verbose: Whether to show verbose output
+        from_ref: Git reference to compare against (default: None = HEAD)
+    
+    Raises:
+        SystemExit: If analysis fails
+    """
+    try:
+        comparison_ref = from_ref if from_ref else "HEAD"
+        print(f"{Colors.CYAN}Analyzing working directory changes vs {comparison_ref}{Colors.RESET}")
+        logging.info(f"Analyzing working directory changes vs {comparison_ref}")
+        
+        if from_ref:
+            # Validate that from_ref is a linear ancestor of HEAD
+            validate_ancestor_relationship(repo_dir, from_ref)
+            changed_files, _ = get_working_tree_changes_from_commit(repo_dir, from_ref)
+        else:
+            changed_files = get_uncommitted_changes(repo_dir)
         
         if not changed_files:
-            logging.info("No files changed in commit")
-            print(f"{Fore.YELLOW}No files changed in commit {args.commit}{Style.RESET_ALL}")
+            logging.info("No uncommitted changes")
+            print_warning("No uncommitted changes in working directory", prefix=False)
             return
         
-        print(f"{Fore.GREEN}Found {len(changed_files)} changed files{Style.RESET_ALL}")
+        print_success(f"Found {len(changed_files)} changed files")
         
         # Categorize changed files
         changed_headers, changed_sources = categorize_changed_files(changed_files)
         
         if not changed_headers and not changed_sources:
             logging.info("No C/C++ files changed")
-            print(f"{Fore.YELLOW}No C/C++ source or header files changed in this commit{Style.RESET_ALL}")
+            print_warning("No C/C++ source or header files changed", prefix=False)
             return
         
-        print(f"{Fore.BLUE}C/C++ changes: {len(changed_headers)} headers, {len(changed_sources)} sources{Style.RESET_ALL}")
+        print(f"{Colors.BLUE}C/C++ changes: {len(changed_headers)} headers, {len(changed_sources)} sources{Colors.RESET}")
         
         # Analyze ripple effect
         logging.info("Starting ripple effect analysis")
-        analysis_result = analyze_ripple_effect(build_dir, changed_headers, changed_sources, verbose=args.verbose)
+        analysis_result = analyze_ripple_effect(build_dir, changed_headers, changed_sources, verbose=verbose)
         logging.info("Ripple effect analysis completed")
         
         # Print report
@@ -756,13 +641,81 @@ Requires: git, clang-scan-deps, networkx (pip install networkx)
         
     except KeyboardInterrupt:
         logging.warning("Analysis interrupted by user")
-        print(f"\n{Fore.YELLOW}Analysis interrupted by user{Style.RESET_ALL}", file=sys.stderr)
+        print_warning("\nAnalysis interrupted by user", prefix=False)
         sys.exit(130)
     except Exception as e:
         logging.exception(f"Analysis failed: {e}")
-        print(f"{Fore.RED}Error during analysis: {e}{Style.RESET_ALL}", file=sys.stderr)
+        print_error(f"during analysis: {e}", prefix=False)
         sys.exit(1)
 
 
+def main() -> int:
+    """Main entry point for the script.
+    
+    Returns:
+        Exit code (0 for success, non-zero for failure)
+    """
+    # Verify dependencies early
+    from lib.git_utils import verify_requirements as verify_git
+    from lib.graph_utils import verify_requirements as verify_graph
+    verify_git()
+    verify_graph()
+    
+    # Parse command line arguments
+    args = parse_arguments()
+    
+    # Setup logging
+    setup_logging(args.log_level)
+    logging.info("Starting buildCheckRippleEffect analysis")
+    
+    # Validate build directory using library helper
+    try:
+        build_dir, _ = validate_build_directory_with_feedback(args.build_directory, verbose=True)
+    except (ValueError, RuntimeError) as e:
+        # Error message already printed by helper
+        return 1
+    
+    # Find or validate git repository
+    try:
+        repo_dir = validate_git_repository_path(args.repo, build_dir)
+    except (ValueError, RuntimeError) as e:
+        # Error message already printed
+        return 1
+    
+    # JSON output mode
+    if args.json:
+        try:
+            write_json_output_file(args.json, build_dir, repo_dir, args.from_ref)
+            return 0
+        except RuntimeError:
+            # Error message already printed
+            return 1
+    
+    # Run main analysis workflow
+    run_analysis_workflow(build_dir, repo_dir, args.verbose, args.from_ref)
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    from lib.constants import (
+        EXIT_SUCCESS, EXIT_KEYBOARD_INTERRUPT, EXIT_INVALID_ARGS, EXIT_RUNTIME_ERROR,
+        BuildCheckError
+    )
+    
+    try:
+        exit_code = main()
+        sys.exit(exit_code)
+    except KeyboardInterrupt:
+        logging.info("Interrupted by user")
+        print_warning("\nInterrupted by user", prefix=False)
+        sys.exit(EXIT_KEYBOARD_INTERRUPT)
+    except BuildCheckError as e:
+        logging.error(str(e))
+        sys.exit(e.exit_code)
+    except ValueError as e:
+        logging.error(f"Validation error: {e}")
+        sys.exit(EXIT_INVALID_ARGS)
+    except Exception as e:
+        logging.exception(f"Unexpected error: {e}")
+        print_error(f"Fatal error: {e}")
+        sys.exit(EXIT_RUNTIME_ERROR)

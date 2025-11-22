@@ -87,16 +87,19 @@ from collections import defaultdict
 from typing import List, Dict, Set, Tuple, Optional
 from pathlib import Path
 
-try:
-    from colorama import Fore, Style, init
-    init(autoreset=False)
-    COLORAMA_AVAILABLE = True
-except ImportError:
-    COLORAMA_AVAILABLE = False
-    class Fore:
-        RED = YELLOW = GREEN = BLUE = MAGENTA = CYAN = WHITE = LIGHTBLACK_EX = RESET = ''
-    class Style:
-        RESET_ALL = BRIGHT = DIM = ''
+# Import library modules
+from lib.color_utils import Colors, print_error, print_warning, is_color_supported
+from lib.ninja_utils import (
+    check_ninja_available, 
+    validate_build_directory, 
+    get_dependencies,
+    run_ninja_explain,
+    parse_ninja_explain_output,
+    extract_rebuild_info
+)
+from lib.dependency_utils import compute_header_cooccurrence_from_deps_lists, SourceDependencyMap
+
+COLORAMA_AVAILABLE = is_color_supported()
 
 # Configure logging
 logging.basicConfig(
@@ -105,120 +108,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-RE_OUTPUT = re.compile(r"ninja explain: (.*)")
-RE_RECENT_INPUT = re.compile(r'most recent input\s+([^\s\(]+)')
-
 # Constants
 HEADER_EXTENSIONS = ('.h', '.hpp', '.hxx', '.hh')
 SYSTEM_PATH_PREFIXES = ('/usr/', '/lib/', '/opt/')
 DEFAULT_THRESHOLD = 5
 DEFAULT_MAX_RESULTS = 10
 
+# check_ninja_available, validate_build_directory, and get_dependencies moved to lib modules
 
-def check_ninja_available() -> bool:
-    """Check if ninja is available in PATH.
-    
-    Returns:
-        True if ninja is available, False otherwise
-    """
-    try:
-        subprocess.run(
-            ["ninja", "--version"],
-            capture_output=True,
-            check=True
-        )
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
-
-
-def validate_build_directory(build_dir: str) -> Path:
-    """Validate that the build directory exists and contains a ninja build file.
-    
-    Args:
-        build_dir: Path to the build directory
-        
-    Returns:
-        Validated Path object
-        
-    Raises:
-        ValueError: If directory is invalid or doesn't contain build.ninja
-    """
-    path = Path(build_dir).resolve()
-    
-    if not path.exists():
-        raise ValueError(f"Directory does not exist: {path}")
-    
-    if not path.is_dir():
-        raise ValueError(f"Path is not a directory: {path}")
-    
-    build_ninja = path / "build.ninja"
-    if not build_ninja.exists():
-        raise ValueError(
-            f"No build.ninja found in {path}. "
-            "This doesn't appear to be a ninja build directory."
-        )
-    
-    return path
-
-
-def get_dependencies(build_dir: Path, target: str) -> List[str]:
-    """Get dependencies for a target using ninja -t deps.
-    
-    Args:
-        build_dir: Path to the build directory
-        target: Target name to query dependencies for
-        
-    Returns:
-        List of dependency file paths
-    """
-    try:
-        result = subprocess.run(
-            ["ninja", "-t", "deps", target],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=build_dir,
-            timeout=30
-        )
-        deps = []
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if line and not line.endswith(":") and not line.startswith("#"):
-                deps.append(line)
-        return deps
-    except subprocess.TimeoutExpired:
-        logger.warning(f"Timeout querying dependencies for target: {target}")
-        return []
-    except subprocess.CalledProcessError as e:
-        logger.debug(f"Failed to get dependencies for {target}: {e}")
-        return []
-    except Exception as e:
-        logger.debug(f"Unexpected error getting dependencies for {target}: {e}")
-        return []
-
-
+# Helper functions for local use
 def is_system_header(path: str) -> bool:
-    """Check if a path appears to be a system header.
-    
-    Args:
-        path: File path to check
-        
-    Returns:
-        True if path looks like a system header
-    """
+    """Check if a path appears to be a system header."""
     return any(path.startswith(prefix) for prefix in SYSTEM_PATH_PREFIXES)
 
-
 def is_header_file(path: str) -> bool:
-    """Check if a path is a header file.
-    
-    Args:
-        path: File path to check
-        
-    Returns:
-        True if path ends with a header extension
-    """
+    """Check if a path is a header file."""
     return path.endswith(HEADER_EXTENSIONS)
 
 
@@ -235,29 +139,19 @@ def build_include_graph(
     Returns:
         Dictionary mapping header -> (header -> cooccurrence_count)
     """
-    cooccurrence: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    total = len(rebuild_targets)
+    # Collect dependencies for all targets
+    dependencies_by_target = {}
+    for target in rebuild_targets:
+        dependencies_by_target[target] = get_dependencies(str(build_dir), target)
     
-    logger.info(f"Analyzing {total} rebuild targets...")
-    
-    for idx, target in enumerate(rebuild_targets, 1):
-        if idx % 100 == 0 or idx == total:
-            logger.info(f"Progress: {idx}/{total} targets processed")
-        
-        deps = get_dependencies(build_dir, target)
-        headers = [
-            d for d in deps 
-            if is_header_file(d) and not is_system_header(d)
-        ]
-        
-        # Build cooccurrence matrix
-        for h1 in headers:
-            for h2 in headers:
-                if h1 != h2:
-                    cooccurrence[h1][h2] += 1
-    
-    logger.info(f"Built cooccurrence graph with {len(cooccurrence)} headers")
-    return dict(cooccurrence)  # Convert to regular dict for clarity
+    # Create SourceDependencyMap and use library function to compute cooccurrence
+    dependency_map = SourceDependencyMap(dependencies_by_target)
+    return compute_header_cooccurrence_from_deps_lists(
+        dependency_map,
+        is_header_filter=is_header_file,
+        is_system_filter=is_system_header,
+        show_progress=True
+    )
 
 
 def get_relative_path(file_path: str, project_root: Path) -> str:
@@ -310,72 +204,8 @@ def find_inclusion_causes(
     return sorted(causes, key=lambda x: x[1], reverse=True)
 
 
-def run_ninja_explain(build_dir: Path) -> subprocess.CompletedProcess:
-    """Run ninja -n -d explain to get rebuild information.
-    
-    Args:
-        build_dir: Path to the build directory
-        
-    Returns:
-        CompletedProcess result
-        
-    Raises:
-        subprocess.CalledProcessError: If ninja command fails
-    """
-    return subprocess.run(
-        ["ninja", "-n", "-d", "explain"],
-        capture_output=True,
-        text=True,
-        check=True,
-        cwd=build_dir,
-        timeout=60
-    )
-
-
-def parse_ninja_output(
-    stderr_lines: List[str]
-) -> Tuple[List[str], Set[str]]:
-    """Parse ninja explain output to extract rebuild targets and changed files.
-    
-    Args:
-        stderr_lines: Lines from ninja stderr output
-        
-    Returns:
-        Tuple of (rebuild_targets, changed_header_files)
-    """
-    rebuild_targets = []
-    changed_files = set()
-
-    for line in stderr_lines:
-        m = RE_OUTPUT.search(line)
-        if not m:
-            continue
-
-        explain_msg = m.group(1)
-        
-        # Skip dirty messages
-        if "is dirty" in explain_msg:
-            continue
-        
-        # Extract output file
-        output_file = "unknown"
-        if explain_msg.startswith("output "):
-            parts = explain_msg.split(" ", 2)
-            if len(parts) > 1:
-                output_file = parts[1]
-        elif "command line changed for " in explain_msg:
-            output_file = explain_msg.split("command line changed for ", 1)[1]
-        
-        rebuild_targets.append(output_file)
-        
-        # Extract changed header files
-        match = RE_RECENT_INPUT.search(line)
-        if match:
-            file_path = match.group(1)
-            if is_header_file(file_path):
-                changed_files.add(file_path)
-    
-    return rebuild_targets, changed_files
+# run_ninja_explain and parse_ninja_output are now imported from lib.ninja_utils
+# The library versions are: run_ninja_explain() and parse_ninja_explain_output()
 
 
 def print_results(
@@ -394,8 +224,8 @@ def print_results(
         threshold: Minimum cooccurrence threshold
         max_results: Maximum number of results to show per header
     """
-    print(f"\n{Style.BRIGHT}Include Chain Analysis "
-          f"(headers frequently included with changed headers):{Style.RESET_ALL}")
+    print(f"\n{Colors.BRIGHT}Include Chain Analysis "
+          f"(headers frequently included with changed headers):{Colors.RESET}")
     
     for changed_file in sorted(changed_files):
         display_changed = get_relative_path(changed_file, project_root)
@@ -405,16 +235,16 @@ def print_results(
         )
         
         if causes:
-            print(f"\n  {Fore.RED}{display_changed}{Style.RESET_ALL} "
+            print(f"\n  {Colors.RED}{display_changed}{Colors.RESET} "
                   f"often appears with:")
             for header, count in causes[:max_results]:
-                print(f"    {Fore.CYAN}{header}{Style.RESET_ALL} ({count} times)")
+                print(f"    {Colors.CYAN}{header}{Colors.RESET} ({count} times)")
             
             if len(causes) > max_results:
                 remaining = len(causes) - max_results
-                print(f"    {Fore.LIGHTBLACK_EX}... and {remaining} more{Style.RESET_ALL}")
+                print(f"    {Colors.DIM}... and {remaining} more{Colors.RESET}")
         else:
-            print(f"\n  {Fore.YELLOW}{display_changed}{Style.RESET_ALL}: "
+            print(f"\n  {Colors.YELLOW}{display_changed}{Colors.RESET}: "
                   f"No frequent cooccurrences (threshold={threshold})")
 
 
@@ -517,7 +347,7 @@ Use buildCheckIncludeGraph.py to see the actual include relationships.
     
     # Parse output
     logger.info("Parsing ninja output...")
-    rebuild_targets, changed_files = parse_ninja_output(result.stderr.splitlines())
+    rebuild_targets, changed_files = parse_ninja_explain_output(result.stderr.splitlines())
     
     if not rebuild_targets:
         logger.info("No rebuild targets found. Build is up to date.")
@@ -542,8 +372,8 @@ Use buildCheckIncludeGraph.py to see the actual include relationships.
         project_root = build_dir.parent
     
     # Build include graph
-    print(f"\n{Fore.CYAN}Building include cooccurrence graph from "
-          f"{len(rebuild_targets)} rebuild targets...{Style.RESET_ALL}")
+    print(f"\n{Colors.CYAN}Building include cooccurrence graph from "
+          f"{len(rebuild_targets)} rebuild targets...{Colors.RESET}")
     
     try:
         include_graph = build_include_graph(build_dir, rebuild_targets)
@@ -572,14 +402,23 @@ Use buildCheckIncludeGraph.py to see the actual include relationships.
 
 
 if __name__ == "__main__":
+    from lib.constants import (
+        EXIT_SUCCESS, EXIT_KEYBOARD_INTERRUPT, EXIT_RUNTIME_ERROR,
+        BuildCheckError
+    )
+    
     try:
-        sys.exit(main())
+        exit_code = main()
+        sys.exit(exit_code)
     except KeyboardInterrupt:
         logger.warning("\nInterrupted by user")
-        sys.exit(130)
+        sys.exit(EXIT_KEYBOARD_INTERRUPT)
+    except BuildCheckError as e:
+        logger.error(str(e))
+        sys.exit(e.exit_code)
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         if logger.level == logging.DEBUG:
             import traceback
             traceback.print_exc()
-        sys.exit(1)
+        sys.exit(EXIT_RUNTIME_ERROR)

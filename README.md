@@ -6,6 +6,33 @@ A comprehensive suite of production-ready tools for analyzing C/C++ build depend
 
 BuildCheck provides nine complementary tools that help you understand and optimize your C/C++ build process. Each tool focuses on a specific aspect of dependency analysis, from quick rebuild impact checks to comprehensive dependency hell detection and architectural structure analysis.
 
+## 📦 Requirements
+
+### System Requirements
+- **Python 3.8+** (required)
+- **ninja** build system (for most tools)
+- **clang-scan-deps** (optional, for source-level dependency analysis)
+
+### Python Packages
+Install all required packages with:
+```bash
+pip install -r requirements.txt
+```
+
+**Required packages:**
+- `packaging>=24.0` - Version checking utilities
+- `networkx>=2.8.8` - Graph analysis and cycle detection
+- `GitPython>=3.1.40` - Git operations (for buildCheckRippleEffect)
+
+**Optional packages:**
+- `colorama>=0.4.6` - Colored terminal output (graceful fallback if missing)
+
+### Verify Installation
+Run the environment check to verify all dependencies:
+```bash
+./checkEnvironment.sh
+```
+
 ## 🛠️ Tools
 
 ### 1. buildCheckSummary.py - Quick Rebuild Analysis
@@ -26,7 +53,7 @@ BuildCheck provides nine complementary tools that help you understand and optimi
 **Performance**: Very fast (< 1 second)
 
 **Requirements**:
-- Python 3.7+
+- Python 3.8+
 - ninja build system
 - colorama (optional)
 
@@ -62,7 +89,7 @@ BuildCheck provides nine complementary tools that help you understand and optimi
 **Performance**: Very fast (< 1 second)
 
 **Requirements**:
-- Python 3.7+
+- Python 3.8+
 - ninja build system
 - colorama (optional)
 
@@ -99,7 +126,7 @@ BuildCheck provides nine complementary tools that help you understand and optimi
 **Performance**: Fast (1-2 seconds)
 
 **Requirements**:
-- Python 3.7+
+- Python 3.8+
 - ninja build system
 - colorama (optional)
 
@@ -138,7 +165,7 @@ BuildCheck provides nine complementary tools that help you understand and optimi
 **Performance**: Moderate (3-10 seconds, uses all CPU cores)
 
 **Requirements**:
-- Python 3.7+
+- Python 3.8+
 - clang-scan-deps (clang-18, clang-19, or clang-XX)
 - networkx: `pip install networkx`
 - compile_commands.json (auto-generated)
@@ -189,7 +216,7 @@ BuildCheck provides nine complementary tools that help you understand and optimi
 **Performance**: Slower but comprehensive (5-10 seconds, uses all CPU cores)
 
 **Requirements**:
-- Python 3.7+
+- Python 3.8+
 - clang-scan-deps (clang-18, clang-19, or clang-XX)
 - networkx: `pip install networkx`
 - compile_commands.json (auto-generated)
@@ -233,6 +260,7 @@ BuildCheck provides nine complementary tools that help you understand and optimi
 - Identifies headers that violate layered architecture
 - Provides compact matrix visualization with color coding
 - Exports full matrix to CSV for detailed offline analysis
+- **Compares DSM between two builds** (differential analysis)
 
 **Use when**:
 - "What's the overall dependency structure of my codebase?"
@@ -241,11 +269,13 @@ BuildCheck provides nine complementary tools that help you understand and optimi
 - "What's the safest order to refactor headers?"
 - "Which headers have the highest coupling?"
 - "Are my module boundaries clean?"
+- **"What architectural impact will this change have?"** (use `--compare-with`)
+- **"Did my refactoring improve the architecture?"** (use `--compare-with`)
 
 **Performance**: Moderate (3-10 seconds, uses all CPU cores)
 
 **Requirements**:
-- Python 3.7+
+- Python 3.8+
 - clang-scan-deps (clang-18, clang-19, or clang-XX)
 - networkx: `pip install networkx`
 - compile_commands.json (auto-generated)
@@ -272,6 +302,9 @@ BuildCheck provides nine complementary tools that help you understand and optimi
 
 # Cluster by directory
 ./buildCheckDSM.py ../build/release/ --cluster-by-directory
+
+# Compare two builds (differential analysis)
+./buildCheckDSM.py ../build/feature/ --compare-with ../build/main/
 ```
 
 **Key Metrics**:
@@ -322,7 +355,7 @@ Legend: X = dependency, · = none, ● = in cycle
 **Performance**: Very fast (< 1 second)
 
 **Requirements**:
-- Python 3.7+
+- Python 3.8+
 - build.ninja file
 - networkx (optional, for cycle detection): `pip install networkx`
 - colorama (optional, for colors)
@@ -404,7 +437,7 @@ dot -Tpng graph.dot -o graph.png
 **Performance**: Fast to moderate (2-10 seconds depending on analysis depth)
 
 **Requirements**:
-- Python 3.7+
+- Python 3.8+
 - build.ninja file
 - networkx (optional): `pip install networkx`
 - colorama (optional)
@@ -493,11 +526,12 @@ DETAILED OPTIMIZATION #1: Enable ccache
 **Performance**: Moderate (5-10 seconds, uses all CPU cores)
 
 **Requirements**:
-- Python 3.7+
+- Python 3.8+
 - git repository
 - ninja build directory with compile_commands.json
 - clang-scan-deps (clang-18, clang-19, or clang-XX)
 - networkx: `pip install networkx`
+- GitPython: `pip install GitPython`
 
 **Examples**:
 ```bash
@@ -559,6 +593,13 @@ DETAILED OPTIMIZATION #1: Enable ccache
 3. `buildCheckIncludeGraph.py` - Find gateway headers
 4. `buildCheckIncludeChains.py` - Understand coupling patterns
 5. Refactor high-impact headers first, break cycles
+6. `buildCheckDSM.py --compare-with` - Verify improvements
+
+**Impact Analysis (Before/After)**:
+1. Build baseline: `git checkout main && build`
+2. Build feature: `git checkout feature && build`
+3. `buildCheckDSM.py ../build/feature/ --compare-with ../build/main/`
+4. Review architectural changes, cycles, coupling shifts
 
 ---
 
@@ -582,8 +623,8 @@ pip install colorama
 
 **Required** (for tools 4, 5, 6):
 ```bash
-# NetworkX for graph analysis
-pip install networkx
+# NetworkX and scipy for graph analysis
+pip install networkx scipy
 
 # clang-scan-deps (part of LLVM/Clang)
 # Ubuntu/Debian:
@@ -712,6 +753,13 @@ Install networkx:
 pip install networkx
 ```
 
+### "No module named 'git'" or "No module named 'GitPython'"
+
+Install GitPython (required for buildCheckRippleEffect.py):
+```bash
+pip install GitPython
+```
+
 ### Slow Performance
 
 For large projects:
@@ -802,7 +850,7 @@ Contributions are welcome! Please ensure:
 - Code follows existing style and conventions
 - New features include tests
 - Documentation is updated
-- Scripts remain Python 3.7+ compatible
+- Scripts remain Python 3.8+ compatible
 
 ---
 

@@ -54,20 +54,16 @@ from collections import defaultdict, Counter
 from dataclasses import dataclass, field
 from enum import Enum
 
-try:
-    import networkx as nx
-    HAS_NETWORKX = True
-except ImportError:
-    HAS_NETWORKX = False
+# Import library modules
+from lib.color_utils import Colors, print_error, print_warning, print_success
+from lib.constants import COMPILE_COMMANDS_JSON
+from lib.library_parser import parse_ninja_libraries
 
-try:
-    from colorama import Fore, Style, init
-    init(autoreset=True)
-except ImportError:
-    class Fore:
-        RED = YELLOW = GREEN = CYAN = BLUE = MAGENTA = WHITE = ""
-    class Style:
-        BRIGHT = DIM = RESET_ALL = ""
+# Check networkx availability early with helpful error message
+from lib.package_verification import require_package
+require_package('networkx', 'optimization analysis')
+
+import networkx as nx
 
 
 class Effort(Enum):
@@ -106,46 +102,46 @@ class Optimization:
     
     def format_output(self, index: int) -> str:
         """Format optimization for display"""
-        effort_color = Fore.GREEN if self.effort == Effort.EASY else Fore.YELLOW if self.effort == Effort.MEDIUM else Fore.RED
-        risk_color = Fore.GREEN if self.risk == Risk.LOW else Fore.YELLOW if self.risk == Risk.MEDIUM else Fore.RED
+        effort_color = Colors.GREEN if self.effort == Effort.EASY else Colors.YELLOW if self.effort == Effort.MEDIUM else Colors.RED
+        risk_color = Colors.GREEN if self.risk == Risk.LOW else Colors.YELLOW if self.risk == Risk.MEDIUM else Colors.RED
         
         lines = [
-            f"\n{Style.BRIGHT}{'='*80}{Style.RESET_ALL}",
-            f"{Style.BRIGHT}OPTIMIZATION #{index}: {self.title}{Style.RESET_ALL}",
-            f"{Style.BRIGHT}{'='*80}{Style.RESET_ALL}",
-            f"\n{Style.BRIGHT}Category:{Style.RESET_ALL} {self.category}",
-            f"{Style.BRIGHT}Priority Score:{Style.RESET_ALL} {self.priority_score:.1f} (higher = better)",
-            f"{Style.BRIGHT}Impact:{Style.RESET_ALL} {self.impact_score:.0f}/100 (estimated time saved)",
-            f"{Style.BRIGHT}Effort:{Style.RESET_ALL} {effort_color}{self.effort.name}{Style.RESET_ALL}",
-            f"{Style.BRIGHT}Risk:{Style.RESET_ALL} {risk_color}{self.risk.name}{Style.RESET_ALL}",
-            f"\n{Style.BRIGHT}Problem:{Style.RESET_ALL}",
+            f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}",
+            f"{Colors.BRIGHT}OPTIMIZATION #{index}: {self.title}{Colors.RESET}",
+            f"{Colors.BRIGHT}{'='*80}{Colors.RESET}",
+            f"\n{Colors.BRIGHT}Category:{Colors.RESET} {self.category}",
+            f"{Colors.BRIGHT}Priority Score:{Colors.RESET} {self.priority_score:.1f} (higher = better)",
+            f"{Colors.BRIGHT}Impact:{Colors.RESET} {self.impact_score:.0f}/100 (estimated time saved)",
+            f"{Colors.BRIGHT}Effort:{Colors.RESET} {effort_color}{self.effort.name}{Colors.RESET}",
+            f"{Colors.BRIGHT}Risk:{Colors.RESET} {risk_color}{self.risk.name}{Colors.RESET}",
+            f"\n{Colors.BRIGHT}Problem:{Colors.RESET}",
             f"  {self.description}",
-            f"\n{Style.BRIGHT}Current State:{Style.RESET_ALL}",
+            f"\n{Colors.BRIGHT}Current State:{Colors.RESET}",
             f"  {self.current_state}",
-            f"\n{Style.BRIGHT}Target State:{Style.RESET_ALL}",
+            f"\n{Colors.BRIGHT}Target State:{Colors.RESET}",
             f"  {self.target_state}",
-            f"\n{Style.BRIGHT}Action Items:{Style.RESET_ALL}"
+            f"\n{Colors.BRIGHT}Action Items:{Colors.RESET}"
         ]
         
         for i, action in enumerate(self.action_items, 1):
             lines.append(f"  {i}. {action}")
         
         if self.affected_targets:
-            lines.append(f"\n{Style.BRIGHT}Affected Targets ({len(self.affected_targets)}):{Style.RESET_ALL}")
+            lines.append(f"\n{Colors.BRIGHT}Affected Targets ({len(self.affected_targets)}):{Colors.RESET}")
             for target in self.affected_targets[:10]:
                 lines.append(f"  • {target}")
             if len(self.affected_targets) > 10:
-                lines.append(f"  {Style.DIM}... and {len(self.affected_targets) - 10} more{Style.RESET_ALL}")
+                lines.append(f"  {Colors.DIM}... and {len(self.affected_targets) - 10} more{Colors.RESET}")
         
         if self.evidence:
-            lines.append(f"\n{Style.BRIGHT}Evidence:{Style.RESET_ALL}")
+            lines.append(f"\n{Colors.BRIGHT}Evidence:{Colors.RESET}")
             for key, value in self.evidence.items():
                 lines.append(f"  • {key}: {value}")
         
         return "\n".join(lines)
 
 
-def run_command(cmd: List[str], cwd: str = None) -> Tuple[int, str, str]:
+def run_command(cmd: List[str], cwd: Optional[str] = None) -> Tuple[int, str, str]:
     """Run command and return (returncode, stdout, stderr)"""
     try:
         result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=30)
@@ -156,45 +152,9 @@ def run_command(cmd: List[str], cwd: str = None) -> Tuple[int, str, str]:
         return -1, "", str(e)
 
 
-def parse_ninja_libraries(build_ninja_path: str) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]], Set[str]]:
-    """Parse build.ninja for library dependencies"""
-    lib_to_libs: Dict[str, Set[str]] = defaultdict(set)
-    exe_to_libs: Dict[str, Set[str]] = defaultdict(set)
-    all_libs: Set[str] = set()
-    
-    lib_pattern = re.compile(r'^build\s+(\S+\.a):\s+CXX_STATIC_LIBRARY_LINKER')
-    exe_pattern = re.compile(r'^build\s+(\S+):\s+CXX_EXECUTABLE_LINKER')
-    
-    with open(build_ninja_path, 'r') as f:
-        for line in f:
-            line = line.rstrip()
-            
-            lib_match = lib_pattern.match(line)
-            if lib_match:
-                lib_name = os.path.basename(lib_match.group(1))
-                all_libs.add(lib_name)
-                if '||' in line:
-                    deps_section = line.split('||')[1]
-                    deps = re.findall(r'(\S+\.a)', deps_section)
-                    for dep_path in deps:
-                        dep_name = os.path.basename(dep_path)
-                        if dep_name != lib_name:
-                            lib_to_libs[lib_name].add(dep_name)
-                            all_libs.add(dep_name)
-                continue
-            
-            exe_match = exe_pattern.match(line)
-            if exe_match:
-                exe_name = os.path.basename(exe_match.group(1))
-                if '||' in line:
-                    deps_section = line.split('||')[1]
-                    deps = re.findall(r'(\S+\.a)', deps_section)
-                    for dep_path in deps:
-                        dep_name = os.path.basename(dep_path)
-                        exe_to_libs[exe_name].add(dep_name)
-                        all_libs.add(dep_name)
-    
-    return dict(lib_to_libs), dict(exe_to_libs), all_libs
+# parse_ninja_libraries_internal removed - use parse_ninja_libraries from lib.library_parser instead
+# Note: lib version returns 4 values (lib_to_libs, exe_to_libs, all_libs, all_exes)
+# This script only needs the first 3, so we unpack and ignore all_exes
 
 
 def analyze_library_impact(lib_to_libs: Dict[str, Set[str]], 
@@ -203,7 +163,11 @@ def analyze_library_impact(lib_to_libs: Dict[str, Set[str]],
     """Analyze library-level optimization opportunities"""
     optimizations = []
     
-    # Calculate transitive dependents
+    # Use library function to calculate transitive dependents
+    from lib.graph_utils import build_transitive_dependents_map
+    transitive_deps_map = build_transitive_dependents_map(lib_to_libs, exe_to_libs)
+    
+    # Calculate direct dependents for additional metrics
     lib_to_dependents: Dict[str, Set[str]] = defaultdict(set)
     for lib, deps in lib_to_libs.items():
         for dep in deps:
@@ -212,24 +176,10 @@ def analyze_library_impact(lib_to_libs: Dict[str, Set[str]],
         for dep in deps:
             lib_to_dependents[dep].add(exe)
     
-    # Calculate transitive closure
-    def get_all_dependents(lib: str, visited: Set[str] = None) -> Set[str]:
-        if visited is None:
-            visited = set()
-        if lib in visited:
-            return set()
-        visited.add(lib)
-        
-        result = set(lib_to_dependents.get(lib, set()))
-        for dep in lib_to_dependents.get(lib, set()):
-            if dep in lib_to_libs:  # Only traverse libraries
-                result.update(get_all_dependents(dep, visited))
-        return result
-    
     # Find high-impact libraries
     for lib in all_libs:
         direct_dependents = len(lib_to_dependents.get(lib, set()))
-        transitive_dependents = len(get_all_dependents(lib))
+        transitive_dependents = len(transitive_deps_map.get(lib, set()))
         
         # Opportunity: Split high-impact library
         if transitive_dependents > 50:
@@ -252,7 +202,7 @@ def analyze_library_impact(lib_to_libs: Dict[str, Set[str]],
                     "Run comprehensive tests to verify no regressions",
                     f"Expected benefit: Reduce rebuild impact by 40-60%"
                 ],
-                affected_targets=sorted(get_all_dependents(lib)),
+                affected_targets=sorted(transitive_deps_map.get(lib, set())),
                 evidence={
                     "Direct dependents": direct_dependents,
                     "Transitive dependents": transitive_dependents,
@@ -321,16 +271,16 @@ def analyze_library_impact(lib_to_libs: Dict[str, Set[str]],
         ))
     
     # Check for library cycles
-    if HAS_NETWORKX:
-        G = nx.DiGraph()
-        for lib, deps in lib_to_libs.items():
-            for dep in deps:
-                G.add_edge(lib, dep)
-        
-        sccs = [scc for scc in nx.strongly_connected_components(G) if len(scc) > 1]
-        if sccs:
-            for scc in sccs:
-                optimizations.append(Optimization(
+    from typing import Any
+    G: nx.DiGraph[Any] = nx.DiGraph()
+    for lib, deps in lib_to_libs.items():
+        for dep in deps:
+            G.add_edge(lib, dep)
+    
+    sccs = [scc for scc in nx.strongly_connected_components(G) if len(scc) > 1]
+    if sccs:
+        for scc in sccs:
+            optimizations.append(Optimization(
                     title=f"Break circular library dependency: {', '.join(sorted(scc)[:3])}",
                     category="cycle",
                     description=f"Circular dependency between {len(scc)} libraries prevents "
@@ -359,7 +309,7 @@ def analyze_library_impact(lib_to_libs: Dict[str, Set[str]],
 
 def analyze_header_dependencies(build_dir: str, quick: bool = False) -> List[Optimization]:
     """Analyze header-level optimization opportunities"""
-    optimizations = []
+    optimizations: List[Optimization] = []
     
     # Check if clang-scan-deps is available
     clang_scan_deps = None
@@ -372,7 +322,7 @@ def analyze_header_dependencies(build_dir: str, quick: bool = False) -> List[Opt
     if not clang_scan_deps:
         return optimizations  # Skip if not available
     
-    compile_commands_path = os.path.join(build_dir, 'compile_commands.json')
+    compile_commands_path = os.path.join(build_dir, COMPILE_COMMANDS_JSON)
     build_ninja_path = os.path.join(build_dir, 'build.ninja')
     
     # Generate compile_commands.json if needed
@@ -583,9 +533,9 @@ def analyze_architectural_issues(build_dir: str) -> List[Optimization]:
 def generate_summary_report(optimizations: List[Optimization]) -> str:
     """Generate summary report of all optimizations"""
     lines = [
-        f"\n{Style.BRIGHT}{'='*80}{Style.RESET_ALL}",
-        f"{Style.BRIGHT}BUILD OPTIMIZATION SUMMARY{Style.RESET_ALL}",
-        f"{Style.BRIGHT}{'='*80}{Style.RESET_ALL}",
+        f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}",
+        f"{Colors.BRIGHT}BUILD OPTIMIZATION SUMMARY{Colors.RESET}",
+        f"{Colors.BRIGHT}{'='*80}{Colors.RESET}",
         f"\nTotal opportunities identified: {len(optimizations)}",
     ]
     
@@ -594,7 +544,7 @@ def generate_summary_report(optimizations: List[Optimization]) -> str:
     for opt in optimizations:
         by_category[opt.category].append(opt)
     
-    lines.append(f"\n{Style.BRIGHT}By Category:{Style.RESET_ALL}")
+    lines.append(f"\n{Colors.BRIGHT}By Category:{Colors.RESET}")
     for category, opts in sorted(by_category.items()):
         avg_impact = sum(o.impact_score for o in opts) / len(opts)
         lines.append(f"  • {category}: {len(opts)} opportunities (avg impact: {avg_impact:.0f}/100)")
@@ -604,7 +554,7 @@ def generate_summary_report(optimizations: List[Optimization]) -> str:
     for opt in optimizations:
         by_effort[opt.effort].append(opt)
     
-    lines.append(f"\n{Style.BRIGHT}By Effort:{Style.RESET_ALL}")
+    lines.append(f"\n{Colors.BRIGHT}By Effort:{Colors.RESET}")
     for effort in [Effort.EASY, Effort.MEDIUM, Effort.HARD]:
         if effort in by_effort:
             opts = by_effort[effort]
@@ -614,13 +564,13 @@ def generate_summary_report(optimizations: List[Optimization]) -> str:
     quick_wins = [o for o in optimizations 
                   if o.effort == Effort.EASY and o.impact_score >= 50]
     if quick_wins:
-        lines.append(f"\n{Style.BRIGHT}{Fore.GREEN}🎯 QUICK WINS (High Impact, Easy Implementation):{Style.RESET_ALL}")
+        lines.append(f"\n{Colors.BRIGHT}{Colors.GREEN}🎯 QUICK WINS (High Impact, Easy Implementation):{Colors.RESET}")
         for opt in sorted(quick_wins, key=lambda o: o.priority_score, reverse=True)[:5]:
             lines.append(f"  • {opt.title} (Priority: {opt.priority_score:.1f})")
     
     # High priority (sorted by priority score)
     top_priorities = sorted(optimizations, key=lambda o: o.priority_score, reverse=True)[:5]
-    lines.append(f"\n{Style.BRIGHT}🔥 TOP 5 PRIORITIES (by priority score):{Style.RESET_ALL}")
+    lines.append(f"\n{Colors.BRIGHT}🔥 TOP 5 PRIORITIES (by priority score):{Colors.RESET}")
     for i, opt in enumerate(top_priorities, 1):
         effort_str = f"{opt.effort.name[0]}"  # E/M/H
         risk_str = f"{opt.risk.name[0]}"
@@ -631,7 +581,11 @@ def generate_summary_report(optimizations: List[Optimization]) -> str:
     return "\n".join(lines)
 
 
-def main():
+def main() -> int:
+    # Verify dependencies early
+    from lib.graph_utils import verify_requirements as verify_graph
+    verify_graph()
+    
     parser = argparse.ArgumentParser(
         description="Analyze build system and provide optimization recommendations",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -664,36 +618,35 @@ Examples:
     # Validate build directory
     build_ninja_path = os.path.join(args.build_dir, 'build.ninja')
     if not os.path.exists(build_ninja_path):
-        print(f"{Fore.RED}Error: build.ninja not found in '{args.build_dir}'{Style.RESET_ALL}",
-              file=sys.stderr)
+        print_error(f"build.ninja not found in '{args.build_dir}'")
         return 1
     
-    print(f"{Style.BRIGHT}Analyzing build system: {args.build_dir}{Style.RESET_ALL}\n")
+    print(f"{Colors.BRIGHT}Analyzing build system: {args.build_dir}{Colors.RESET}\n")
     
     all_optimizations = []
     
     # Library-level analysis
     if args.focus in ['all', 'libraries', 'cycles']:
-        print(f"{Style.DIM}Analyzing library dependencies...{Style.RESET_ALL}")
-        lib_to_libs, exe_to_libs, all_libs = parse_ninja_libraries(build_ninja_path)
+        print(f"{Colors.DIM}Analyzing library dependencies...{Colors.RESET}")
+        lib_to_libs, exe_to_libs, all_libs, _all_exes = parse_ninja_libraries(build_ninja_path)
         library_opts = analyze_library_impact(lib_to_libs, exe_to_libs, all_libs)
         all_optimizations.extend(library_opts)
     
     # Header-level analysis
     if args.focus in ['all', 'headers']:
-        print(f"{Style.DIM}Analyzing header dependencies...{Style.RESET_ALL}")
+        print(f"{Colors.DIM}Analyzing header dependencies...{Colors.RESET}")
         header_opts = analyze_header_dependencies(args.build_dir, args.quick)
         all_optimizations.extend(header_opts)
     
     # Build system analysis
     if args.focus in ['all', 'build-system']:
-        print(f"{Style.DIM}Analyzing build system configuration...{Style.RESET_ALL}")
+        print(f"{Colors.DIM}Analyzing build system configuration...{Colors.RESET}")
         build_opts = analyze_build_system(args.build_dir)
         all_optimizations.extend(build_opts)
     
     # Architectural analysis
     if args.focus in ['all', 'architecture']:
-        print(f"{Style.DIM}Analyzing architectural patterns...{Style.RESET_ALL}")
+        print(f"{Colors.DIM}Analyzing architectural patterns...{Colors.RESET}")
         arch_opts = analyze_architectural_issues(args.build_dir)
         all_optimizations.extend(arch_opts)
     
@@ -709,7 +662,7 @@ Examples:
         all_optimizations = all_optimizations[:args.top]
     
     if not all_optimizations:
-        print(f"\n{Fore.GREEN}✓ No major optimization opportunities found!{Style.RESET_ALL}")
+        print(f"\n{Colors.GREEN}✓ No major optimization opportunities found!{Colors.RESET}")
         print(f"  Your build system appears well-optimized.")
         return 0
     
@@ -718,9 +671,9 @@ Examples:
     print(summary)
     
     # Print detailed optimizations
-    print(f"\n{Style.BRIGHT}{'='*80}{Style.RESET_ALL}")
-    print(f"{Style.BRIGHT}DETAILED OPTIMIZATION OPPORTUNITIES{Style.RESET_ALL}")
-    print(f"{Style.BRIGHT}{'='*80}{Style.RESET_ALL}")
+    print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
+    print(f"{Colors.BRIGHT}DETAILED OPTIMIZATION OPPORTUNITIES{Colors.RESET}")
+    print(f"{Colors.BRIGHT}{'='*80}{Colors.RESET}")
     
     for i, opt in enumerate(all_optimizations, 1):
         print(opt.format_output(i))
@@ -749,34 +702,50 @@ Examples:
                     f.write(f"  {j}. {action}\n")
                 f.write("\n")
         
-        print(f"\n{Fore.GREEN}✓ Optimization report written to: {args.report}{Style.RESET_ALL}")
+        print(f"\n{Colors.GREEN}✓ Optimization report written to: {args.report}{Colors.RESET}")
     
     # Final recommendations
-    print(f"\n{Style.BRIGHT}{'='*80}{Style.RESET_ALL}")
-    print(f"{Style.BRIGHT}RECOMMENDED NEXT STEPS{Style.RESET_ALL}")
-    print(f"{Style.BRIGHT}{'='*80}{Style.RESET_ALL}\n")
+    print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
+    print(f"{Colors.BRIGHT}RECOMMENDED NEXT STEPS{Colors.RESET}")
+    print(f"{Colors.BRIGHT}{'='*80}{Colors.RESET}\n")
     
     quick_wins = [o for o in all_optimizations if o.effort == Effort.EASY]
     if quick_wins:
-        print(f"{Fore.GREEN}1. Start with quick wins (EASY effort):{Style.RESET_ALL}")
+        print(f"{Colors.GREEN}1. Start with quick wins (EASY effort):{Colors.RESET}")
         for opt in quick_wins[:3]:
             print(f"   • {opt.title}")
     
     high_impact = [o for o in all_optimizations if o.impact_score >= 70]
     if high_impact:
-        print(f"\n{Fore.YELLOW}2. Plan high-impact changes (may require more effort):{Style.RESET_ALL}")
+        print(f"\n{Colors.YELLOW}2. Plan high-impact changes (may require more effort):{Colors.RESET}")
         for opt in high_impact[:3]:
             if opt not in quick_wins[:3]:
                 print(f"   • {opt.title}")
     
-    print(f"\n{Style.DIM}3. Re-run analysis after implementing optimizations to measure progress{Style.RESET_ALL}")
-    print(f"{Style.DIM}4. Use specific BuildCheck tools for detailed investigation:{Style.RESET_ALL}")
-    print(f"{Style.DIM}   • ./buildCheckLibraryGraph.py - Library dependencies{Style.RESET_ALL}")
-    print(f"{Style.DIM}   • ./buildCheckDependencyHell.py - Header dependencies{Style.RESET_ALL}")
-    print(f"{Style.DIM}   • ./buildCheckDSM.py - Architectural structure{Style.RESET_ALL}")
+    print(f"\n{Colors.DIM}3. Re-run analysis after implementing optimizations to measure progress{Colors.RESET}")
+    print(f"{Colors.DIM}4. Use specific BuildCheck tools for detailed investigation:{Colors.RESET}")
+    print(f"{Colors.DIM}   • ./buildCheckLibraryGraph.py - Library dependencies{Colors.RESET}")
+    print(f"{Colors.DIM}   • ./buildCheckDependencyHell.py - Header dependencies{Colors.RESET}")
+    print(f"{Colors.DIM}   • ./buildCheckDSM.py - Architectural structure{Colors.RESET}")
     
     return 0
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    from lib.constants import (
+        EXIT_SUCCESS, EXIT_KEYBOARD_INTERRUPT, EXIT_RUNTIME_ERROR,
+        BuildCheckError
+    )
+    
+    try:
+        exit_code = main()
+        sys.exit(exit_code)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+        sys.exit(EXIT_KEYBOARD_INTERRUPT)
+    except BuildCheckError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(e.exit_code)
+    except Exception as e:
+        print(f"Fatal error: {e}", file=sys.stderr)
+        sys.exit(EXIT_RUNTIME_ERROR)

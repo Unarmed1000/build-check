@@ -22,14 +22,16 @@
 #****************************************************************************************************************************************************
 """Test script to validate buildCheckRippleEffect.py against actual ninja rebuild detection
 
-WARNING: This test is hardcoded to an internal test case (gtec-demo-framework) and should
-not be run externally. It requires:
-- A git repository with build history
-- FslBuildGen.py build system
-- Ninja build files
-- Specific test commits with C/C++ file changes
+This test validates the accuracy of buildCheckRippleEffect.py by comparing its predictions
+against actual ninja rebuild detection. It works with the gtec-demo-framework public repository.
 
-This test is designed for internal validation only.
+Requirements:
+- gtec-demo-framework repository cloned locally
+- FslBuildGen.py build system configured
+- Ninja build files generated
+- At least one commit with C/C++ file changes
+
+The test compares HEAD against HEAD~1 to validate ripple effect predictions.
 """
 
 import os
@@ -39,7 +41,11 @@ import json
 import tempfile
 import shutil
 from pathlib import Path
-from typing import List, Set, Tuple
+from typing import List, Set, Tuple, Optional, Any, TYPE_CHECKING
+from dataclasses import asdict
+
+if TYPE_CHECKING:
+    from buildCheckRippleEffect import RippleEffectData
 
 # ANSI color codes
 class Colors:
@@ -50,11 +56,11 @@ class Colors:
     CYAN = '\033[0;36m'
     NC = '\033[0m'  # No Color
 
-def print_colored(message: str, color: str = Colors.NC):
+def print_colored(message: str, color: str = Colors.NC) -> None:
     """Print a colored message"""
     print(f"{color}{message}{Colors.NC}")
 
-def run_command(cmd: List[str], cwd: str = None, check: bool = True, capture_output: bool = True) -> subprocess.CompletedProcess:
+def run_command(cmd: List[str], cwd: Optional[str] = None, check: bool = True, capture_output: bool = True) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result"""
     try:
         result = subprocess.run(
@@ -128,7 +134,7 @@ def build_with_ninja(build_dir: str, clean: bool = False) -> bool:
         print_colored("Build failed", Colors.RED)
         return False
 
-def get_ripple_effect_data(script_dir: str, build_dir: str, repo_dir: str) -> dict:
+def get_ripple_effect_data(script_dir: str, build_dir: str, repo_dir: str, prev_commit: str) -> 'RippleEffectData':
     """Get ripple effect data from buildCheckRippleEffect.py"""
     print_colored("\nRunning buildCheckRippleEffect.py to predict rebuild...", Colors.BLUE)
     
@@ -136,7 +142,7 @@ def get_ripple_effect_data(script_dir: str, build_dir: str, repo_dir: str) -> di
     sys.path.insert(0, script_dir)
     try:
         from buildCheckRippleEffect import get_ripple_effect_data as get_data
-        result = get_data(build_dir, repo_dir, 'HEAD')
+        result = get_data(build_dir, repo_dir, prev_commit)
         return result
     except Exception as e:
         print_colored(f"Error running buildCheckRippleEffect: {e}", Colors.RED)
@@ -168,7 +174,7 @@ def compare_results(script_sources: Set[str], ninja_sources: Set[str]) -> Tuple[
     return only_in_script, only_in_ninja, in_both
 
 def save_report(temp_dir: str, repo_dir: str, build_dir: str, current_commit: str,
-                ripple_data: dict, predicted_count: int, actual_count: int,
+                ripple_data: 'RippleEffectData', predicted_count: int, actual_count: int,
                 match_count: int, accuracy: float, only_in_script: Set[str],
                 only_in_ninja: Set[str]) -> str:
     """Save comparison report to file"""
@@ -188,7 +194,7 @@ def save_report(temp_dir: str, repo_dir: str, build_dir: str, current_commit: st
         f.write(f"Accuracy: {accuracy:.1f}%\n")
         f.write("\n")
         f.write("=== Ripple Effect Data (JSON) ===\n")
-        json.dump(ripple_data, f, indent=2)
+        json.dump(asdict(ripple_data), f, indent=2)
         f.write("\n\n")
         f.write("=== Files predicted but not in ninja ===\n")
         for file in sorted(only_in_script):
@@ -200,13 +206,13 @@ def save_report(temp_dir: str, repo_dir: str, build_dir: str, current_commit: st
     
     return report_file
 
-def main():
+def main() -> None:
     # IMPORTANT: This test is hardcoded for internal gtec-demo-framework testing only.
     # It assumes specific repository structure, build system (FslBuildGen.py), and ninja setup.
     # Do not run this test on external projects without modification.
     
-    # Get script directory
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Get script directory (parent directory of test/internal, which is the build-check root)
+    script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     
     # Parse command line arguments
     repo_dir = sys.argv[1] if len(sys.argv) > 1 else '/home/dev/code/gtec-demo-framework'
@@ -287,16 +293,18 @@ def main():
             print_colored(f"  {file}", Colors.CYAN)
         
         # Get ripple effect prediction
-        ripple_data = get_ripple_effect_data(script_dir, build_dir, repo_dir)
+        ripple_data = get_ripple_effect_data(script_dir, build_dir, repo_dir, prev_commit)
         
-        predicted_count = len(ripple_data['all_affected_sources'])
-        changed_headers = len(ripple_data['changed_headers'])
-        changed_sources = len(ripple_data['changed_sources'])
+        predicted_count = len(ripple_data.all_affected_sources)
+        changed_headers = len(ripple_data.changed_headers)
+        changed_sources = len(ripple_data.changed_sources)
         
         print_colored("Ripple effect analysis:", Colors.GREEN)
         print(f"  Changed headers: {changed_headers}")
         print(f"  Changed sources: {changed_sources}")
         print(f"  Predicted affected sources: {predicted_count}")
+        print(f"  Rebuild percentage: {ripple_data.rebuild_percentage:.1f}%")
+        print(f"  Headers with impacts: {len(ripple_data.affected_sources_by_header)}")
         
         # Get actual ninja rebuild list
         ninja_rebuild_list = get_ninja_rebuild_list(build_dir)
@@ -306,7 +314,7 @@ def main():
         
         # Prepare sets for comparison (remove .o extensions)
         script_sources = {s[:-2] if s.endswith('.o') else s 
-                         for s in ripple_data['all_affected_sources']}
+                         for s in ripple_data.all_affected_sources}
         ninja_sources = {s[:-2] if s.endswith('.o') else s 
                         for s in ninja_rebuild_list}
         

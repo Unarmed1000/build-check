@@ -5,3 +5,14 @@
 env/
 venv/
 .BuildCheckEnv/
+
+# Mypy cache
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Test and coverage artifacts
+.coverage
+.coverage.json
+.pytest_cache/
+htmlcov/

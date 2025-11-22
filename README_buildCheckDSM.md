@@ -30,8 +30,8 @@ A DSM is a square matrix representation where:
 
 ### 3. **Layered Architecture Analysis**
 - Computes dependency layers via topological sorting
-- Layer 0 = foundation (no dependencies)
-- Higher layers depend on lower layers only
+- Layer 0 = top-level sources (no incoming dependencies from other headers)
+- Higher layers = foundation (depended upon by lower layers)
 - Detects layer violations (back-edges)
 
 ### 4. **Coupling Metrics**
@@ -46,7 +46,14 @@ A DSM is a square matrix representation where:
 - Calculates intra-module vs inter-module dependencies
 - Measures module cohesion (higher = better encapsulation)
 
-### 6. **Export and Filtering**
+### 6. **Differential Analysis**
+- Compare DSM between two builds (baseline vs current)
+- Identify architectural changes: new/removed headers, cycles, coupling shifts
+- Track layer changes and cycle participants
+- Quantify impact of refactoring or feature additions
+- User manages builds manually (no git automation)
+
+### 7. **Export and Filtering**
 - Export full matrix to CSV for offline analysis
 - Filter by glob patterns (e.g., "FslBase/*")
 - Cluster display by directory structure
@@ -75,6 +82,30 @@ A DSM is a square matrix representation where:
 
 # Show dependency layers
 ./buildCheckDSM.py ../build/release/ --show-layers
+```
+
+### Differential Analysis (Compare Two Builds)
+
+```bash
+# Step 1: Build baseline version (e.g., main branch)
+git checkout main
+./prepare.sh
+FslBuild.py -c debug
+# Creates ../build/debug/ with compile_commands.json
+
+# Step 2: Build current version (e.g., feature branch)
+git checkout feature-branch
+./prepare.sh
+FslBuild.py -c debug
+# Updates ../build/debug/ with new compile_commands.json
+
+# Step 3: Compare architectures
+./buildCheckDSM.py ../build/debug/ --compare-with ../build-baseline/debug/
+
+# Alternative: Use separate build directories
+# Build baseline in ../build-main/
+# Build current in ../build-feature/
+./buildCheckDSM.py ../build-feature/debug/ --compare-with ../build-main/debug/
 ```
 
 ### Filter by Module/Directory
@@ -155,15 +186,15 @@ Suggested edges to remove to break cycles:
 
 ### 4. Layered Architecture
 ```
-Layer 0 (25 headers):
+Layer 0 (42 headers) - Top-level sources:
+  • FslBase/Math/Vector3.hpp
+  • FslGraphics/Color.hpp
+  ...
+
+Layer 1 (25 headers) - Foundation:
   • FslBase/BasicTypes.hpp
   • FslBase/Math/MathHelper.hpp
   • FslBase/Span.hpp
-  ...
-
-Layer 1 (42 headers):
-  • FslBase/Math/Vector3.hpp
-  • FslGraphics/Color.hpp
   ...
 ```
 
@@ -191,6 +222,58 @@ FslGraphics:
   Internal dependencies: 98
   External dependencies: 67
   Cohesion: 59.4% (higher is better)
+```
+
+### 7. Differential Analysis Output (with `--compare-with`)
+```
+=== DSM Differential Analysis ===
+
+Baseline: ../build-baseline/debug/ (250 headers)
+Current:  ../build-feature/debug/ (253 headers)
+
+Architecture Changes:
+  Headers added: 3
+  Headers removed: 0
+  Cycles added: 1
+  Cycles removed: 0
+  Headers with increased coupling: 8
+  Headers with decreased coupling: 2
+  Layer changes: 5
+
+New Headers:
+  • FslGraphics/Render/NewFeature.hpp (Layer 3, Coupling: 12)
+  • FslUtil/Helper/Config.hpp (Layer 2, Coupling: 5)
+  • FslBase/NewDataType.hpp (Layer 1, Coupling: 8)
+
+Removed Headers:
+  (none)
+
+New Cycles:
+  Cycle (4 headers):
+    • FslGraphics/Render/NewFeature.hpp
+    • FslGraphics/Render/Basic.hpp
+    • FslSimpleUI/Base/Control.hpp
+    • FslBase/ITag.hpp
+  
+  Headers newly participating in cycles:
+    • FslGraphics/Render/NewFeature.hpp
+
+Resolved Cycles:
+  (none)
+
+Coupling Changes (threshold: ±5):
+  Increased:
+    FslGraphics/Render/Basic.hpp: 38 → 45 (+7)
+    FslSimpleUI/Base/Control.hpp: 25 → 32 (+7)
+    FslBase/ITag.hpp: 15 → 21 (+6)
+  
+  Decreased:
+    FslUtil/String/StringUtil.hpp: 28 → 22 (-6)
+
+Layer Changes:
+  FslGraphics/Render/Basic.hpp: Layer 4 → Layer 5
+  FslSimpleUI/Base/Control.hpp: Layer 5 → Layer 6
+  FslGraphics3D/Camera.hpp: Layer 6 → Layer 7
 ```
 
 ## Metrics Explained
@@ -279,6 +362,22 @@ Look for:
 ### 6. Track Improvements Over Time
 **Question**: "Did my refactoring improve the architecture?"
 
+**Option A: Differential Analysis (Recommended)**
+```bash
+# Build baseline (before refactoring)
+git checkout main
+./prepare.sh && FslBuild.py -c debug
+mkdir -p ../build-baseline && cp -r ../build ../build-baseline/
+
+# Build current (after refactoring)
+git checkout refactor-branch
+./prepare.sh && FslBuild.py -c debug
+
+# Compare architectures
+./buildCheckDSM.py ../build/debug/ --compare-with ../build-baseline/debug/
+```
+
+**Option B: Manual CSV Comparison**
 ```bash
 # Before refactoring
 ./buildCheckDSM.py ../build/release/ --export baseline.csv
@@ -289,6 +388,29 @@ Look for:
 # Compare the two CSV files (manually or with diff tools)
 ```
 
+### 7. Impact Analysis for Features
+**Question**: "What architectural impact will this feature have?"
+
+```bash
+# Build main branch
+git checkout main
+./prepare.sh && FslBuild.py -c debug
+cp -r ../build/debug ../build-main
+
+# Build feature branch
+git checkout feature-xyz
+./prepare.sh && FslBuild.py -c debug
+
+# Analyze impact
+./buildCheckDSM.py ../build/debug/ --compare-with ../build-main/
+```
+
+Look for:
+- New cycles introduced
+- Headers with increased coupling
+- New layer violations
+- Changed module boundaries
+
 ## Complementary Tools
 
 `buildCheckDSM.py` provides a unique architectural perspective. Combine it with other buildCheck tools:
@@ -296,6 +418,7 @@ Look for:
 | Tool | Focus | When to Use |
 |------|-------|-------------|
 | **buildCheckDSM.py** | Architectural structure (DSM view) | Architectural reviews, refactoring planning |
+| **buildCheckDSM.py --compare-with** | Architectural changes between builds | Impact analysis, before/after comparisons |
 | **buildCheckSummary.py** | What changed, what will rebuild | After making changes, before builds |
 | **buildCheckImpact.py** | Quick rebuild impact estimates | Fast impact checks |
 | **buildCheckIncludeGraph.py** | Gateway headers, include costs | Identify headers causing slow rebuilds |
@@ -410,6 +533,45 @@ This is normal for large projects (500+ headers). Use `--export` to save results
 ./buildCheckDSM.py ../build/release/ --filter "FslBase/*" --cycles-only
 ```
 
+### Differential Analysis Workflow
+```bash
+# 1. Create baseline build
+git checkout main
+./prepare.sh && FslBuild.py -c release
+mkdir -p ../build-baseline
+cp -r ../build/release ../build-baseline/
+
+# 2. Build feature branch
+git checkout feature-new-renderer
+./prepare.sh && FslBuild.py -c release
+
+# 3. Compare architectures
+./buildCheckDSM.py ../build/release/ --compare-with ../build-baseline/release/
+
+# 4. Analyze specific module impact
+./buildCheckDSM.py ../build/release/ --compare-with ../build-baseline/release/ --filter "FslGraphics/*"
+
+# 5. Check if refactoring reduced cycles
+./buildCheckDSM.py ../build/release/ --compare-with ../build-baseline/release/ --cycles-only
+```
+
+### Pre-Merge Impact Check
+```bash
+# Check architectural impact before merging PR
+git checkout main
+./prepare.sh && FslBuild.py -c debug
+cp -r ../build/debug ../build-main
+
+git checkout pr-branch
+./prepare.sh && FslBuild.py -c debug
+./buildCheckDSM.py ../build/debug/ --compare-with ../build-main/
+
+# Look for:
+# - New cycles introduced
+# - Significant coupling increases
+# - New layer violations
+```
+
 ## Tips for Refactoring
 
 Based on DSM analysis, prioritize refactoring:
@@ -418,7 +580,7 @@ Based on DSM analysis, prioritize refactoring:
 2. **Split high-coupling headers** — Coupling >20 needs attention
 3. **Reduce fan-out** — Use forward declarations, move implementations to .cpp
 4. **Improve module cohesion** — Reorganize headers with <60% cohesion
-5. **Establish clear layers** — Move foundation code to Layer 0
+5. **Establish clear layers** — Move foundation code to higher layers (depended upon by others)
 
 ## Version History
 

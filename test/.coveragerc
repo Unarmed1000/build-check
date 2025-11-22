@@ -1,0 +1,60 @@
+[run]
+source = lib
+omit =
+    test/*
+    */__pycache__/*
+    */site-packages/*
+    */.venv/*
+parallel = True
+branch = True
+
+[report]
+fail_under = 85
+precision = 2
+show_missing = True
+skip_covered = False
+
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    def __str__
+    raise AssertionError
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    @abstractmethod
+    @abc.abstractmethod
+    if 0:
+    if False:
+    class .*\bProtocol\):
+    @overload
+
+[html]
+directory = htmlcov
+
+[json]
+output = .coverage.json
+
+# Per-module coverage thresholds (aspirational)
+# Note: pytest-cov doesn't support per-file thresholds natively,
+# but this documents our goals for each module
+
+# TIER 1: Utilities (target 95%)
+# lib/file_utils.py
+# lib/color_utils.py
+# lib/export_utils.py
+# lib/constants.py
+
+# TIER 2: Core Libraries (target 90%)
+# lib/graph_utils.py
+# lib/dependency_utils.py
+# lib/clang_utils.py
+# lib/ninja_utils.py
+# lib/git_utils.py
+
+# TIER 3: Analysis Modules (target 85%)
+# lib/dsm_analysis.py
+# lib/library_parser.py
+
+# TIER 4: Types (target 100% - dataclasses)
+# lib/dsm_types.py

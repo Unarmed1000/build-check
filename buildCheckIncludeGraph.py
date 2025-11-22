@@ -107,64 +107,106 @@ from collections import defaultdict
 from pathlib import Path
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
-import networkx as nx
-from typing import Dict, Set, List, Tuple, DefaultDict, Any
 
-try:
-    from colorama import Fore, Style, init
-    init(autoreset=False)
-except ImportError:
-    class Fore:
-        RED = YELLOW = GREEN = BLUE = MAGENTA = CYAN = WHITE = LIGHTBLACK_EX = RESET = ''
-    class Style:
-        RESET_ALL = BRIGHT = DIM = ''
+# Check networkx availability early with helpful error message
+from lib.package_verification import require_package
+require_package('networkx', 'include graph analysis')
+
+import networkx as nx
+from typing import Dict, Set, List, Tuple, DefaultDict, Any, Optional
+from dataclasses import dataclass
+
+# Import library modules
+from lib.ninja_utils import extract_rebuild_info
+from lib.color_utils import Colors, print_warning, print_success
+from lib.constants import COMPILE_COMMANDS_JSON
+from lib.clang_utils import (
+    find_clang_scan_deps, create_filtered_compile_commands,
+    is_valid_source_file, is_valid_header_file, CLANG_SCAN_DEPS_COMMANDS,
+    VALID_SOURCE_EXTENSIONS, VALID_HEADER_EXTENSIONS
+)
 
 # Constants
 CLANG_SCAN_DEPS_TIMEOUT: int = 600  # 10 minutes
-CLANG_SCAN_DEPS_VERSIONS: List[str] = ['clang-scan-deps-19', 'clang-scan-deps-18', 'clang-scan-deps']
-COMPILE_DB_FILENAME: str = 'compile_commands.json'
+# CLANG_SCAN_DEPS_VERSIONS moved to lib.clang_utils
+COMPILE_DB_FILENAME: str = COMPILE_COMMANDS_JSON
 FILTERED_COMPILE_DB_FILENAME: str = 'compile_commands_filtered.json'
-SOURCE_FILE_EXTENSIONS: Tuple[str, ...] = ('.cpp', '.c', '.cc', '.cxx')
-HEADER_FILE_EXTENSIONS: Tuple[str, ...] = ('.h', '.hpp', '.hxx')
+# SOURCE_FILE_EXTENSIONS, HEADER_FILE_EXTENSIONS moved to lib.clang_utils
 COMPILER_NAMES: Tuple[str, ...] = ('g++', 'gcc', 'clang++', 'clang', '/c++')
 HIGH_COST_THRESHOLD: int = 50  # Headers with average cost above this are optimization targets
 
-# Import helper function from buildCheckSummary
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-try:
-    from buildCheckSummary import extract_rebuild_info
-except ImportError:
-    try:
-        from buildCheckSummary import extract_rebuild_info
-    except ImportError as e:
-        print(f"Error: Could not import extract_rebuild_info from buildCheckSummary or buildCheckSummary: {e}", file=sys.stderr)
-        sys.exit(1)
+
+@dataclass
+class SystemRequirements:
+    """System tool availability validation results.
+    
+    Attributes:
+        ninja: Whether ninja build tool is available
+        clang_scan_deps: Whether clang-scan-deps tool is available
+        networkx: Whether networkx Python library is available
+    """
+    ninja: bool
+    clang_scan_deps: bool
+    networkx: bool
+    
+    def all_available(self) -> bool:
+        """Check if all required tools are available.
+        
+        Returns:
+            True if all requirements are met
+        """
+        return self.ninja and self.clang_scan_deps and self.networkx
+    
+    def missing_requirements(self) -> List[str]:
+        """Get list of missing requirements.
+        
+        Returns:
+            List of requirement names that are not available
+        """
+        missing = []
+        if not self.ninja:
+            missing.append('ninja')
+        if not self.clang_scan_deps:
+            missing.append('clang-scan-deps')
+        if not self.networkx:
+            missing.append('networkx')
+        return missing
+    
+    def to_dict(self) -> Dict[str, bool]:
+        """Convert to dictionary for backward compatibility.
+        
+        Returns:
+            Dictionary mapping requirement names to availability
+        """
+        return {
+            'ninja': self.ninja,
+            'clang-scan-deps': self.clang_scan_deps,
+            'networkx': self.networkx
+        }
 
 
-def validate_system_requirements() -> Dict[str, bool]:
+def validate_system_requirements() -> SystemRequirements:
     """Validate that required system tools are available.
     
     Returns:
-        Dictionary with validation results for each requirement
+        SystemRequirements with validation results for each requirement
     """
-    requirements: Dict[str, bool] = {
-        'ninja': False,
-        'clang-scan-deps': False,
-        'networkx': False,
-    }
+    ninja_available = False
+    clang_scan_deps_available = False
+    networkx_available = False
     
     # Check ninja
     try:
         subprocess.run(['ninja', '--version'], capture_output=True, check=True, timeout=5)
-        requirements['ninja'] = True
+        ninja_available = True
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         pass
     
     # Check clang-scan-deps (any version)
-    for cmd in CLANG_SCAN_DEPS_VERSIONS:
+    for cmd in CLANG_SCAN_DEPS_COMMANDS:
         try:
             subprocess.run([cmd, '--version'], capture_output=True, check=True, timeout=5)
-            requirements['clang-scan-deps'] = True
+            clang_scan_deps_available = True
             break
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
             continue
@@ -172,14 +214,19 @@ def validate_system_requirements() -> Dict[str, bool]:
     # Check networkx
     try:
         import networkx
-        requirements['networkx'] = True
+        networkx_available = True
     except ImportError:
         pass
     
-    return requirements
+    return SystemRequirements(
+        ninja=ninja_available,
+        clang_scan_deps=clang_scan_deps_available,
+        networkx=networkx_available
+    )
 
 
-def create_filtered_compile_commands(build_dir: str) -> str:
+# NOTE: create_filtered_compile_commands_graph was removed - use create_filtered_compile_commands from lib.clang_utils instead
+def _create_filtered_compile_commands_graph_REMOVED(build_dir: str) -> str:
     """Create a filtered compile_commands.json with only C/C++ compilation entries.
     
     Args:
@@ -196,14 +243,14 @@ def create_filtered_compile_commands(build_dir: str) -> str:
         raise ValueError("build_dir must be a non-empty string")
     
     logging.info(f"Creating filtered compile commands for build directory: {build_dir}")
-    build_dir: str = os.path.realpath(os.path.abspath(build_dir))
+    build_dir_abs: str = os.path.realpath(os.path.abspath(build_dir))
     
-    if not os.path.isdir(build_dir):
-        raise ValueError(f"Build directory does not exist: {build_dir}")
+    if not os.path.isdir(build_dir_abs):
+        raise ValueError(f"Build directory does not exist: {build_dir_abs}")
     
-    compile_db: str = os.path.realpath(os.path.join(build_dir, COMPILE_DB_FILENAME))
-    filtered_db: str = os.path.realpath(os.path.join(build_dir, FILTERED_COMPILE_DB_FILENAME))
-    build_ninja: str = os.path.realpath(os.path.join(build_dir, 'build.ninja'))
+    compile_db: str = os.path.realpath(os.path.join(build_dir_abs, COMPILE_DB_FILENAME))
+    filtered_db: str = os.path.realpath(os.path.join(build_dir_abs, FILTERED_COMPILE_DB_FILENAME))
+    build_ninja: str = os.path.realpath(os.path.join(build_dir_abs, 'build.ninja'))
     
     # Validate paths are within build_dir (prevent path traversal)
     for path in [compile_db, filtered_db, build_ninja]:
@@ -215,7 +262,7 @@ def create_filtered_compile_commands(build_dir: str) -> str:
         if os.path.exists(build_ninja) and os.path.exists(compile_db):
             if os.path.getmtime(build_ninja) > os.path.getmtime(compile_db):
                 logging.warning("build.ninja is newer than compile_commands.json - regenerating")
-                print(f"{Fore.YELLOW}build.ninja is newer than compile_commands.json - regenerating{Style.RESET_ALL}")
+                print(f"{Colors.YELLOW}build.ninja is newer than compile_commands.json - regenerating{Colors.RESET}")
                 os.remove(compile_db)
                 # Also remove filtered DB to force full regeneration
                 if os.path.exists(filtered_db):
@@ -237,7 +284,7 @@ def create_filtered_compile_commands(build_dir: str) -> str:
                 
             if not rebuild_needed:
                 logging.info("Using cached filtered compile database")
-                print(f"{Fore.GREEN}Using cached filtered compile database{Style.RESET_ALL}")
+                print(f"{Colors.GREEN}Using cached filtered compile database{Colors.RESET}")
                 return filtered_db
     except OSError as e:
         logging.warning(f"Failed to check filtered DB timestamps: {e}. Will regenerate.")
@@ -245,7 +292,7 @@ def create_filtered_compile_commands(build_dir: str) -> str:
     # Generate if compile_commands.json doesn't exist
     if not os.path.exists(compile_db):
         logging.info("Generating compile_commands.json from ninja")
-        print(f"{Fore.CYAN}Generating compile_commands.json...{Style.RESET_ALL}")
+        print(f"{Colors.CYAN}Generating compile_commands.json...{Colors.RESET}")
         try:
             result = subprocess.run(
                 ["ninja", "-t", "compdb"],
@@ -269,7 +316,7 @@ def create_filtered_compile_commands(build_dir: str) -> str:
     
     # Filter to valid C/C++ entries
     logging.info("Filtering compilation database")
-    print(f"{Fore.CYAN}Filtering compilation database...{Style.RESET_ALL}")
+    print(f"{Colors.CYAN}Filtering compilation database...{Colors.RESET}")
     try:
         with open(compile_db, 'r') as f:
             data: List[Dict[str, Any]] = json.load(f)
@@ -287,7 +334,7 @@ def create_filtered_compile_commands(build_dir: str) -> str:
         file = entry.get('file', '')
         
         # Must be a source file with a compilation command (has -c flag)
-        if any(ext in file for ext in SOURCE_FILE_EXTENSIONS) and \
+        if any(ext in file for ext in VALID_SOURCE_EXTENSIONS) and \
            any(compiler in cmd for compiler in COMPILER_NAMES) and \
            ' -c ' in cmd:
             valid_entries.append(entry)
@@ -300,7 +347,7 @@ def create_filtered_compile_commands(build_dir: str) -> str:
         raise RuntimeError(f"Failed to write filtered compilation database: {e}") from e
     
     logging.info(f"Filtered {len(data)} → {len(valid_entries)} entries")
-    print(f"{Fore.GREEN}Filtered {len(data)} → {len(valid_entries)} entries{Style.RESET_ALL}")
+    print(f"{Colors.GREEN}Filtered {len(data)} → {len(valid_entries)} entries{Colors.RESET}")
     return filtered_db
 
 
@@ -365,7 +412,7 @@ def analyze_gateway_headers(source_to_headers: Dict[str, Set[str]], project_root
     return gateway_headers
 
 
-def build_header_dependency_graph(source_to_headers: Dict[str, Set[str]], project_root: str) -> Tuple[nx.Graph, DefaultDict[str, Set[str]]]:
+def build_header_dependency_graph(source_to_headers: Dict[str, Set[str]], project_root: str) -> Tuple['nx.Graph[Any]', DefaultDict[str, Set[str]]]:
     """Build header-to-header dependency graph by analyzing which headers are commonly included together.
     
     Args:
@@ -410,7 +457,7 @@ def build_header_dependency_graph(source_to_headers: Dict[str, Set[str]], projec
     
     # Build directed graph of header co-dependencies
     try:
-        graph: nx.Graph = nx.Graph()  # Undirected since we don't know direct inclusion order
+        graph: nx.Graph[Any] = nx.Graph()  # Undirected since we don't know direct inclusion order
         graph.add_nodes_from(all_project_headers)
         
         for header, related in header_to_headers.items():
@@ -524,13 +571,13 @@ def process_deps(deps_list: List[str], edges: List[Tuple[str, str]], headers: Se
     # Filter to only project headers
     project_deps: List[str] = [
         d for d in all_deps 
-        if d.endswith(HEADER_FILE_EXTENSIONS) 
+        if d.endswith(VALID_HEADER_EXTENSIONS) 
         and '/gtec-demo-framework/' in d
         and not d.startswith('/usr/')
     ]
     
     # Track source file dependencies (source includes all these headers)
-    if source and source.endswith(SOURCE_FILE_EXTENSIONS):
+    if source and source.endswith(VALID_SOURCE_EXTENSIONS):
         logging.debug(f"Processing {len(project_deps)} dependencies for {os.path.basename(source)}")
         for dep in project_deps:
             headers.add(dep)
@@ -542,7 +589,7 @@ def process_deps(deps_list: List[str], edges: List[Tuple[str, str]], headers: Se
     # We would need to parse the actual header files or use a different tool
 
 
-def build_include_graph_from_clang_scan(build_dir: str) -> Tuple[nx.DiGraph, DefaultDict[str, Set[str]]]:
+def build_include_graph_from_clang_scan(build_dir: str) -> Tuple['nx.DiGraph[Any]', DefaultDict[str, Set[str]]]:
     """Use clang-scan-deps to build an accurate include graph with NetworkX.
     
     Args:
@@ -570,12 +617,12 @@ def build_include_graph_from_clang_scan(build_dir: str) -> Tuple[nx.DiGraph, Def
     num_cores: int = mp.cpu_count()
     logging.info(f"Using {num_cores} CPU cores for parallel processing")
     
-    print(f"{Fore.CYAN}Running clang-scan-deps using {num_cores} cores...{Style.RESET_ALL}")
+    print(f"{Colors.CYAN}Running clang-scan-deps using {num_cores} cores...{Colors.RESET}")
     
     # Run clang-scan-deps with parallel jobs
     # Try multiple versions of clang-scan-deps
     clang_cmd: str | None = None
-    for cmd in CLANG_SCAN_DEPS_VERSIONS:
+    for cmd in CLANG_SCAN_DEPS_COMMANDS:
         try:
             subprocess.run([cmd, "--version"], capture_output=True, check=True, timeout=5)
             clang_cmd = cmd
@@ -586,7 +633,7 @@ def build_include_graph_from_clang_scan(build_dir: str) -> Tuple[nx.DiGraph, Def
     
     if not clang_cmd:
         logging.error("No clang-scan-deps found")
-        versions_str = ', '.join(CLANG_SCAN_DEPS_VERSIONS)
+        versions_str = ', '.join(CLANG_SCAN_DEPS_COMMANDS)
         raise RuntimeError(
             f"clang-scan-deps not found. Please install one of: {versions_str}\n"
             "Ubuntu/Debian: sudo apt install clang-19\n"
@@ -619,22 +666,22 @@ def build_include_graph_from_clang_scan(build_dir: str) -> Tuple[nx.DiGraph, Def
     
     if result.returncode != 0:
         logging.warning(f"clang-scan-deps had errors (return code {result.returncode})")
-        print(f"{Fore.YELLOW}Warning: clang-scan-deps had some errors (possibly missing dependencies like OpenCV){Style.RESET_ALL}")
+        print(f"{Colors.YELLOW}Warning: clang-scan-deps had some errors (possibly missing dependencies like OpenCV){Colors.RESET}")
         if result.stderr:
             logging.debug(f"clang-scan-deps stderr: {result.stderr[:500]}...")
             # Show first few errors but continue
             error_lines = result.stderr.split('\n')[:10]
             for line in error_lines:
                 if line.strip():
-                    print(f"  {Fore.LIGHTBLACK_EX}{line}{Style.RESET_ALL}")
+                    print(f"  {Colors.DIM}{line}{Colors.RESET}")
             if len(result.stderr.split('\n')) > 10:
-                print(f"  {Fore.LIGHTBLACK_EX}... (additional errors omitted){Style.RESET_ALL}")
-        print(f"{Fore.CYAN}Continuing with partial results...{Style.RESET_ALL}")
+                print(f"  {Colors.DIM}... (additional errors omitted){Colors.RESET}")
+        print(f"{Colors.CYAN}Continuing with partial results...{Colors.RESET}")
     
     project_root: str = os.path.dirname(os.path.abspath(__file__))
     
     # Parse output to build graph
-    print(f"{Fore.CYAN}Building dependency graph...{Style.RESET_ALL}")
+    print(f"{Colors.CYAN}Building dependency graph...{Colors.RESET}")
     try:
         edges: List[Tuple[str, str]]
         all_headers: Set[str]
@@ -644,7 +691,7 @@ def build_include_graph_from_clang_scan(build_dir: str) -> Tuple[nx.DiGraph, Def
         # Create directed graph for header-to-header relationships (if we had them)
         # Note: clang-scan-deps gives us transitive deps, not direct include relationships
         # So we focus on source-to-header mapping instead
-        graph: nx.DiGraph = nx.DiGraph()
+        graph: nx.DiGraph[Any] = nx.DiGraph()
         graph.add_nodes_from(all_headers)
         graph.add_edges_from(edges)
     except Exception as e:
@@ -654,7 +701,7 @@ def build_include_graph_from_clang_scan(build_dir: str) -> Tuple[nx.DiGraph, Def
     return graph, source_to_headers
 
 
-def find_affected_source_files(changed_header: str, graph: nx.DiGraph, source_to_headers: Dict[str, Set[str]], project_root: str) -> List[str]:
+def find_affected_source_files(changed_header: str, graph: 'nx.DiGraph[Any]', source_to_headers: Dict[str, Set[str]], project_root: str) -> List[str]:
     """Find all .cpp files that will rebuild due to a changed header.
     
     Args:
@@ -691,8 +738,16 @@ def find_affected_source_files(changed_header: str, graph: nx.DiGraph, source_to
         return []
 
 
-def main() -> None:
-    """Main entry point for the include graph analysis tool."""
+def main() -> int:
+    """Main entry point for the include graph analysis tool.
+    
+    Returns:
+        Exit code (0 for success, non-zero for failure)
+    """
+    # Verify dependencies early
+    from lib.graph_utils import verify_requirements as verify_graph
+    verify_graph()
+    
     # Configure logging
     logging.basicConfig(
         level=logging.INFO,
@@ -752,27 +807,27 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
     
     # Validate system requirements
     if args.verbose:
-        print(f"{Fore.CYAN}Checking system requirements...{Style.RESET_ALL}")
+        print(f"{Colors.CYAN}Checking system requirements...{Colors.RESET}")
         requirements = validate_system_requirements()
-        for req, available in requirements.items():
-            status = f"{Fore.GREEN}✓" if available else f"{Fore.RED}✗"
-            print(f"  {status} {req}{Style.RESET_ALL}")
+        for req, available in requirements.to_dict().items():
+            status = f"{Colors.GREEN}✓" if available else f"{Colors.RED}✗"
+            print(f"  {status} {req}{Colors.RESET}")
         
-        missing = [req for req, available in requirements.items() if not available]
+        missing = requirements.missing_requirements()
         if missing:
             logging.warning(f"Missing requirements: {', '.join(missing)}")
-            print(f"{Fore.YELLOW}Warning: Some requirements are missing{Style.RESET_ALL}")
+            print(f"{Colors.YELLOW}Warning: Some requirements are missing{Colors.RESET}")
     
     # Validate arguments
     if not args.build_directory:
         logging.error("Build directory not specified")
-        print(f"{Fore.RED}Error: Build directory is required{Style.RESET_ALL}")
-        sys.exit(1)
+        print(f"{Colors.RED}Error: Build directory is required{Colors.RESET}")
+        return 1
     
     if args.top < 1:
         logging.error(f"Invalid --top value: {args.top}")
-        print(f"{Fore.RED}Error: --top must be at least 1{Style.RESET_ALL}")
-        sys.exit(1)
+        print(f"{Colors.RED}Error: --top must be at least 1{Colors.RESET}")
+        return 1
     
     build_dir: str = os.path.abspath(args.build_directory)
     logging.info(f"Build directory: {build_dir}")
@@ -780,30 +835,30 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
     if not os.path.isdir(build_dir):
         logging.error(f"'{build_dir}' is not a directory")
         print(f"Error: '{build_dir}' is not a directory.")
-        sys.exit(1)
+        return 1
     
     build_ninja: str = os.path.join(build_dir, 'build.ninja')
     if not os.path.exists(build_ninja):
         logging.error(f"build.ninja not found in '{build_dir}'")
         print(f"Error: 'build.ninja' not found in '{build_dir}'.")
         print(f"Please provide the path to the ninja build directory containing build.ninja")
-        sys.exit(1)
+        return 1
 
     project_root: str = os.path.dirname(os.path.abspath(__file__))
     
     # Get changed headers from rebuild info
-    print(f"\n{Fore.CYAN}Extracting rebuild information...{Style.RESET_ALL}")
+    print(f"\n{Colors.CYAN}Extracting rebuild information...{Colors.RESET}")
     # Save current directory and restore after extract_rebuild_info
     original_dir: str = os.getcwd()
     try:
         rebuild_entries: List[Any]
-        reasons: Dict[str, str]
-        root_causes: Dict[str, Any]
+        reasons: Dict[str, int]
+        root_causes: Dict[str, int]
         rebuild_entries, reasons, root_causes = extract_rebuild_info(build_dir)
     except Exception as e:
         logging.error(f"Failed to extract rebuild information: {e}")
-        print(f"{Fore.RED}Error: Failed to extract rebuild information: {e}{Style.RESET_ALL}")
-        sys.exit(1)
+        print(f"{Colors.RED}Error: Failed to extract rebuild information: {e}{Colors.RESET}")
+        return 1
     finally:
         os.chdir(original_dir)
     
@@ -812,43 +867,43 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
     
     if not args.full and not changed_headers:
         logging.warning("No changed header files found")
-        print(f"\n{Fore.YELLOW}No changed header files found{Style.RESET_ALL}")
+        print(f"\n{Colors.YELLOW}No changed header files found{Colors.RESET}")
         print(f"Use --full to analyze all headers instead")
-        return
+        return 0
     
     if args.full:
         logging.info("Running in full analysis mode")
-        print(f"{Fore.GREEN}Full analysis mode: analyzing all headers{Style.RESET_ALL}")
+        print(f"{Colors.GREEN}Full analysis mode: analyzing all headers{Colors.RESET}")
     else:
         logging.info(f"Analyzing {len(changed_headers)} changed headers")
-        print(f"{Fore.GREEN}Found {len(changed_headers)} changed headers{Style.RESET_ALL}")
+        print(f"{Colors.GREEN}Found {len(changed_headers)} changed headers{Colors.RESET}")
     
     # Build include graph using clang-scan-deps
     try:
-        graph: nx.DiGraph
+        graph: nx.DiGraph[Any]
         source_to_headers: DefaultDict[str, Set[str]]
         graph, source_to_headers = build_include_graph_from_clang_scan(build_dir)
     except Exception as e:
         logging.error(f"Failed to build include graph: {e}")
-        print(f"{Fore.RED}Error: Failed to build include graph: {e}{Style.RESET_ALL}")
-        sys.exit(1)
+        print(f"{Colors.RED}Error: Failed to build include graph: {e}{Colors.RESET}")
+        return 1
     
     # Build header-to-header dependency graph
-    print(f"{Fore.CYAN}Building header dependency graph...{Style.RESET_ALL}")
+    print(f"{Colors.CYAN}Building header dependency graph...{Colors.RESET}")
     try:
-        header_graph: nx.Graph
+        header_graph: nx.Graph[Any]
         header_to_headers: DefaultDict[str, Set[str]]
         header_graph, header_to_headers = build_header_dependency_graph(source_to_headers, project_root)
     except Exception as e:
         logging.error(f"Failed to build header dependency graph: {e}")
-        print(f"{Fore.RED}Error: Failed to build header dependency graph: {e}{Style.RESET_ALL}")
-        sys.exit(1)
+        print(f"{Colors.RED}Error: Failed to build header dependency graph: {e}{Colors.RESET}")
+        return 1
     
     # Calculate total dependency relationships
     total_deps: int = sum(len(headers) for headers in source_to_headers.values())
     
     logging.info(f"Analysis complete: {len(source_to_headers)} sources, {header_graph.number_of_nodes()} headers, {total_deps} dependencies")
-    print(f"\n{Fore.GREEN}Dependency analysis complete:{Style.RESET_ALL}")
+    print(f"\n{Colors.GREEN}Dependency analysis complete:{Colors.RESET}")
     print(f"  • {len(source_to_headers)} source files tracked")
     print(f"  • {header_graph.number_of_nodes()} unique headers in project")
     print(f"  • {total_deps} total source-to-header dependencies")
@@ -868,21 +923,21 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
             changed_headers_in_graph = [h for h in changed_headers if h in header_graph]
     except Exception as e:
         logging.error(f"Failed to analyze headers: {e}")
-        print(f"{Fore.RED}Error: Failed to analyze headers: {e}{Style.RESET_ALL}")
-        sys.exit(1)
+        print(f"{Colors.RED}Error: Failed to analyze headers: {e}{Colors.RESET}")
+        return 1
     
     if not changed_headers_in_graph:
         if args.full:
-            print(f"\n{Fore.YELLOW}No headers found in the dependency graph{Style.RESET_ALL}")
+            print(f"\n{Colors.YELLOW}No headers found in the dependency graph{Colors.RESET}")
         else:
-            print(f"\n{Fore.YELLOW}None of the changed headers are in the dependency graph{Style.RESET_ALL}")
-        return
+            print(f"\n{Colors.YELLOW}None of the changed headers are in the dependency graph{Colors.RESET}")
+        return 0
     
     # Analyze each changed header
     if args.full:
-        print(f"\n{Style.BRIGHT}═══ Top Gateway Headers Analysis ═══{Style.RESET_ALL}")
+        print(f"\n{Colors.BRIGHT}═══ Top Gateway Headers Analysis ═══{Colors.RESET}")
     else:
-        print(f"\n{Style.BRIGHT}═══ Include Graph Analysis ═══{Style.RESET_ALL}")
+        print(f"\n{Colors.BRIGHT}═══ Include Graph Analysis ═══{Colors.RESET}")
     
     for changed_header in sorted(changed_headers_in_graph):
         try:
@@ -894,36 +949,36 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
             affected_sources: List[str] = find_affected_source_files(changed_header, graph, source_to_headers, project_root)
         except Exception as e:
             logging.error(f"Error processing header {changed_header}: {e}")
-            print(f"{Fore.YELLOW}Warning: Skipping {changed_header} due to error: {e}{Style.RESET_ALL}")
+            print(f"{Colors.YELLOW}Warning: Skipping {changed_header} due to error: {e}{Colors.RESET}")
             continue
         
-        print(f"\n{Fore.RED}{'='*80}{Style.RESET_ALL}")
-        print(f"{Fore.RED}{Style.BRIGHT}{display_changed}{Style.RESET_ALL}")
-        print(f"{Fore.RED}{'='*80}{Style.RESET_ALL}")
-        print(f"  {Fore.YELLOW}⚠ {len(affected_sources)} .cpp files will rebuild{Style.RESET_ALL}")
+        print(f"\n{Colors.RED}{'='*80}{Colors.RESET}")
+        print(f"{Colors.RED}{Colors.BRIGHT}{display_changed}{Colors.RESET}")
+        print(f"{Colors.RED}{'='*80}{Colors.RESET}")
+        print(f"  {Colors.YELLOW}⚠ {len(affected_sources)} .cpp files will rebuild{Colors.RESET}")
         
         # Show affected source files
         if affected_sources:
-            print(f"\n  {Style.BRIGHT}Sample of .cpp files that will rebuild:{Style.RESET_ALL}")
+            print(f"\n  {Colors.BRIGHT}Sample of .cpp files that will rebuild:{Colors.RESET}")
             for source in sorted(affected_sources)[:args.top]:
                 display_source = source
                 if source.startswith(project_root):
                     display_source = os.path.relpath(source, project_root)
-                print(f"    {Fore.YELLOW}📄 {display_source}{Style.RESET_ALL}")
+                print(f"    {Colors.YELLOW}📄 {display_source}{Colors.RESET}")
             if len(affected_sources) > args.top:
-                print(f"    {Style.DIM}... and {len(affected_sources) - args.top} more{Style.RESET_ALL}")
+                print(f"    {Colors.DIM}... and {len(affected_sources) - args.top} more{Colors.RESET}")
     
     # Gateway Header Analysis
-    print(f"\n{Style.BRIGHT}{'='*80}{Style.RESET_ALL}")
-    print(f"{Style.BRIGHT}GATEWAY HEADER ANALYSIS{Style.RESET_ALL}")
-    print(f"{Style.BRIGHT}{'='*80}{Style.RESET_ALL}")
+    print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
+    print(f"{Colors.BRIGHT}GATEWAY HEADER ANALYSIS{Colors.RESET}")
+    print(f"{Colors.BRIGHT}{'='*80}{Colors.RESET}")
     print(f"Gateway headers = headers that drag in many other dependencies\n")
     
     gateway_headers = analyze_gateway_headers(source_to_headers, project_root)
     
     # Show top gateway headers overall
     top_count: int = 30 if args.full else 20
-    print(f"{Style.BRIGHT}Top {top_count} gateway headers (highest include cost):{Style.RESET_ALL}")
+    print(f"{Colors.BRIGHT}Top {top_count} gateway headers (highest include cost):{Colors.RESET}")
     for header, avg_cost, unique_deps, usage_count in gateway_headers[:top_count]:
         display_header: str = header
         if header.startswith(project_root):
@@ -931,17 +986,17 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
         
         # Highlight if this is a changed header
         is_changed: bool = header in changed_headers
-        color: str = Fore.RED if is_changed else Fore.YELLOW if avg_cost > 100 else Fore.WHITE
+        color: str = Colors.RED if is_changed else Colors.YELLOW if avg_cost > 100 else Colors.WHITE
         marker: str = " ⚠️ CHANGED" if is_changed else ""
         
-        print(f"  {color}{display_header}{Style.RESET_ALL}")
+        print(f"  {color}{display_header}{Colors.RESET}")
         print(f"    Avg deps: {avg_cost:.1f} | Unique deps: {unique_deps} | Used by: {usage_count} files{marker}")
     
     # Analyze changed headers specifically
     if args.full:
-        print(f"\n{Style.BRIGHT}Detailed analysis of top gateway headers:{Style.RESET_ALL}")
+        print(f"\n{Colors.BRIGHT}Detailed analysis of top gateway headers:{Colors.RESET}")
     else:
-        print(f"\n{Style.BRIGHT}Changed headers and their include costs:{Style.RESET_ALL}")
+        print(f"\n{Colors.BRIGHT}Changed headers and their include costs:{Colors.RESET}")
     
     for changed_header in sorted(changed_headers_in_graph):
         display_changed = changed_header
@@ -951,10 +1006,10 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
         # Find this header in gateway analysis
         header_info = next((h for h in gateway_headers if h[0] == changed_header), None)
         if header_info:
-            _, avg_cost, unique_deps, usage_count = header_info
+            header_path, avg_cost, unique_deps, usage_count = header_info
             affected_sources = find_affected_source_files(changed_header, graph, source_to_headers, project_root)
             
-            print(f"\n{Fore.RED}{display_changed}{Style.RESET_ALL}")
+            print(f"\n{Colors.RED}{display_changed}{Colors.RESET}")
             print(f"  Direct impact: {len(affected_sources)} .cpp files rebuild")
             print(f"  Include cost: Drags in avg {avg_cost:.1f} other headers ({unique_deps} unique)")
             print(f"  Total compilation cost: {len(affected_sources)} files × {avg_cost:.1f} avg headers = {len(affected_sources) * avg_cost:.0f} header compilations")
@@ -978,9 +1033,9 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
                     print(f"    → {display_co} ({count}/{len(affected_sources)} = {pct:.0f}% of uses)")
     
     # Summary
-    print(f"\n{Style.BRIGHT}{'='*80}{Style.RESET_ALL}")
-    print(f"{Style.BRIGHT}REBUILD IMPACT SUMMARY{Style.RESET_ALL}")
-    print(f"{Style.BRIGHT}{'='*80}{Style.RESET_ALL}")
+    print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
+    print(f"{Colors.BRIGHT}REBUILD IMPACT SUMMARY{Colors.RESET}")
+    print(f"{Colors.BRIGHT}{'='*80}{Colors.RESET}")
     
     # Calculate unique .cpp files that will rebuild across all changed headers
     all_affected_sources: Set[str] = set()
@@ -988,7 +1043,7 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
         affected: List[str] = find_affected_source_files(changed_header, graph, source_to_headers, project_root)
         all_affected_sources.update(affected)
     
-    print(f"{Fore.YELLOW}Total unique .cpp files that will rebuild: {len(all_affected_sources)}{Style.RESET_ALL}")
+    print(f"{Colors.YELLOW}Total unique .cpp files that will rebuild: {len(all_affected_sources)}{Colors.RESET}")
     if len(source_to_headers) > 0:
         percentage: float = 100.0 * len(all_affected_sources) / len(source_to_headers)
         print(f"Out of {len(source_to_headers)} total source files tracked ({percentage:.1f}% of codebase)")
@@ -1006,14 +1061,14 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
             display_header = header
             if header.startswith(project_root):
                 display_header = os.path.relpath(header, project_root)
-            print(f"  {Fore.RED}{display_header}: {count} files{Style.RESET_ALL}")
+            print(f"  {Colors.RED}{display_header}: {count} files{Colors.RESET}")
     else:
         # In full mode, show summary of analyzed headers
         print(f"Analyzed top {len(changed_headers_in_graph)} gateway headers by include cost")
         print(f"Total source files in project: {len(source_to_headers)}")
     
     # Optimization opportunities
-    print(f"\n{Style.BRIGHT}Optimization opportunities:{Style.RESET_ALL}")
+    print(f"\n{Colors.BRIGHT}Optimization opportunities:{Colors.RESET}")
     if args.full:
         print(f"Headers with high include cost are good candidates for optimization.")
     else:
@@ -1026,9 +1081,9 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
     # Find gateway headers that could be optimized
     optimization_candidates: List[Tuple[str, float, int]] = []
     for header in changed_headers_in_graph:
-        header_info: Tuple[str, float, int, int] | None = next((h for h in gateway_headers if h[0] == header), None)
-        if header_info:
-            _, avg_cost, unique_deps, usage_count = header_info
+        opt_header_info: Optional[Tuple[str, float, int, int]] = next((h for h in gateway_headers if h[0] == header), None)
+        if opt_header_info:
+            header_path, avg_cost, unique_deps, usage_count = opt_header_info
             affected = find_affected_source_files(header, graph, source_to_headers, project_root)
             if avg_cost > HIGH_COST_THRESHOLD:  # High include cost
                 optimization_candidates.append((header, avg_cost, len(affected)))
@@ -1043,29 +1098,39 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
             if header.startswith(project_root):
                 display_header = os.path.relpath(header, project_root)
             total_cost = cost * impact
-            print(f"    {Fore.YELLOW}{display_header}{Style.RESET_ALL}")
+            print(f"    {Colors.YELLOW}{display_header}{Colors.RESET}")
             print(f"      Cost: {cost:.0f} deps × {impact} files = {total_cost:.0f} total header compilations")
-
+    
+    return 0
 
 
 if __name__ == "__main__":
+    from lib.constants import (
+        EXIT_SUCCESS, EXIT_KEYBOARD_INTERRUPT, EXIT_INVALID_ARGS, EXIT_RUNTIME_ERROR,
+        BuildCheckError
+    )
+    
     try:
-        main()
+        exit_code = main()
+        sys.exit(exit_code)
     except KeyboardInterrupt:
         logging.info("Interrupted by user")
-        print(f"\n{Fore.YELLOW}Interrupted by user{Style.RESET_ALL}")
-        sys.exit(130)
+        print(f"\n{Colors.YELLOW}Interrupted by user{Colors.RESET}")
+        sys.exit(EXIT_KEYBOARD_INTERRUPT)
+    except BuildCheckError as e:
+        logging.error(str(e))
+        sys.exit(e.exit_code)
     except ValueError as e:
         logging.error(f"Validation error: {e}")
-        print(f"\n{Fore.RED}Validation error: {e}{Style.RESET_ALL}")
-        sys.exit(1)
+        print(f"\n{Colors.RED}Validation error: {e}{Colors.RESET}")
+        sys.exit(EXIT_INVALID_ARGS)
     except RuntimeError as e:
         logging.error(f"Runtime error: {e}")
-        print(f"\n{Fore.RED}Runtime error: {e}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}Run with --verbose for more details{Style.RESET_ALL}")
-        sys.exit(1)
+        print(f"\n{Colors.RED}Runtime error: {e}{Colors.RESET}")
+        print(f"{Colors.YELLOW}Run with --verbose for more details{Colors.RESET}")
+        sys.exit(EXIT_RUNTIME_ERROR)
     except Exception as e:
         logging.critical(f"Unexpected error: {e}", exc_info=True)
-        print(f"\n{Fore.RED}Fatal error: {e}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}Run with --verbose for more details{Style.RESET_ALL}")
-        sys.exit(1)
+        print(f"\n{Colors.RED}Fatal error: {e}{Colors.RESET}")
+        print(f"{Colors.YELLOW}Run with --verbose for more details{Colors.RESET}")
+        sys.exit(EXIT_RUNTIME_ERROR)

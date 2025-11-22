@@ -1,4 +1,13 @@
 # Test dependencies for BuildCheck
+# Includes runtime dependencies plus test-specific packages
+
+# Test framework
 pytest>=7.0.0
 pytest-cov>=4.0.0
 pytest-mock>=3.10.0
+
+# Runtime dependencies (must match requirements.txt minimum versions)
+packaging>=24.0
+networkx>=2.8.8
+GitPython>=3.1.40
+colorama>=0.4.6

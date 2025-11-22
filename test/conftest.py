@@ -20,31 +20,65 @@
 #* LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
 #* EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #****************************************************************************************************************************************************
-"""Pytest configuration and shared fixtures for BuildCheck tests."""
+"""Pytest configuration and shared base fixtures for BuildCheck tests.
+
+This module provides base fixtures used across all tests. Specialized fixtures
+are organized in separate conftest files:
+- conftest_dsm.py: DSM analysis fixtures
+- conftest_graph.py: Graph/dependency fixtures
+- conftest_library.py: Library/ninja fixtures
+
+Fixture Complexity Levels:
+- simple: 5-10 nodes, 1-2 cycles, fast execution (< 50ms)
+- medium: 15-25 nodes, 3-5 cycles, moderate execution (< 200ms)
+- complex: 50-200 nodes, 5-10 cycles, realistic scale (< 1s)
+
+Fixture Scopes:
+- function: Default, recreated for each test
+- module: Shared across tests in one file, use for immutable data
+- session: Shared across entire test run, use for expensive setup
+"""
+
 import os
 import sys
 import json
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Generator, List, Tuple
 import pytest
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Import specialized fixture modules
+pytest_plugins = [
+    'test.conftest_dsm',
+    'test.conftest_graph',
+    'test.conftest_library',
+]
+
 
 @pytest.fixture
-def temp_dir():
-    """Create a temporary directory for tests."""
+def temp_dir() -> Generator[str, None, None]:
+    """Create a temporary directory for tests.
+    
+    Scope: function (default)
+    Use for: File I/O operations that need isolation
+    """
     tmpdir = tempfile.mkdtemp(prefix="buildcheck_test_")
     yield tmpdir
     shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 @pytest.fixture
-def mock_build_dir(temp_dir):
-    """Create a mock ninja build directory with build.ninja."""
+def mock_build_dir(temp_dir: str) -> str:
+    """Create a mock ninja build directory with build.ninja.
+    
+    Scope: function
+    Dependencies: temp_dir
+    Use for: Testing ninja-related functionality
+    """
     build_dir = Path(temp_dir) / "build" / "release"
     build_dir.mkdir(parents=True, exist_ok=True)
     
@@ -64,18 +98,26 @@ build app: phony main.cpp.o utils.cpp.o
 
 
 @pytest.fixture
-def mock_compile_commands(mock_build_dir):
-    """Create a mock compile_commands.json in the build directory."""
+def mock_compile_commands(mock_build_dir: str, temp_dir: str) -> str:
+    """Create a mock compile_commands.json in the build directory.
+    
+    Scope: function
+    Dependencies: mock_build_dir, temp_dir
+    Use for: Testing compilation database parsing
+    """
+    # Get absolute paths for source files
+    src_dir = Path(temp_dir) / "src"
+    
     compile_commands = [
         {
             "directory": mock_build_dir,
-            "command": "g++ -c -o main.cpp.o ../src/main.cpp",
-            "file": "../src/main.cpp"
+            "command": f"g++ -I{src_dir} -c -o main.cpp.o {src_dir}/main.cpp",
+            "file": str(src_dir / "main.cpp")
         },
         {
             "directory": mock_build_dir,
-            "command": "g++ -c -o utils.cpp.o ../src/utils.cpp",
-            "file": "../src/utils.cpp"
+            "command": f"g++ -I{src_dir} -c -o utils.cpp.o {src_dir}/utils.cpp",
+            "file": str(src_dir / "utils.cpp")
         }
     ]
     
@@ -87,8 +129,13 @@ def mock_compile_commands(mock_build_dir):
 
 
 @pytest.fixture
-def mock_source_files(temp_dir):
-    """Create mock C++ source files."""
+def mock_source_files(temp_dir: str) -> str:
+    """Create mock C++ source files.
+    
+    Scope: function
+    Dependencies: temp_dir
+    Use for: Testing file parsing and analysis
+    """
     src_dir = Path(temp_dir) / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
     
@@ -133,8 +180,14 @@ int add(int a, int b) {
 
 
 @pytest.fixture
-def mock_git_repo(temp_dir, mock_source_files):
-    """Create a mock git repository."""
+def mock_git_repo(temp_dir: str, mock_source_files: str) -> Generator[str, None, None]:
+    """Create a mock git repository with commit history.
+    
+    Scope: function
+    Dependencies: temp_dir, mock_source_files
+    Use for: Testing git-related functionality
+    Requires: git command available
+    """
     import subprocess
     
     repo_dir = temp_dir
@@ -176,8 +229,12 @@ int subtract(int a, int b);  // Added function
 
 
 @pytest.fixture
-def mock_ninja_explain_output():
-    """Mock output from ninja -n -d explain."""
+def mock_ninja_explain_output() -> str:
+    """Mock output from ninja -n -d explain.
+    
+    Scope: function
+    Use for: Testing ninja explain parsing
+    """
     return """
 ninja explain: output main.cpp.o doesn't exist
 ninja explain: output utils.cpp.o is dirty
@@ -188,9 +245,13 @@ ninja explain: output utils.cpp.o older than most recent input src/utils.hpp (12
 """
 
 
-def create_mock_clang_scan_deps_output(source_files: List[str], 
-                                       dependencies: Dict[str, List[str]]) -> str:
+def create_mock_clang_scan_deps_output(
+    source_files: List[str],
+    dependencies: Dict[str, List[str]]
+) -> str:
     """Create mock output from clang-scan-deps in makefile format.
+    
+    Helper function (not a fixture) for generating realistic clang-scan-deps output.
     
     Args:
         source_files: List of source file paths
@@ -198,6 +259,12 @@ def create_mock_clang_scan_deps_output(source_files: List[str],
     
     Returns:
         Mock makefile-format output
+    
+    Example:
+        >>> output = create_mock_clang_scan_deps_output(
+        ...     ['main.cpp'],
+        ...     {'main.cpp': ['utils.hpp', 'config.hpp']}
+        ... )
     """
     output = []
     for source in source_files:

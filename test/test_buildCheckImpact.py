@@ -26,51 +26,17 @@ import sys
 import subprocess
 from pathlib import Path
 import pytest
+from typing import Any, Dict, List, Tuple, Generator
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import buildCheckImpact
 
 
 class TestBuildCheckImpact:
-    """Test suite for buildCheckImpact functionality."""
+    """Test suite for buildCheckImpact main script functionality."""
     
-    def test_get_dependencies(self, mock_build_dir, monkeypatch):
-        """Test getting dependencies for a target."""
-        mock_output = """main.cpp.o:
-  ../src/main.cpp
-  ../src/utils.hpp
-  ../src/config.hpp
-"""
-        
-        class MockResult:
-            def __init__(self):
-                self.stdout = mock_output
-                self.stderr = ""
-                self.returncode = 0
-        
-        def mock_run(*args, **kwargs):
-            return MockResult()
-        
-        monkeypatch.setattr(subprocess, "run", mock_run)
-        
-        deps = buildCheckImpact.get_dependencies(mock_build_dir, "main.cpp.o")
-        
-        assert len(deps) == 3
-        assert "../src/main.cpp" in deps
-        assert "../src/utils.hpp" in deps
-        assert "../src/config.hpp" in deps
     
-    def test_get_dependencies_timeout(self, mock_build_dir, monkeypatch):
-        """Test handling of timeout when getting dependencies."""
-        def mock_run(*args, **kwargs):
-            raise subprocess.TimeoutExpired("ninja", 30)
-        
-        monkeypatch.setattr(subprocess, "run", mock_run)
-        
-        deps = buildCheckImpact.get_dependencies(mock_build_dir, "main.cpp.o")
-        assert deps == []
-    
-    def test_build_dependency_impact_map(self, mock_build_dir, monkeypatch):
+    def test_build_dependency_impact_map(self, mock_build_dir: Any, monkeypatch: Any) -> None:
         """Test building dependency impact map."""
         mock_deps_output = """main.cpp.o:
   ../src/main.cpp
@@ -81,12 +47,12 @@ utils.cpp.o:
 """
         
         class MockResult:
-            def __init__(self):
+            def __init__(self) -> None:
                 self.stdout = mock_deps_output
                 self.stderr = ""
                 self.returncode = 0
         
-        def mock_run(*args, **kwargs):
+        def mock_run(*args: Any, **kwargs: Any) -> Any:
             return MockResult()
         
         monkeypatch.setattr(subprocess, "run", mock_run)
@@ -102,7 +68,7 @@ utils.cpp.o:
         assert len(impact_map["../src/utils.hpp"]) >= 1
         assert target_count == 2
     
-    def test_path_traversal_prevention(self, temp_dir):
+    def test_path_traversal_prevention(self, temp_dir: Any) -> None:
         """Test that path traversal attempts are blocked."""
         # Create build directory
         build_dir = Path(temp_dir) / "build"
@@ -116,15 +82,15 @@ utils.cpp.o:
         result = os.path.realpath(malicious_path)
         assert not result.startswith(str(build_dir))
     
-    def test_main_with_no_changes(self, mock_build_dir, monkeypatch, capsys):
+    def test_main_with_no_changes(self, mock_build_dir: Any, monkeypatch: Any, capsys: Any) -> None:
         """Test main function when no files need rebuilding."""
         class MockResult:
-            def __init__(self):
+            def __init__(self) -> None:
                 self.stdout = ""
                 self.stderr = "ninja: no work to do.\n"
                 self.returncode = 0
         
-        def mock_run(*args, **kwargs):
+        def mock_run(*args: Any, **kwargs: Any) -> Any:
             return MockResult()
         
         monkeypatch.setattr(subprocess, "run", mock_run)
@@ -136,7 +102,7 @@ utils.cpp.o:
         captured = capsys.readouterr()
         assert "No rebuilds detected" in captured.out
     
-    def test_main_with_invalid_directory(self, monkeypatch):
+    def test_main_with_invalid_directory(self, monkeypatch: Any) -> None:
         """Test main function with invalid directory."""
         # Monkeypatch sys.argv
         monkeypatch.setattr(sys, "argv", ["buildCheckImpact.py", "/nonexistent/path"])
@@ -149,7 +115,7 @@ utils.cpp.o:
 class TestBuildCheckImpactEdgeCases:
     """Test edge cases and error handling."""
     
-    def test_empty_rebuild_targets(self, mock_build_dir):
+    def test_empty_rebuild_targets(self, mock_build_dir: Any) -> None:
         """Test with empty rebuild targets list."""
         impact_map, project_root, count = buildCheckImpact.build_dependency_impact_map(
             mock_build_dir, [], None
@@ -158,7 +124,7 @@ class TestBuildCheckImpactEdgeCases:
         assert count == 0
         assert len(impact_map) == 0
     
-    def test_changed_files_filter(self, mock_build_dir, monkeypatch):
+    def test_changed_files_filter(self, mock_build_dir: Any, monkeypatch: Any) -> None:
         """Test filtering by changed files."""
         mock_output = """target.o:
   src/header.hpp

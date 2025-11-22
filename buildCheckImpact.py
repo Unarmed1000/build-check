@@ -77,52 +77,14 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Set, Dict, List, Tuple, Optional
 
-try:
-    from colorama import Fore, Style, init
-    init(autoreset=False)
-except ImportError:
-    class Fore:
-        RED = YELLOW = GREEN = BLUE = MAGENTA = CYAN = WHITE = LIGHTBLACK_EX = RESET = ''
-    class Style:
-        RESET_ALL = BRIGHT = DIM = ''
+# Import library modules
+from lib.color_utils import Colors, print_error, print_warning
+from lib.ninja_utils import get_dependencies, validate_build_directory_with_feedback
 
+# RE_OUTPUT constant (kept for local use)
 RE_OUTPUT = re.compile(r"ninja explain: (.*)")
 
-
-def get_dependencies(build_dir: str, target: str) -> List[str]:
-    """Get dependencies for a target using ninja -t deps.
-    
-    Args:
-        build_dir: Path to the build directory
-        target: The build target to get dependencies for
-        
-    Returns:
-        List of dependency file paths
-    """
-    try:
-        result = subprocess.run(
-            ["ninja", "-t", "deps", target],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=build_dir,
-            timeout=30
-        )
-        deps = []
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if line and not line.endswith(":") and not line.startswith("#"):
-                deps.append(line)
-        return deps
-    except subprocess.TimeoutExpired:
-        logging.warning(f"Timeout getting dependencies for target: {target}")
-        return []
-    except subprocess.CalledProcessError as e:
-        logging.debug(f"Failed to get dependencies for {target}: {e.stderr}")
-        return []
-    except Exception as e:
-        logging.error(f"Unexpected error getting dependencies for {target}: {e}")
-        return []
+# get_dependencies moved to lib.ninja_utils
 
 
 def build_dependency_impact_map(
@@ -218,25 +180,11 @@ Typical workflow:
         format='%(levelname)s: %(message)s'
     )
     
-    build_dir = os.path.realpath(os.path.abspath(args.build_directory))
-
-    # Validate build directory
-    if not os.path.exists(build_dir):
-        logging.error(f"Build directory does not exist: '{build_dir}'")
-        return 1
-    
-    if not os.path.isdir(build_dir):
-        logging.error(f"Path is not a directory: '{build_dir}'")
-        return 1
-    
-    # Check for build.ninja file
-    build_ninja_path = os.path.realpath(os.path.join(build_dir, 'build.ninja'))
-    # Validate build_ninja_path is within build_dir (prevent path traversal)
-    if not build_ninja_path.startswith(build_dir + os.sep):
-        logging.error("Path traversal detected in build.ninja path")
-        return 1
-    if not os.path.isfile(build_ninja_path):
-        logging.error(f"No build.ninja found in '{build_dir}'. Is this a Ninja build directory?")
+    # Validate build directory using library helper
+    try:
+        build_dir, _ = validate_build_directory_with_feedback(args.build_directory, verbose=args.verbose)
+    except (ValueError, RuntimeError) as e:
+        # Error message already printed by helper
         return 1
     
     # Check if ninja is available
@@ -333,7 +281,7 @@ Typical workflow:
         os.chdir(original_dir)
         return 0
 
-    print(f"\n{Fore.CYAN}Analyzing dependencies (found {len(changed_files)} changed files)...{Style.RESET_ALL}")
+    print(f"\n{Colors.CYAN}Analyzing dependencies (found {len(changed_files)} changed files)...{Colors.RESET}")
     
     try:
         impact_map, project_root, sample_count = build_dependency_impact_map(build_dir, rebuild_targets, changed_files)
@@ -359,7 +307,7 @@ Typical workflow:
 
     # Print changed headers
     if changed_with_impact:
-        print(f"\n{Style.BRIGHT}Changed Headers (impacting multiple targets):{Style.RESET_ALL}")
+        print(f"\n{Colors.BRIGHT}Changed Headers (impacting multiple targets):{Colors.RESET}")
         
         displayed = 0
         for file_path, impacted_targets in changed_with_impact.items():
@@ -377,14 +325,14 @@ Typical workflow:
                 display_path = file_path
             
             count = len(impacted_targets)
-            print(f"  {Fore.RED}{display_path}{Style.RESET_ALL} → impacts {Style.BRIGHT}{count}{Style.RESET_ALL} targets")
+            print_error(f"  {display_path} → impacts {Colors.BRIGHT}{count}{Colors.RESET} targets", prefix=False)
             displayed += 1
     else:
-        print(f"\n{Fore.YELLOW}No changed headers with dependencies found{Style.RESET_ALL}")
+        print_warning("\nNo changed headers with dependencies found", prefix=False)
     
     # Show all high-impact headers if requested
     if args.all_headers and all_high_impact:
-        print(f"\n{Style.BRIGHT}All High-Impact Headers:{Style.RESET_ALL}")
+        print(f"\n{Colors.BRIGHT}All High-Impact Headers:{Colors.RESET}")
         
         displayed = 0
         for file_path, impacted_targets in all_high_impact.items():
@@ -402,8 +350,8 @@ Typical workflow:
                 display_path = file_path
             
             count = len(impacted_targets)
-            marker = f" {Fore.RED}[CHANGED]{Style.RESET_ALL}" if file_path in changed_files else ""
-            print(f"  {Fore.MAGENTA}{display_path}{Style.RESET_ALL} → impacts {Style.BRIGHT}{count}{Style.RESET_ALL} targets{marker}")
+            marker = f" {Colors.RED}[CHANGED]{Colors.RESET}" if file_path in changed_files else ""
+            print(f"  {Colors.MAGENTA}{display_path}{Colors.RESET} → impacts {Colors.BRIGHT}{count}{Colors.RESET} targets{marker}")
             displayed += 1
     
     # Restore original directory
@@ -412,14 +360,23 @@ Typical workflow:
 
 
 if __name__ == "__main__":
+    from lib.constants import (
+        EXIT_SUCCESS, EXIT_KEYBOARD_INTERRUPT, EXIT_RUNTIME_ERROR,
+        BuildCheckError
+    )
+    
     try:
-        sys.exit(main())
+        exit_code = main()
+        sys.exit(exit_code)
     except KeyboardInterrupt:
-        print(f"\n{Fore.YELLOW}Operation cancelled by user{Style.RESET_ALL}")
-        sys.exit(130)
+        print_warning("\nOperation cancelled by user", prefix=False)
+        sys.exit(EXIT_KEYBOARD_INTERRUPT)
+    except BuildCheckError as e:
+        logging.error(str(e))
+        sys.exit(e.exit_code)
     except Exception as e:
         logging.error(f"Unexpected error: {e}")
         if logging.getLogger().level == logging.DEBUG:
             import traceback
             traceback.print_exc()
-        sys.exit(1)
+        sys.exit(EXIT_RUNTIME_ERROR)

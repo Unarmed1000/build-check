@@ -51,189 +51,38 @@ import signal
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Any
 
 __version__ = "1.0.0"
 __author__ = "Mana Battery"
 
-# Exit codes
-EXIT_SUCCESS = 0
-EXIT_INVALID_ARGS = 1
-EXIT_NINJA_FAILED = 2
-EXIT_UNEXPECTED = 3
+# Import library modules
+from lib.color_utils import Colors, print_error, print_warning, print_success
+from lib.ninja_utils import extract_rebuild_info, normalize_reason, validate_build_directory_with_feedback
+from lib.constants import (
+    EXIT_SUCCESS, EXIT_INVALID_ARGS, EXIT_RUNTIME_ERROR,
+    EXIT_KEYBOARD_INTERRUPT
+)
 
-# Colorama support (optional)
+# Export for tests
+__all__ = ['EXIT_SUCCESS', 'main']
+
 COLORS_ENABLED = True
-try:
-    from colorama import Fore, Style, init
-    init(autoreset=False)
-except ImportError:
-    COLORS_ENABLED = False
-    class Fore:
-        RED = YELLOW = GREEN = BLUE = MAGENTA = CYAN = WHITE = LIGHTBLACK_EX = RESET = ''
-    class Style:
-        RESET_ALL = BRIGHT = DIM = ''
 
-
-def disable_colors():
+def disable_colors() -> None:
     """Disable color output globally."""
     global COLORS_ENABLED
     COLORS_ENABLED = False
-    for attr in dir(Fore):
-        if not attr.startswith('_'):
-            setattr(Fore, attr, '')
-    for attr in dir(Style):
-        if not attr.startswith('_'):
-            setattr(Style, attr, '')
+    Colors.disable()
 
 
-def signal_handler(signum, frame):
+def signal_handler(signum: int, frame: Any) -> None:
     """Handle interrupt signals gracefully."""
-    print(f"\n{Fore.YELLOW}Interrupted by user. Exiting...{Style.RESET_ALL}", file=sys.stderr)
-    sys.exit(EXIT_UNEXPECTED)
+    print_warning("\nInterrupted by user. Exiting...", prefix=False)
+    sys.exit(EXIT_KEYBOARD_INTERRUPT)
 
-RE_OUTPUT = re.compile(r"ninja explain: (.*)")
-
-
-def extract_rebuild_info(build_dir: str, verbose: bool = False) -> Tuple[List[Tuple[str, str]], Dict[str, int], Dict[str, int]]:
-    """Extract rebuild information from ninja explain output.
-    
-    Args:
-        build_dir: Path to the ninja build directory
-        verbose: If True, print detailed progress information
-    
-    Returns:
-        tuple: (rebuild_entries, reasons, root_causes) where:
-            - rebuild_entries: list of (output_file, reason) tuples
-            - reasons: dict mapping normalized reason to count
-            - root_causes: dict mapping changed file to rebuild count
-            
-    Raises:
-        SystemExit: If ninja execution fails
-    """
-    if verbose:
-        print(f"Analyzing build directory: {build_dir}", file=sys.stderr)
-    
-    # Save current directory and change to build directory
-    original_dir = os.getcwd()
-    try:
-        os.chdir(build_dir)
-    except OSError as e:
-        print(f"Error: Cannot change to directory '{build_dir}': {e}", file=sys.stderr)
-        sys.exit(EXIT_INVALID_ARGS)
-
-    # Run ninja -n -d explain (dry-run with explain debug mode)
-    if verbose:
-        print("Running: ninja -n -d explain", file=sys.stderr)
-    
-    try:
-        result = subprocess.run(
-            ["ninja", "-n", "-d", "explain"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=300  # 5 minute timeout
-        )
-    except FileNotFoundError:
-        print("Error: 'ninja' command not found. Please ensure ninja is installed and in PATH.", file=sys.stderr)
-        sys.exit(EXIT_NINJA_FAILED)
-    except subprocess.TimeoutExpired:
-        print("Error: Ninja command timed out after 5 minutes.", file=sys.stderr)
-        sys.exit(EXIT_NINJA_FAILED)
-    except subprocess.CalledProcessError as e:
-        print(f"Error: Ninja command failed with exit code {e.returncode}", file=sys.stderr)
-        if e.stderr:
-            print(f"Stderr output:\n{e.stderr}", file=sys.stderr)
-        sys.exit(EXIT_NINJA_FAILED)
-    except Exception as e:
-        print(f"Unexpected error running ninja: {e}", file=sys.stderr)
-        sys.exit(EXIT_UNEXPECTED)
-    finally:
-        # Restore original directory
-        os.chdir(original_dir)
-
-    # Ninja debug output goes to stderr, not stdout
-    lines = result.stderr.splitlines()
-
-    if verbose:
-        print(f"Processing {len(lines)} lines of ninja output", file=sys.stderr)
-
-    rebuild_entries = []
-    reasons = defaultdict(int)
-    root_causes = defaultdict(int)
-
-    for line in lines:
-        m = RE_OUTPUT.search(line)
-        if not m:
-            continue
-
-        explain_msg = m.group(1)
-        
-        # Skip "is dirty" lines as they're redundant
-        if "is dirty" in explain_msg:
-            continue
-        
-        # Extract target from the message
-        output_file = "unknown"
-        if explain_msg.startswith("output "):
-            parts = explain_msg.split(" ", 2)
-            if len(parts) > 1:
-                output_file = parts[1]
-        elif "command line changed for " in explain_msg:
-            output_file = explain_msg.split("command line changed for ", 1)[1]
-        
-        reason_norm = normalize_reason(explain_msg)
-
-        rebuild_entries.append((output_file, reason_norm))
-        reasons[reason_norm] += 1
-
-        # Try to extract header file name from reason text
-        m2 = re.search(r"([^\s]+\.h\w*)", explain_msg)
-        if m2:
-            root_causes[m2.group(1)] += 1
-    
-    return rebuild_entries, reasons, root_causes
-
-
-def normalize_reason(msg: str) -> str:
-    """Normalize a ninja explain message into a human-readable rebuild reason.
-    
-    Args:
-        msg: Raw ninja explain message
-        
-    Returns:
-        Normalized, user-friendly reason string
-    """
-    if not msg:
-        return "unknown reason"
-    
-    msg_lower = msg.lower()
-
-    if "output missing" in msg_lower or "doesn't exist" in msg_lower:
-        return "output missing (initial build)"
-
-    if "older than most recent input" in msg_lower:
-        return "input source changed"
-
-    if "command line changed" in msg_lower:
-        return "command line changed (compile flags/options)"
-
-    if "input" in msg_lower and "newer" in msg_lower:
-        return "input source changed"
-
-    if "depfile" in msg_lower:
-        return "header dependency changed"
-
-    if "build.ninja" in msg_lower:
-        return "build.ninja changed (cmake reconfigure)"
-
-    if "rule changed" in msg_lower:
-        return "rule changed (compile flags/options)"
-
-    if "is dirty" in msg_lower:
-        return "[marked dirty]"
-
-    return msg
+# RE_OUTPUT moved to lib.ninja_utils
+# extract_rebuild_info and normalize_reason moved to lib.ninja_utils
 
 
 def format_json_output(rebuild_entries: List[Tuple[str, str]], reasons: Dict[str, int], root_causes: Dict[str, int]) -> str:
@@ -246,7 +95,17 @@ def format_json_output(rebuild_entries: List[Tuple[str, str]], reasons: Dict[str
         
     Returns:
         JSON formatted string
+        
+    Raises:
+        ValueError: If input data is invalid
     """
+    if not isinstance(rebuild_entries, list):
+        raise ValueError("rebuild_entries must be a list")
+    if not isinstance(reasons, dict):
+        raise ValueError("reasons must be a dictionary")
+    if not isinstance(root_causes, dict):
+        raise ValueError("root_causes must be a dictionary")
+        
     output = {
         "summary": {
             "total_files": len(rebuild_entries),
@@ -262,15 +121,23 @@ def format_json_output(rebuild_entries: List[Tuple[str, str]], reasons: Dict[str
     return json.dumps(output, indent=2)
 
 
-def main():
-    """Main entry point for the script."""
+def main() -> int:
+    """Main entry point for the script.
+    
+    Returns:
+        Exit code (0 for success, non-zero for failure)
+    """
     # Set up signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
     parser = argparse.ArgumentParser(
         description='Analyze ninja build explanations and provide rebuild summaries.',
-        epilog=f'Version {__version__}'
+        epilog=f'Version {__version__}\n\nExamples:\n'
+               f'  %(prog)s ../build/release/\n'
+               f'  %(prog)s ../build/release/ --detailed\n'
+               f'  %(prog)s ../build/release/ --format json --output report.json\n',
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     parser.add_argument(
@@ -321,44 +188,35 @@ def main():
     if args.no_color or not sys.stdout.isatty():
         disable_colors()
 
-    build_dir = os.path.realpath(os.path.abspath(args.build_directory))
-    
     if args.verbose:
         print(f"Build Check Summary v{__version__}", file=sys.stderr)
-        print(f"Analyzing: {build_dir}", file=sys.stderr)
+        print(f"Analyzing: {args.build_directory}", file=sys.stderr)
 
-    # Validate directory
-    if not os.path.isdir(build_dir):
-        print(f"Error: '{build_dir}' is not a directory.", file=sys.stderr)
-        sys.exit(EXIT_INVALID_ARGS)
-
-    ninja_file = os.path.realpath(os.path.join(build_dir, "build.ninja"))
-    # Validate ninja_file is within build_dir
-    if not ninja_file.startswith(build_dir + os.sep):
-        print(f"Error: Path traversal detected.", file=sys.stderr)
-        sys.exit(EXIT_INVALID_ARGS)
-    if not os.path.isfile(ninja_file):
-        print(f"Error: '{build_dir}' does not contain a build.ninja file.", file=sys.stderr)
-        sys.exit(EXIT_INVALID_ARGS)
+    # Validate build directory using library helper
+    try:
+        build_dir, _ = validate_build_directory_with_feedback(args.build_directory, verbose=args.verbose)
+    except (ValueError, RuntimeError) as e:
+        # Error message already printed by helper
+        return EXIT_INVALID_ARGS
 
     # Extract rebuild information
     try:
         rebuild_entries, reasons, root_causes = extract_rebuild_info(build_dir, args.verbose)
     except KeyboardInterrupt:
-        print(f"\n{Fore.YELLOW}Interrupted by user.{Style.RESET_ALL}", file=sys.stderr)
-        sys.exit(EXIT_UNEXPECTED)
+        print_warning("\nInterrupted by user.", prefix=False)
+        return EXIT_KEYBOARD_INTERRUPT
     except Exception as e:
         print(f"Error: Unexpected failure: {e}", file=sys.stderr)
         if args.verbose:
             import traceback
             traceback.print_exc(file=sys.stderr)
-        sys.exit(EXIT_UNEXPECTED)
+        return EXIT_RUNTIME_ERROR
     
     # Handle JSON output format (or when --output is specified)
     if args.format == 'json' and not args.output:
         # JSON to stdout only
         print(format_json_output(rebuild_entries, reasons, root_causes))
-        sys.exit(EXIT_SUCCESS)
+        return EXIT_SUCCESS
     
     # Save JSON to file if --output is specified
     if args.output:
@@ -370,7 +228,7 @@ def main():
                 print(f"JSON output saved to: {args.output}", file=sys.stderr)
         except IOError as e:
             print(f"Error: Cannot write to file '{args.output}': {e}", file=sys.stderr)
-            sys.exit(EXIT_INVALID_ARGS)
+            return EXIT_INVALID_ARGS
         # Continue to print summary to stdout
     
     # Handle case with no rebuilds
@@ -385,77 +243,85 @@ def main():
                     print(f"JSON output saved to: {args.output}", file=sys.stderr)
             except IOError as e:
                 print(f"Error: Cannot write to file '{args.output}': {e}", file=sys.stderr)
-                sys.exit(EXIT_INVALID_ARGS)
-        print(f"{Fore.GREEN}No files need to be rebuilt. Build is up to date.{Style.RESET_ALL}")
-        sys.exit(EXIT_SUCCESS)
+                return EXIT_INVALID_ARGS
+        print_success("No files need to be rebuilt. Build is up to date.", prefix=False)
+        return EXIT_SUCCESS
 
     # Print detailed list first if requested
     if args.detailed:
-        print(f"\n{Style.BRIGHT}{Fore.CYAN}=== Detailed Rebuild List ==={Style.RESET_ALL}")
+        print(f"\n{Colors.BRIGHT}{Colors.CYAN}=== Detailed Rebuild List ==={Colors.RESET}")
         try:
             for output, reason in rebuild_entries:
                 # Color code based on reason type
                 if "command line changed" in reason:
-                    color = Fore.YELLOW
+                    color = Colors.YELLOW
                 elif "input source changed" in reason:
-                    color = Fore.RED
+                    color = Colors.RED
                 elif "output missing" in reason:
-                    color = Fore.GREEN
+                    color = Colors.GREEN
                 else:
-                    color = Fore.WHITE
-                print(f"  {Fore.LIGHTBLACK_EX}{output}{Style.RESET_ALL} — {color}{reason}{Style.RESET_ALL}")
+                    color = Colors.WHITE
+                print(f"  {Colors.DIM}{output}{Colors.RESET} — {color}{reason}{Colors.RESET}")
         except BrokenPipeError:
             # Handle broken pipe gracefully (e.g., when piping to head)
             devnull = os.open(os.devnull, os.O_WRONLY)
             os.dup2(devnull, sys.stdout.fileno())
-            sys.exit(EXIT_SUCCESS)
+            return EXIT_SUCCESS
 
     # Print summary
     try:
-        print(f"\n{Style.BRIGHT}{Fore.CYAN}=== Rebuild Summary ==={Style.RESET_ALL}")
-        print(f"Rebuilt files: {Style.BRIGHT}{Fore.WHITE}{len(rebuild_entries)}{Style.RESET_ALL}")
+        print(f"\n{Colors.BRIGHT}{Colors.CYAN}=== Rebuild Summary ==={Colors.RESET}")
+        print(f"Rebuilt files: {Colors.BRIGHT}{Colors.WHITE}{len(rebuild_entries)}{Colors.RESET}")
 
-        print(f"\n{Style.BRIGHT}Reasons:{Style.RESET_ALL}")
+        print(f"\n{Colors.BRIGHT}Reasons:{Colors.RESET}")
         for r, count in sorted(reasons.items(), key=lambda x: -x[1]):
             # Color code based on reason type
             if "command line changed" in r:
-                color = Fore.YELLOW
+                color = Colors.YELLOW
             elif "input source changed" in r:
-                color = Fore.RED
+                color = Colors.RED
             elif "output missing" in r:
-                color = Fore.GREEN
+                color = Colors.GREEN
             elif "header dependency changed" in r:
-                color = Fore.MAGENTA
+                color = Colors.MAGENTA
             elif "build.ninja changed" in r:
-                color = Fore.BLUE
+                color = Colors.BLUE
             else:
-                color = Fore.WHITE
-            print(f"  {Style.BRIGHT}{count:3}{Style.RESET_ALL}  → {color}{r}{Style.RESET_ALL}")
+                color = Colors.WHITE
+            print(f"  {Colors.BRIGHT}{count:3}{Colors.RESET}  → {color}{r}{Colors.RESET}")
 
         if root_causes:
-            print(f"\n{Style.BRIGHT}Root Causes (from explain output):{Style.RESET_ALL}")
-            print(f"  {Fore.LIGHTBLACK_EX}(Note: counts may overlap if files include multiple changed headers){Style.RESET_ALL}")
+            print(f"\n{Colors.BRIGHT}Root Causes (from explain output):{Colors.RESET}")
+            print(f"  {Colors.DIM}(Note: counts may overlap if files include multiple changed headers){Colors.RESET}")
             for rc, count in sorted(root_causes.items(), key=lambda x: -x[1]):
-                print(f"  {Fore.MAGENTA}{rc}{Style.RESET_ALL} → triggered {Style.BRIGHT}{count}{Style.RESET_ALL} rebuilds")
+                print(f"  {Colors.MAGENTA}{rc}{Colors.RESET} → triggered {Colors.BRIGHT}{count}{Colors.RESET} rebuilds")
     except BrokenPipeError:
         # Handle broken pipe gracefully
         devnull = os.open(os.devnull, os.O_WRONLY)
         os.dup2(devnull, sys.stdout.fileno())
-        sys.exit(EXIT_SUCCESS)
+        return EXIT_SUCCESS
     except Exception as e:
         print(f"\nError during output: {e}", file=sys.stderr)
         if args.verbose:
             import traceback
             traceback.print_exc(file=sys.stderr)
-        sys.exit(EXIT_UNEXPECTED)
+        return EXIT_RUNTIME_ERROR
+    
+    return EXIT_SUCCESS
 
 
 if __name__ == "__main__":
+    from lib.constants import BuildCheckError
+    
     try:
-        main()
+        exit_code = main()
+        sys.exit(exit_code)
     except KeyboardInterrupt:
-        print(f"\n{Fore.YELLOW}Interrupted.{Style.RESET_ALL}", file=sys.stderr)
-        sys.exit(EXIT_UNEXPECTED)
+        print_warning("Interrupted.", prefix=False)
+        sys.exit(EXIT_KEYBOARD_INTERRUPT)
+    except BuildCheckError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(e.exit_code)
     except Exception as e:
         print(f"Fatal error: {e}", file=sys.stderr)
-        sys.exit(EXIT_UNEXPECTED)
+        sys.exit(EXIT_RUNTIME_ERROR)

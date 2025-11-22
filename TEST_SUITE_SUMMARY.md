@@ -64,9 +64,11 @@ A comprehensive test suite has been added to the `test/` subdirectory with the f
    - Options for coverage, verbose, pattern matching
    - User-friendly output
 
-10. **`quick_test.sh`** (executable)
-    - Fast subset of tests for development
-    - Excludes slow tests
+10. **`run_quick_test.sh`** (executable)
+    - Quality validation script
+    - Checks Python version, dependencies, and tools
+    - Runs type checking and test suite
+    - Provides quality score rating
 
 ## Test Coverage
 
@@ -127,8 +129,8 @@ pytest test/test_path_security.py -v
 # Pattern matching
 ./test/run_tests.sh --pattern security
 
-# Quick tests (no slow tests)
-./test/quick_test.sh
+# Quick quality check (includes type checking and tests)
+./test/run_quick_test.sh
 ```
 
 ## Test Statistics
@@ -157,9 +159,9 @@ pip install -r test/requirements-test.txt
 ./test/run_tests.sh
 ```
 
-For development:
+For quality validation:
 ```bash
-./test/quick_test.sh  # Fast feedback loop
+./test/run_quick_test.sh  # Comprehensive quality check
 ```
 
 For CI/CD integration:

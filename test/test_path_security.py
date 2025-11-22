@@ -25,6 +25,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -33,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 class TestPathTraversalSecurity:
     """Test path traversal protection in all BuildCheck tools."""
     
-    def test_realpath_normalization(self, temp_dir):
+    def test_realpath_normalization(self, temp_dir: str) -> None:
         """Test that os.path.realpath properly resolves symlinks."""
         # Create a directory structure
         real_dir = Path(temp_dir) / "real"
@@ -46,7 +47,7 @@ class TestPathTraversalSecurity:
         # Test that realpath resolves to the same location
         assert os.path.realpath(str(real_dir)) == os.path.realpath(str(link_dir))
     
-    def test_path_within_directory_check(self, temp_dir):
+    def test_path_within_directory_check(self, temp_dir: str) -> None:
         """Test validation that paths stay within expected directory."""
         base_dir = os.path.realpath(temp_dir)
         
@@ -61,7 +62,7 @@ class TestPathTraversalSecurity:
         # Should NOT be within base_dir
         assert not traversal_real.startswith(base_dir + os.sep)
     
-    def test_symlink_escape_detection(self, temp_dir):
+    def test_symlink_escape_detection(self, temp_dir: str) -> None:
         """Test detection of symlink-based directory escapes."""
         # Create directory structure
         safe_dir = Path(temp_dir) / "safe"
@@ -81,7 +82,7 @@ class TestPathTraversalSecurity:
         safe_real = os.path.realpath(str(safe_dir))
         assert not resolved.startswith(safe_real + os.sep)
     
-    def test_double_dot_traversal(self, temp_dir):
+    def test_double_dot_traversal(self, temp_dir: str) -> None:
         """Test that ../ sequences are handled correctly."""
         base = os.path.realpath(temp_dir)
         
@@ -97,7 +98,7 @@ class TestPathTraversalSecurity:
             # None should be within temp_dir
             assert not resolved.startswith(base + os.sep) or resolved == base
     
-    def test_null_byte_injection(self, temp_dir):
+    def test_null_byte_injection(self, temp_dir: str) -> None:
         """Test handling of null byte injection attempts."""
         base_dir = Path(temp_dir)
         
@@ -113,7 +114,7 @@ class TestPathTraversalSecurity:
             # Expected - null bytes should be rejected
             pass
     
-    def test_absolute_path_injection(self, temp_dir):
+    def test_absolute_path_injection(self, temp_dir: str) -> None:
         """Test that absolute paths can't escape base directory."""
         base_dir = os.path.realpath(temp_dir)
         
@@ -132,7 +133,7 @@ class TestPathTraversalSecurity:
 class TestFileOperationSecurity:
     """Test security of file operations."""
     
-    def test_safe_file_open_within_directory(self, temp_dir):
+    def test_safe_file_open_within_directory(self, temp_dir: str) -> None:
         """Test that file opens are restricted to expected directory."""
         base_dir = os.path.realpath(temp_dir)
         
@@ -150,7 +151,7 @@ class TestFileOperationSecurity:
             content = f.read()
             assert content == "safe content"
     
-    def test_reject_file_outside_directory(self, temp_dir):
+    def test_reject_file_outside_directory(self, temp_dir: str) -> None:
         """Test that files outside base directory are rejected."""
         base_dir = os.path.realpath(temp_dir)
         
@@ -169,7 +170,7 @@ class TestFileOperationSecurity:
         else:
             pytest.fail("Path traversal not detected")
     
-    def test_symlink_file_validation(self, temp_dir):
+    def test_symlink_file_validation(self, temp_dir: str) -> None:
         """Test validation of symlinked files."""
         base_dir = Path(temp_dir)
         
@@ -199,7 +200,7 @@ class TestFileOperationSecurity:
 class TestInputValidation:
     """Test input validation and sanitization."""
     
-    def test_build_dir_validation(self, temp_dir):
+    def test_build_dir_validation(self, temp_dir: str) -> None:
         """Test build directory validation."""
         # Valid directory
         valid_dir = os.path.realpath(temp_dir)
@@ -214,7 +215,7 @@ class TestInputValidation:
         file_path.write_text("content")
         assert not os.path.isdir(str(file_path))
     
-    def test_command_injection_prevention(self):
+    def test_command_injection_prevention(self) -> None:
         """Test that shell injection is prevented."""
         # Our code uses subprocess with lists, not shell=True
         # This should prevent command injection
@@ -229,7 +230,7 @@ class TestInputValidation:
         result = subprocess.run(safe_cmd, capture_output=True, text=True)
         assert "; rm -rf /" in result.stdout  # It's just text, not executed
     
-    def test_relative_path_resolution(self, temp_dir):
+    def test_relative_path_resolution(self, temp_dir: str) -> None:
         """Test that relative paths are properly resolved."""
         base = Path(temp_dir)
         
