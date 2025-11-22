@@ -583,32 +583,27 @@ def validate_build_directory_with_feedback(build_directory: str, verbose: bool =
         ValueError: If validation fails
         RuntimeError: If preparation fails
     """
+    # Check for build.ninja first (more specific error message)
+    build_dir_check = os.path.realpath(os.path.abspath(build_directory))
+    build_ninja = os.path.realpath(os.path.join(build_dir_check, 'build.ninja'))
+    if not os.path.isfile(build_ninja):
+        error_msg = f"build.ninja not found in '{build_dir_check}'"
+        logger.error(error_msg)
+        print_error(error_msg)
+        print_warning("Hint: This script requires a Ninja build directory", prefix=False)
+        raise ValueError(error_msg)
+    
+    # Validate and prepare build directory
     try:
-        # Check for build.ninja first (more specific error message)
-        build_dir_check = os.path.realpath(os.path.abspath(build_directory))
-        build_ninja = os.path.realpath(os.path.join(build_dir_check, 'build.ninja'))
-        if not os.path.isfile(build_ninja):
-            error_msg = f"build.ninja not found in '{build_dir_check}'"
-            logger.error(error_msg)
-            print_error(error_msg)
-            print_warning("Hint: This script requires a Ninja build directory", prefix=False)
-            raise ValueError(error_msg)
-        
-        # Validate and prepare build directory
         build_dir, compile_commands = validate_and_prepare_build_dir(build_directory, verbose=verbose)
         logger.info(f"Using build directory: {build_dir}")
         return build_dir, compile_commands
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
+        # Don't print error again, just log and re-raise
         logger.error(f"Build directory validation failed: {e}")
-        print_error(str(e))
-        raise
-    except RuntimeError as e:
-        logger.error(f"Failed to prepare build directory: {e}")
-        print_error(str(e))
         raise
     except Exception as e:
         logger.exception(f"Error validating build directory: {e}")
-        print_error(str(e))
         raise RuntimeError(f"Error validating build directory: {e}") from e
 
 

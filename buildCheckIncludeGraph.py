@@ -229,130 +229,7 @@ def validate_system_requirements() -> SystemRequirements:
     )
 
 
-# NOTE: create_filtered_compile_commands_graph was removed - use create_filtered_compile_commands from lib.clang_utils instead
-def _create_filtered_compile_commands_graph_REMOVED(build_dir: str) -> str:
-    """Create a filtered compile_commands.json with only C/C++ compilation entries.
-    
-    Args:
-        build_dir: Path to the build directory containing build.ninja
-        
-    Returns:
-        Path to the filtered compile_commands.json file
-        
-    Raises:
-        ValueError: If build_dir is invalid
-        RuntimeError: If compilation database generation fails
-    """
-    if not build_dir or not isinstance(build_dir, str):
-        raise ValueError("build_dir must be a non-empty string")
-    
-    logging.info(f"Creating filtered compile commands for build directory: {build_dir}")
-    build_dir_abs: str = os.path.realpath(os.path.abspath(build_dir))
-    
-    if not os.path.isdir(build_dir_abs):
-        raise ValueError(f"Build directory does not exist: {build_dir_abs}")
-    
-    compile_db: str = os.path.realpath(os.path.join(build_dir_abs, COMPILE_DB_FILENAME))
-    filtered_db: str = os.path.realpath(os.path.join(build_dir_abs, FILTERED_COMPILE_DB_FILENAME))
-    build_ninja: str = os.path.realpath(os.path.join(build_dir_abs, 'build.ninja'))
-    
-    # Validate paths are within build_dir (prevent path traversal)
-    for path in [compile_db, filtered_db, build_ninja]:
-        if not path.startswith(build_dir + os.sep):
-            raise ValueError(f"Path traversal detected: {path}")
-    
-    # Check if compile_commands.json needs regeneration (if build.ninja is newer)
-    try:
-        if os.path.exists(build_ninja) and os.path.exists(compile_db):
-            if os.path.getmtime(build_ninja) > os.path.getmtime(compile_db):
-                logging.warning("build.ninja is newer than compile_commands.json - regenerating")
-                print(f"{Colors.YELLOW}build.ninja is newer than compile_commands.json - regenerating{Colors.RESET}")
-                os.remove(compile_db)
-                # Also remove filtered DB to force full regeneration
-                if os.path.exists(filtered_db):
-                    os.remove(filtered_db)
-    except OSError as e:
-        logging.error(f"Failed to check or remove compilation database files: {e}")
-        raise RuntimeError(f"File operation failed: {e}") from e
-    
-    # Check if filtered DB exists and is newer than both build.ninja and compile_commands.json
-    try:
-        if os.path.exists(filtered_db):
-            filtered_mtime: float = os.path.getmtime(filtered_db)
-            rebuild_needed: bool = False
-            
-            if os.path.exists(build_ninja) and os.path.getmtime(build_ninja) > filtered_mtime:
-                rebuild_needed = True
-            if os.path.exists(compile_db) and os.path.getmtime(compile_db) > filtered_mtime:
-                rebuild_needed = True
-                
-            if not rebuild_needed:
-                logging.info("Using cached filtered compile database")
-                print(f"{Colors.GREEN}Using cached filtered compile database{Colors.RESET}")
-                return filtered_db
-    except OSError as e:
-        logging.warning(f"Failed to check filtered DB timestamps: {e}. Will regenerate.")
-    
-    # Generate if compile_commands.json doesn't exist
-    if not os.path.exists(compile_db):
-        logging.info("Generating compile_commands.json from ninja")
-        print(f"{Colors.CYAN}Generating compile_commands.json...{Colors.RESET}")
-        try:
-            result = subprocess.run(
-                ["ninja", "-t", "compdb"],
-                capture_output=True,
-                text=True,
-                cwd=build_dir,
-                check=True
-            )
-            with open(compile_db, 'w') as f:
-                f.write(result.stdout)
-            logging.debug(f"Generated compile_commands.json with {len(result.stdout)} bytes")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to generate compile_commands.json: {e}")
-            raise RuntimeError(f"ninja compdb failed: {e.stderr}") from e
-        except IOError as e:
-            logging.error(f"Failed to write compile_commands.json: {e}")
-            raise RuntimeError(f"Failed to write compilation database: {e}") from e
-        except FileNotFoundError:
-            logging.error("ninja command not found")
-            raise RuntimeError("ninja not found. Please ensure ninja is installed and in PATH.") from None
-    
-    # Filter to valid C/C++ entries
-    logging.info("Filtering compilation database")
-    print(f"{Colors.CYAN}Filtering compilation database...{Colors.RESET}")
-    try:
-        with open(compile_db, 'r') as f:
-            data: List[Dict[str, Any]] = json.load(f)
-        logging.debug(f"Loaded {len(data)} entries from compile_commands.json")
-    except json.JSONDecodeError as e:
-        logging.error(f"Invalid JSON in compile_commands.json: {e}")
-        raise RuntimeError(f"Failed to parse compile_commands.json: {e}") from e
-    except IOError as e:
-        logging.error(f"Failed to read compile_commands.json: {e}")
-        raise RuntimeError(f"Failed to read compilation database: {e}") from e
-    
-    valid_entries: List[Dict[str, Any]] = []
-    for entry in data:
-        cmd = entry.get('command', '')
-        file = entry.get('file', '')
-        
-        # Must be a source file with a compilation command (has -c flag)
-        if any(ext in file for ext in VALID_SOURCE_EXTENSIONS) and \
-           any(compiler in cmd for compiler in COMPILER_NAMES) and \
-           ' -c ' in cmd:
-            valid_entries.append(entry)
-    
-    try:
-        with open(filtered_db, 'w') as f:
-            json.dump(valid_entries, f, indent=2)
-    except IOError as e:
-        logging.error(f"Failed to write filtered database: {e}")
-        raise RuntimeError(f"Failed to write filtered compilation database: {e}") from e
-    
-    logging.info(f"Filtered {len(data)} → {len(valid_entries)} entries")
-    print(f"{Colors.GREEN}Filtered {len(data)} → {len(valid_entries)} entries{Colors.RESET}")
-    return filtered_db
+
 
 
 def analyze_gateway_headers(source_to_headers: Dict[str, Set[str]], project_root: str) -> List[Tuple[str, float, int, int]]:
@@ -693,19 +570,12 @@ def find_affected_source_files(changed_header: str, graph: 'nx.DiGraph[Any]', so
         return []
 
 
-def main() -> int:
-    """Main entry point for the include graph analysis tool.
+def parse_arguments() -> argparse.Namespace:
+    """Parse and return command line arguments.
     
     Returns:
-        Exit code (0 for success, non-zero for failure)
+        Parsed arguments namespace
     """
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         description='Gateway header analysis: find headers that pull in excessive dependencies.',
         epilog='''
@@ -760,7 +630,442 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
              'Examples: "*/ThirdParty/*", "*/build/*", "*_generated.h", "*/test/*"'
     )
     
-    args: argparse.Namespace = parser.parse_args()
+    return parser.parse_args()
+
+
+def validate_arguments(args: argparse.Namespace) -> Tuple[str, str, str]:
+    """Validate command line arguments and paths.
+    
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        Tuple of (build_dir, build_ninja, project_root) as absolute paths
+        
+    Raises:
+        SystemExit: If validation fails
+    """
+    if not args.build_directory:
+        logging.error("Build directory not specified")
+        print(f"{Colors.RED}Error: Build directory is required{Colors.RESET}")
+        sys.exit(1)
+    
+    if args.top < 1:
+        logging.error(f"Invalid --top value: {args.top}")
+        print(f"{Colors.RED}Error: --top must be at least 1{Colors.RESET}")
+        sys.exit(1)
+    
+    build_dir: str = os.path.abspath(args.build_directory)
+    logging.info(f"Build directory: {build_dir}")
+
+    if not os.path.isdir(build_dir):
+        logging.error(f"'{build_dir}' is not a directory")
+        print(f"Error: '{build_dir}' is not a directory.")
+        sys.exit(1)
+    
+    build_ninja: str = os.path.join(build_dir, 'build.ninja')
+    if not os.path.exists(build_ninja):
+        logging.error(f"build.ninja not found in '{build_dir}'")
+        print(f"Error: 'build.ninja' not found in '{build_dir}'.")
+        print(f"Please provide the path to the ninja build directory containing build.ninja")
+        sys.exit(1)
+
+    project_root: str = os.path.dirname(os.path.abspath(__file__))
+    
+    return build_dir, build_ninja, project_root
+
+
+def get_changed_headers(build_dir: str, args: argparse.Namespace) -> Set[str]:
+    """Extract changed headers from rebuild info.
+    
+    Args:
+        build_dir: Path to the build directory
+        args: Command line arguments
+        
+    Returns:
+        Set of changed header file paths
+        
+    Raises:
+        SystemExit: If extraction fails
+    """
+    print(f"\n{Colors.CYAN}Extracting rebuild information...{Colors.RESET}")
+    original_dir: str = os.getcwd()
+    try:
+        rebuild_entries: List[Any]
+        reasons: Dict[str, int]
+        root_causes: Dict[str, int]
+        rebuild_entries, reasons, root_causes = extract_rebuild_info(build_dir)
+    except Exception as e:
+        logging.error(f"Failed to extract rebuild information: {e}")
+        print(f"{Colors.RED}Error: Failed to extract rebuild information: {e}{Colors.RESET}")
+        sys.exit(1)
+    finally:
+        os.chdir(original_dir)
+    
+    changed_headers: Set[str] = set(root_causes.keys())
+    logging.info(f"Found {len(changed_headers)} changed headers")
+    
+    if not args.full and not changed_headers:
+        logging.warning("No changed header files found")
+        print(f"\n{Colors.YELLOW}No changed header files found{Colors.RESET}")
+        print(f"Use --full to analyze all headers instead")
+        sys.exit(0)
+    
+    if args.full:
+        logging.info("Running in full analysis mode")
+        print(f"{Colors.GREEN}Full analysis mode: analyzing all headers{Colors.RESET}")
+    else:
+        logging.info(f"Analyzing {len(changed_headers)} changed headers")
+        print(f"{Colors.GREEN}Found {len(changed_headers)} changed headers{Colors.RESET}")
+    
+    return changed_headers
+
+
+def analyze_dependencies(build_dir: str, project_root: str) -> Tuple['nx.DiGraph[Any]', DefaultDict[str, Set[str]], 'nx.Graph[Any]', DefaultDict[str, Set[str]]]:
+    """Build include and header dependency graphs.
+    
+    Args:
+        build_dir: Path to the build directory
+        project_root: Root directory of the project
+        
+    Returns:
+        Tuple of (graph, source_to_headers, header_graph, header_to_headers)
+        
+    Raises:
+        SystemExit: If analysis fails
+    """
+    # Build include graph using clang-scan-deps
+    try:
+        graph: nx.DiGraph[Any]
+        source_to_headers: DefaultDict[str, Set[str]]
+        graph, source_to_headers = build_include_graph_from_clang_scan(build_dir)
+    except Exception as e:
+        logging.error(f"Failed to build include graph: {e}")
+        print(f"{Colors.RED}Error: Failed to build include graph: {e}{Colors.RESET}")
+        sys.exit(1)
+    
+    # Build header-to-header dependency graph
+    print(f"{Colors.CYAN}Building header dependency graph...{Colors.RESET}")
+    try:
+        header_graph: nx.Graph[Any]
+        header_to_headers: DefaultDict[str, Set[str]]
+        header_graph, header_to_headers = build_header_dependency_graph(source_to_headers, project_root)
+    except Exception as e:
+        logging.error(f"Failed to build header dependency graph: {e}")
+        print(f"{Colors.RED}Error: Failed to build header dependency graph: {e}{Colors.RESET}")
+        sys.exit(1)
+    
+    return graph, source_to_headers, header_graph, header_to_headers
+
+
+def print_dependency_summary(source_to_headers: Dict[str, Set[str]], header_graph: 'nx.Graph[Any]') -> None:
+    """Print summary of dependency analysis.
+    
+    Args:
+        source_to_headers: Mapping of source files to their included headers
+        header_graph: Header dependency graph
+    """
+    total_deps: int = sum(len(headers) for headers in source_to_headers.values())
+    
+    logging.info(f"Analysis complete: {len(source_to_headers)} sources, {header_graph.number_of_nodes()} headers, {total_deps} dependencies")
+    print(f"\n{Colors.GREEN}Dependency analysis complete:{Colors.RESET}")
+    print(f"  • {len(source_to_headers)} source files tracked")
+    print(f"  • {header_graph.number_of_nodes()} unique headers in project")
+    print(f"  • {total_deps} total source-to-header dependencies")
+    print(f"  • {header_graph.number_of_edges()} header co-dependency relationships")
+
+
+def filter_headers_to_analyze(args: argparse.Namespace, changed_headers: Set[str], 
+                             gateway_headers: List[Tuple[str, float, int, int]], 
+                             header_graph: 'nx.Graph[Any]', project_root: str) -> List[str]:
+    """Filter headers to analyze based on mode and exclusion patterns.
+    
+    Args:
+        args: Command line arguments
+        changed_headers: Set of changed header paths
+        gateway_headers: List of gateway header tuples
+        header_graph: Header dependency graph
+        project_root: Root directory of the project
+        
+    Returns:
+        List of header paths to analyze
+        
+    Raises:
+        SystemExit: If no headers remain after filtering
+    """
+    try:
+        headers_to_analyze: List[str]
+        changed_headers_in_graph: List[str]
+        if args.full:
+            headers_to_analyze = [h[0] for h in gateway_headers[:args.top]]
+            changed_headers_in_graph = [h for h in headers_to_analyze if h in header_graph]
+        else:
+            changed_headers_in_graph = [h for h in changed_headers if h in header_graph]
+    except Exception as e:
+        logging.error(f"Failed to analyze headers: {e}")
+        print(f"{Colors.RED}Error: Failed to analyze headers: {e}{Colors.RESET}")
+        sys.exit(1)
+    
+    # Apply exclude patterns if specified
+    if hasattr(args, 'exclude') and args.exclude:
+        original_count = len(changed_headers_in_graph)
+        headers_set = set(changed_headers_in_graph)
+        
+        filtered_headers, excluded_count, no_match_patterns = exclude_headers_by_patterns(
+            headers_set, args.exclude, project_root
+        )
+        
+        if excluded_count > 0:
+            changed_headers_in_graph = [h for h in changed_headers_in_graph if h in filtered_headers]
+            print_success(f"Excluded {excluded_count} headers matching {len(args.exclude)} pattern(s)", prefix=False)
+        
+        for pattern in no_match_patterns:
+            print_warning(f"Exclude pattern '{pattern}' matched no headers", prefix=False)
+    
+    if not changed_headers_in_graph:
+        if args.full:
+            print(f"\n{Colors.YELLOW}No headers found in the dependency graph{Colors.RESET}")
+        else:
+            print(f"\n{Colors.YELLOW}None of the changed headers are in the dependency graph{Colors.RESET}")
+        sys.exit(0)
+    
+    return changed_headers_in_graph
+
+
+def print_header_analysis(changed_headers_in_graph: List[str], graph: 'nx.DiGraph[Any]',
+                         source_to_headers: Dict[str, Set[str]], project_root: str,
+                         args: argparse.Namespace, is_full_mode: bool) -> None:
+    """Print detailed analysis for each changed header.
+    
+    Args:
+        changed_headers_in_graph: List of headers to analyze
+        graph: Dependency graph
+        source_to_headers: Mapping of source files to their included headers
+        project_root: Root directory of the project
+        args: Command line arguments
+        is_full_mode: Whether in full analysis mode
+    """
+    if is_full_mode:
+        print(f"\n{Colors.BRIGHT}═══ Top Gateway Headers Analysis ═══{Colors.RESET}")
+    else:
+        print(f"\n{Colors.BRIGHT}═══ Include Graph Analysis ═══{Colors.RESET}")
+    
+    for changed_header in sorted(changed_headers_in_graph):
+        try:
+            display_changed: str = changed_header
+            if changed_header.startswith(project_root):
+                display_changed = os.path.relpath(changed_header, project_root)
+            
+            affected_sources: List[str] = find_affected_source_files(changed_header, graph, source_to_headers, project_root)
+        except Exception as e:
+            logging.error(f"Error processing header {changed_header}: {e}")
+            print(f"{Colors.YELLOW}Warning: Skipping {changed_header} due to error: {e}{Colors.RESET}")
+            continue
+        
+        print(f"\n{Colors.RED}{'='*80}{Colors.RESET}")
+        print(f"{Colors.RED}{Colors.BRIGHT}{display_changed}{Colors.RESET}")
+        print(f"{Colors.RED}{'='*80}{Colors.RESET}")
+        print(f"  {Colors.YELLOW}⚠ {len(affected_sources)} .cpp files will rebuild{Colors.RESET}")
+        
+        if affected_sources:
+            print(f"\n  {Colors.BRIGHT}Sample of .cpp files that will rebuild:{Colors.RESET}")
+            for source in sorted(affected_sources)[:args.top]:
+                display_source = source
+                if source.startswith(project_root):
+                    display_source = os.path.relpath(source, project_root)
+                print(f"    {Colors.YELLOW}📄 {display_source}{Colors.RESET}")
+            if len(affected_sources) > args.top:
+                print(f"    {Colors.DIM}... and {len(affected_sources) - args.top} more{Colors.RESET}")
+
+
+def print_gateway_analysis(gateway_headers: List[Tuple[str, float, int, int]], 
+                          changed_headers: Set[str], project_root: str, 
+                          is_full_mode: bool) -> None:
+    """Print gateway header analysis.
+    
+    Args:
+        gateway_headers: List of gateway header tuples
+        changed_headers: Set of changed header paths
+        project_root: Root directory of the project
+        is_full_mode: Whether in full analysis mode
+    """
+    print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
+    print(f"{Colors.BRIGHT}GATEWAY HEADER ANALYSIS{Colors.RESET}")
+    print(f"{Colors.BRIGHT}{'='*80}{Colors.RESET}")
+    print(f"Gateway headers = headers that drag in many other dependencies\n")
+    
+    top_count: int = 30 if is_full_mode else 20
+    print(f"{Colors.BRIGHT}Top {top_count} gateway headers (highest include cost):{Colors.RESET}")
+    for header, avg_cost, unique_deps, usage_count in gateway_headers[:top_count]:
+        display_header: str = header
+        if header.startswith(project_root):
+            display_header = os.path.relpath(header, project_root)
+        
+        is_changed: bool = header in changed_headers
+        color: str = Colors.RED if is_changed else Colors.YELLOW if avg_cost > 100 else Colors.WHITE
+        marker: str = " ⚠️ CHANGED" if is_changed else ""
+        
+        print(f"  {color}{display_header}{Colors.RESET}")
+        print(f"    Avg deps: {avg_cost:.1f} | Unique deps: {unique_deps} | Used by: {usage_count} files{marker}")
+
+
+def print_detailed_header_analysis(changed_headers_in_graph: List[str], gateway_headers: List[Tuple[str, float, int, int]],
+                                  graph: 'nx.DiGraph[Any]', source_to_headers: Dict[str, Set[str]], 
+                                  project_root: str, is_full_mode: bool) -> None:
+    """Print detailed analysis for each changed header.
+    
+    Args:
+        changed_headers_in_graph: List of headers to analyze
+        gateway_headers: List of gateway header tuples
+        graph: Dependency graph
+        source_to_headers: Mapping of source files to their included headers
+        project_root: Root directory of the project
+        is_full_mode: Whether in full analysis mode
+    """
+    if is_full_mode:
+        print(f"\n{Colors.BRIGHT}Detailed analysis of top gateway headers:{Colors.RESET}")
+    else:
+        print(f"\n{Colors.BRIGHT}Changed headers and their include costs:{Colors.RESET}")
+    
+    for changed_header in sorted(changed_headers_in_graph):
+        display_changed = changed_header
+        if changed_header.startswith(project_root):
+            display_changed = os.path.relpath(changed_header, project_root)
+        
+        header_info = next((h for h in gateway_headers if h[0] == changed_header), None)
+        if header_info:
+            header_path, avg_cost, unique_deps, usage_count = header_info
+            affected_sources = find_affected_source_files(changed_header, graph, source_to_headers, project_root)
+            
+            print(f"\n{Colors.RED}{display_changed}{Colors.RESET}")
+            print(f"  Direct impact: {len(affected_sources)} .cpp files rebuild")
+            print(f"  Include cost: Drags in avg {avg_cost:.1f} other headers ({unique_deps} unique)")
+            print(f"  Total compilation cost: {len(affected_sources)} files × {avg_cost:.1f} avg headers = {len(affected_sources) * avg_cost:.0f} header compilations")
+            
+            co_included: DefaultDict[str, int] = defaultdict(int)
+            for source, headers in source_to_headers.items():
+                if changed_header in headers:
+                    for other_h in headers:
+                        if other_h != changed_header:
+                            co_included[other_h] += 1
+            
+            if co_included:
+                sorted_co: List[Tuple[str, int]] = sorted(co_included.items(), key=lambda x: x[1], reverse=True)[:5]
+                print(f"  Most commonly dragged in:")
+                for co_header, count in sorted_co:
+                    display_co = co_header
+                    if co_header.startswith(project_root):
+                        display_co = os.path.relpath(co_header, project_root)
+                    pct = 100 * count / len(affected_sources)
+                    print(f"    → {display_co} ({count}/{len(affected_sources)} = {pct:.0f}% of uses)")
+
+
+def print_rebuild_summary(changed_headers_in_graph: List[str], graph: 'nx.DiGraph[Any]',
+                         source_to_headers: Dict[str, Set[str]], project_root: str,
+                         is_full_mode: bool) -> None:
+    """Print rebuild impact summary.
+    
+    Args:
+        changed_headers_in_graph: List of headers to analyze
+        graph: Dependency graph
+        source_to_headers: Mapping of source files to their included headers
+        project_root: Root directory of the project
+        is_full_mode: Whether in full analysis mode
+    """
+    print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
+    print(f"{Colors.BRIGHT}REBUILD IMPACT SUMMARY{Colors.RESET}")
+    print(f"{Colors.BRIGHT}{'='*80}{Colors.RESET}")
+    
+    all_affected_sources: Set[str] = set()
+    for changed_header in changed_headers_in_graph:
+        affected: List[str] = find_affected_source_files(changed_header, graph, source_to_headers, project_root)
+        all_affected_sources.update(affected)
+    
+    print(f"{Colors.YELLOW}Total unique .cpp files that will rebuild: {len(all_affected_sources)}{Colors.RESET}")
+    if len(source_to_headers) > 0:
+        percentage: float = 100.0 * len(all_affected_sources) / len(source_to_headers)
+        print(f"Out of {len(source_to_headers)} total source files tracked ({percentage:.1f}% of codebase)")
+    else:
+        print(f"Out of {len(source_to_headers)} total source files tracked")
+    print(f"\nChanged headers causing most rebuilds:")
+    
+    if not is_full_mode:
+        header_impacts: List[Tuple[str, int]] = []
+        for changed_header in changed_headers_in_graph:
+            affected = find_affected_source_files(changed_header, graph, source_to_headers, project_root)
+            header_impacts.append((changed_header, len(affected)))
+        
+        for header, count in sorted(header_impacts, key=lambda x: x[1], reverse=True):
+            display_header = header
+            if header.startswith(project_root):
+                display_header = os.path.relpath(header, project_root)
+            print(f"  {Colors.RED}{display_header}: {count} files{Colors.RESET}")
+    else:
+        print(f"Analyzed top {len(changed_headers_in_graph)} gateway headers by include cost")
+        print(f"Total source files in project: {len(source_to_headers)}")
+
+
+def print_optimization_opportunities(changed_headers_in_graph: List[str], gateway_headers: List[Tuple[str, float, int, int]],
+                                    graph: 'nx.DiGraph[Any]', source_to_headers: Dict[str, Set[str]],
+                                    project_root: str, is_full_mode: bool) -> None:
+    """Print optimization opportunities.
+    
+    Args:
+        changed_headers_in_graph: List of headers to analyze
+        gateway_headers: List of gateway header tuples
+        graph: Dependency graph
+        source_to_headers: Mapping of source files to their included headers
+        project_root: Root directory of the project
+        is_full_mode: Whether in full analysis mode
+    """
+    print(f"\n{Colors.BRIGHT}Optimization opportunities:{Colors.RESET}")
+    if is_full_mode:
+        print(f"Headers with high include cost are good candidates for optimization.")
+    else:
+        print(f"Look for gateway headers with high include cost but low actual usage.")
+    print(f"These are good candidates for:")
+    print(f"  1. Forward declarations instead of includes")
+    print(f"  2. Moving implementations to .cpp files")
+    print(f"  3. Splitting into smaller, more focused headers")
+    
+    optimization_candidates: List[Tuple[str, float, int]] = []
+    for header in changed_headers_in_graph:
+        opt_header_info: Optional[Tuple[str, float, int, int]] = next((h for h in gateway_headers if h[0] == header), None)
+        if opt_header_info:
+            header_path, avg_cost, unique_deps, usage_count = opt_header_info
+            affected = find_affected_source_files(header, graph, source_to_headers, project_root)
+            if avg_cost > HIGH_COST_THRESHOLD:
+                optimization_candidates.append((header, avg_cost, len(affected)))
+    
+    if optimization_candidates:
+        if is_full_mode:
+            print(f"\n  High-cost headers (top optimization targets):")
+        else:
+            print(f"\n  Priority targets (high-cost changed headers):")
+        for header, cost, impact in sorted(optimization_candidates, key=lambda x: x[1] * x[2], reverse=True):
+            display_header = header
+            if header.startswith(project_root):
+                display_header = os.path.relpath(header, project_root)
+            total_cost = cost * impact
+            print(f"    {Colors.YELLOW}{display_header}{Colors.RESET}")
+            print(f"      Cost: {cost:.0f} deps × {impact} files = {total_cost:.0f} total header compilations")
+
+
+def main() -> int:
+    """Main entry point for the include graph analysis tool.
+    
+    Returns:
+        Exit code (0 for success, non-zero for failure)
+    """
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Parse arguments
+    args: argparse.Namespace = parse_arguments()
     
     # Set logging level based on verbose flag
     if args.verbose:
@@ -780,305 +1085,37 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
             logging.warning(f"Missing requirements: {', '.join(missing)}")
             print(f"{Colors.YELLOW}Warning: Some requirements are missing{Colors.RESET}")
     
-    # Validate arguments
-    if not args.build_directory:
-        logging.error("Build directory not specified")
-        print(f"{Colors.RED}Error: Build directory is required{Colors.RESET}")
-        return 1
+    # Validate arguments and paths
+    build_dir, build_ninja, project_root = validate_arguments(args)
     
-    if args.top < 1:
-        logging.error(f"Invalid --top value: {args.top}")
-        print(f"{Colors.RED}Error: --top must be at least 1{Colors.RESET}")
-        return 1
+    # Get changed headers
+    changed_headers: Set[str] = get_changed_headers(build_dir, args)
     
-    build_dir: str = os.path.abspath(args.build_directory)
-    logging.info(f"Build directory: {build_dir}")
-
-    if not os.path.isdir(build_dir):
-        logging.error(f"'{build_dir}' is not a directory")
-        print(f"Error: '{build_dir}' is not a directory.")
-        return 1
+    # Analyze dependencies
+    graph, source_to_headers, header_graph, header_to_headers = analyze_dependencies(build_dir, project_root)
     
-    build_ninja: str = os.path.join(build_dir, 'build.ninja')
-    if not os.path.exists(build_ninja):
-        logging.error(f"build.ninja not found in '{build_dir}'")
-        print(f"Error: 'build.ninja' not found in '{build_dir}'.")
-        print(f"Please provide the path to the ninja build directory containing build.ninja")
-        return 1
-
-    project_root: str = os.path.dirname(os.path.abspath(__file__))
+    # Print dependency summary
+    print_dependency_summary(source_to_headers, header_graph)
     
-    # Get changed headers from rebuild info
-    print(f"\n{Colors.CYAN}Extracting rebuild information...{Colors.RESET}")
-    # Save current directory and restore after extract_rebuild_info
-    original_dir: str = os.getcwd()
+    # Calculate gateway headers
     try:
-        rebuild_entries: List[Any]
-        reasons: Dict[str, int]
-        root_causes: Dict[str, int]
-        rebuild_entries, reasons, root_causes = extract_rebuild_info(build_dir)
+        gateway_headers: List[Tuple[str, float, int, int]] = analyze_gateway_headers(source_to_headers, project_root)
     except Exception as e:
-        logging.error(f"Failed to extract rebuild information: {e}")
-        print(f"{Colors.RED}Error: Failed to extract rebuild information: {e}{Colors.RESET}")
-        return 1
-    finally:
-        os.chdir(original_dir)
-    
-    changed_headers: Set[str] = set(root_causes.keys())
-    logging.info(f"Found {len(changed_headers)} changed headers")
-    
-    if not args.full and not changed_headers:
-        logging.warning("No changed header files found")
-        print(f"\n{Colors.YELLOW}No changed header files found{Colors.RESET}")
-        print(f"Use --full to analyze all headers instead")
-        return 0
-    
-    if args.full:
-        logging.info("Running in full analysis mode")
-        print(f"{Colors.GREEN}Full analysis mode: analyzing all headers{Colors.RESET}")
-    else:
-        logging.info(f"Analyzing {len(changed_headers)} changed headers")
-        print(f"{Colors.GREEN}Found {len(changed_headers)} changed headers{Colors.RESET}")
-    
-    # Build include graph using clang-scan-deps
-    try:
-        graph: nx.DiGraph[Any]
-        source_to_headers: DefaultDict[str, Set[str]]
-        graph, source_to_headers = build_include_graph_from_clang_scan(build_dir)
-    except Exception as e:
-        logging.error(f"Failed to build include graph: {e}")
-        print(f"{Colors.RED}Error: Failed to build include graph: {e}{Colors.RESET}")
+        logging.error(f"Failed to analyze gateway headers: {e}")
+        print(f"{Colors.RED}Error: Failed to analyze gateway headers: {e}{Colors.RESET}")
         return 1
     
-    # Build header-to-header dependency graph
-    print(f"{Colors.CYAN}Building header dependency graph...{Colors.RESET}")
-    try:
-        header_graph: nx.Graph[Any]
-        header_to_headers: DefaultDict[str, Set[str]]
-        header_graph, header_to_headers = build_header_dependency_graph(source_to_headers, project_root)
-    except Exception as e:
-        logging.error(f"Failed to build header dependency graph: {e}")
-        print(f"{Colors.RED}Error: Failed to build header dependency graph: {e}{Colors.RESET}")
-        return 1
+    # Filter headers to analyze
+    changed_headers_in_graph: List[str] = filter_headers_to_analyze(
+        args, changed_headers, gateway_headers, header_graph, project_root
+    )
     
-    # Calculate total dependency relationships
-    total_deps: int = sum(len(headers) for headers in source_to_headers.values())
-    
-    logging.info(f"Analysis complete: {len(source_to_headers)} sources, {header_graph.number_of_nodes()} headers, {total_deps} dependencies")
-    print(f"\n{Colors.GREEN}Dependency analysis complete:{Colors.RESET}")
-    print(f"  • {len(source_to_headers)} source files tracked")
-    print(f"  • {header_graph.number_of_nodes()} unique headers in project")
-    print(f"  • {total_deps} total source-to-header dependencies")
-    print(f"  • {header_graph.number_of_edges()} header co-dependency relationships")
-    
-    # Filter changed headers to those in graph, or use all headers in full mode
-    try:
-        headers_to_analyze: List[str]
-        changed_headers_in_graph: List[str]
-        if args.full:
-            # In full mode, analyze top gateway headers by include cost
-            gateway_headers: List[Tuple[str, float, int, int]] = analyze_gateway_headers(source_to_headers, project_root)
-            # Take top N gateway headers for detailed analysis
-            headers_to_analyze = [h[0] for h in gateway_headers[:args.top]]
-            changed_headers_in_graph = [h for h in headers_to_analyze if h in header_graph]
-        else:
-            changed_headers_in_graph = [h for h in changed_headers if h in header_graph]
-    except Exception as e:
-        logging.error(f"Failed to analyze headers: {e}")
-        print(f"{Colors.RED}Error: Failed to analyze headers: {e}{Colors.RESET}")
-        return 1
-    
-    # Apply exclude patterns if specified
-    if hasattr(args, 'exclude') and args.exclude:
-        original_count = len(changed_headers_in_graph)
-        headers_set = set(changed_headers_in_graph)
-        
-        filtered_headers, excluded_count, no_match_patterns = exclude_headers_by_patterns(
-            headers_set, args.exclude, project_root
-        )
-        
-        if excluded_count > 0:
-            changed_headers_in_graph = [h for h in changed_headers_in_graph if h in filtered_headers]
-            print_success(f"Excluded {excluded_count} headers matching {len(args.exclude)} pattern(s)", prefix=False)
-        
-        # Warn about patterns that matched nothing
-        for pattern in no_match_patterns:
-            print_warning(f"Exclude pattern '{pattern}' matched no headers", prefix=False)
-    
-    if not changed_headers_in_graph:
-        if args.full:
-            print(f"\n{Colors.YELLOW}No headers found in the dependency graph{Colors.RESET}")
-        else:
-            print(f"\n{Colors.YELLOW}None of the changed headers are in the dependency graph{Colors.RESET}")
-        return 0
-    
-    # Analyze each changed header
-    if args.full:
-        print(f"\n{Colors.BRIGHT}═══ Top Gateway Headers Analysis ═══{Colors.RESET}")
-    else:
-        print(f"\n{Colors.BRIGHT}═══ Include Graph Analysis ═══{Colors.RESET}")
-    
-    for changed_header in sorted(changed_headers_in_graph):
-        try:
-            display_changed: str = changed_header
-            if changed_header.startswith(project_root):
-                display_changed = os.path.relpath(changed_header, project_root)
-            
-            # Find affected source files
-            affected_sources: List[str] = find_affected_source_files(changed_header, graph, source_to_headers, project_root)
-        except Exception as e:
-            logging.error(f"Error processing header {changed_header}: {e}")
-            print(f"{Colors.YELLOW}Warning: Skipping {changed_header} due to error: {e}{Colors.RESET}")
-            continue
-        
-        print(f"\n{Colors.RED}{'='*80}{Colors.RESET}")
-        print(f"{Colors.RED}{Colors.BRIGHT}{display_changed}{Colors.RESET}")
-        print(f"{Colors.RED}{'='*80}{Colors.RESET}")
-        print(f"  {Colors.YELLOW}⚠ {len(affected_sources)} .cpp files will rebuild{Colors.RESET}")
-        
-        # Show affected source files
-        if affected_sources:
-            print(f"\n  {Colors.BRIGHT}Sample of .cpp files that will rebuild:{Colors.RESET}")
-            for source in sorted(affected_sources)[:args.top]:
-                display_source = source
-                if source.startswith(project_root):
-                    display_source = os.path.relpath(source, project_root)
-                print(f"    {Colors.YELLOW}📄 {display_source}{Colors.RESET}")
-            if len(affected_sources) > args.top:
-                print(f"    {Colors.DIM}... and {len(affected_sources) - args.top} more{Colors.RESET}")
-    
-    # Gateway Header Analysis
-    print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
-    print(f"{Colors.BRIGHT}GATEWAY HEADER ANALYSIS{Colors.RESET}")
-    print(f"{Colors.BRIGHT}{'='*80}{Colors.RESET}")
-    print(f"Gateway headers = headers that drag in many other dependencies\n")
-    
-    gateway_headers = analyze_gateway_headers(source_to_headers, project_root)
-    
-    # Show top gateway headers overall
-    top_count: int = 30 if args.full else 20
-    print(f"{Colors.BRIGHT}Top {top_count} gateway headers (highest include cost):{Colors.RESET}")
-    for header, avg_cost, unique_deps, usage_count in gateway_headers[:top_count]:
-        display_header: str = header
-        if header.startswith(project_root):
-            display_header = os.path.relpath(header, project_root)
-        
-        # Highlight if this is a changed header
-        is_changed: bool = header in changed_headers
-        color: str = Colors.RED if is_changed else Colors.YELLOW if avg_cost > 100 else Colors.WHITE
-        marker: str = " ⚠️ CHANGED" if is_changed else ""
-        
-        print(f"  {color}{display_header}{Colors.RESET}")
-        print(f"    Avg deps: {avg_cost:.1f} | Unique deps: {unique_deps} | Used by: {usage_count} files{marker}")
-    
-    # Analyze changed headers specifically
-    if args.full:
-        print(f"\n{Colors.BRIGHT}Detailed analysis of top gateway headers:{Colors.RESET}")
-    else:
-        print(f"\n{Colors.BRIGHT}Changed headers and their include costs:{Colors.RESET}")
-    
-    for changed_header in sorted(changed_headers_in_graph):
-        display_changed = changed_header
-        if changed_header.startswith(project_root):
-            display_changed = os.path.relpath(changed_header, project_root)
-        
-        # Find this header in gateway analysis
-        header_info = next((h for h in gateway_headers if h[0] == changed_header), None)
-        if header_info:
-            header_path, avg_cost, unique_deps, usage_count = header_info
-            affected_sources = find_affected_source_files(changed_header, graph, source_to_headers, project_root)
-            
-            print(f"\n{Colors.RED}{display_changed}{Colors.RESET}")
-            print(f"  Direct impact: {len(affected_sources)} .cpp files rebuild")
-            print(f"  Include cost: Drags in avg {avg_cost:.1f} other headers ({unique_deps} unique)")
-            print(f"  Total compilation cost: {len(affected_sources)} files × {avg_cost:.1f} avg headers = {len(affected_sources) * avg_cost:.0f} header compilations")
-            
-            # Show which headers are most commonly dragged in by this one
-            co_included: DefaultDict[str, int] = defaultdict(int)
-            for source, headers in source_to_headers.items():
-                if changed_header in headers:
-                    for other_h in headers:
-                        if other_h != changed_header:
-                            co_included[other_h] += 1
-            
-            if co_included:
-                sorted_co: List[Tuple[str, int]] = sorted(co_included.items(), key=lambda x: x[1], reverse=True)[:5]
-                print(f"  Most commonly dragged in:")
-                for co_header, count in sorted_co:
-                    display_co = co_header
-                    if co_header.startswith(project_root):
-                        display_co = os.path.relpath(co_header, project_root)
-                    pct = 100 * count / len(affected_sources)
-                    print(f"    → {display_co} ({count}/{len(affected_sources)} = {pct:.0f}% of uses)")
-    
-    # Summary
-    print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
-    print(f"{Colors.BRIGHT}REBUILD IMPACT SUMMARY{Colors.RESET}")
-    print(f"{Colors.BRIGHT}{'='*80}{Colors.RESET}")
-    
-    # Calculate unique .cpp files that will rebuild across all changed headers
-    all_affected_sources: Set[str] = set()
-    for changed_header in changed_headers_in_graph:
-        affected: List[str] = find_affected_source_files(changed_header, graph, source_to_headers, project_root)
-        all_affected_sources.update(affected)
-    
-    print(f"{Colors.YELLOW}Total unique .cpp files that will rebuild: {len(all_affected_sources)}{Colors.RESET}")
-    if len(source_to_headers) > 0:
-        percentage: float = 100.0 * len(all_affected_sources) / len(source_to_headers)
-        print(f"Out of {len(source_to_headers)} total source files tracked ({percentage:.1f}% of codebase)")
-    else:
-        print(f"Out of {len(source_to_headers)} total source files tracked")
-    print(f"\nChanged headers causing most rebuilds:")
-    
-    if not args.full:
-        header_impacts: List[Tuple[str, int]] = []
-        for changed_header in changed_headers_in_graph:
-            affected = find_affected_source_files(changed_header, graph, source_to_headers, project_root)
-            header_impacts.append((changed_header, len(affected)))
-        
-        for header, count in sorted(header_impacts, key=lambda x: x[1], reverse=True):
-            display_header = header
-            if header.startswith(project_root):
-                display_header = os.path.relpath(header, project_root)
-            print(f"  {Colors.RED}{display_header}: {count} files{Colors.RESET}")
-    else:
-        # In full mode, show summary of analyzed headers
-        print(f"Analyzed top {len(changed_headers_in_graph)} gateway headers by include cost")
-        print(f"Total source files in project: {len(source_to_headers)}")
-    
-    # Optimization opportunities
-    print(f"\n{Colors.BRIGHT}Optimization opportunities:{Colors.RESET}")
-    if args.full:
-        print(f"Headers with high include cost are good candidates for optimization.")
-    else:
-        print(f"Look for gateway headers with high include cost but low actual usage.")
-    print(f"These are good candidates for:")
-    print(f"  1. Forward declarations instead of includes")
-    print(f"  2. Moving implementations to .cpp files")
-    print(f"  3. Splitting into smaller, more focused headers")
-    
-    # Find gateway headers that could be optimized
-    optimization_candidates: List[Tuple[str, float, int]] = []
-    for header in changed_headers_in_graph:
-        opt_header_info: Optional[Tuple[str, float, int, int]] = next((h for h in gateway_headers if h[0] == header), None)
-        if opt_header_info:
-            header_path, avg_cost, unique_deps, usage_count = opt_header_info
-            affected = find_affected_source_files(header, graph, source_to_headers, project_root)
-            if avg_cost > HIGH_COST_THRESHOLD:  # High include cost
-                optimization_candidates.append((header, avg_cost, len(affected)))
-    
-    if optimization_candidates:
-        if args.full:
-            print(f"\n  High-cost headers (top optimization targets):")
-        else:
-            print(f"\n  Priority targets (high-cost changed headers):")
-        for header, cost, impact in sorted(optimization_candidates, key=lambda x: x[1] * x[2], reverse=True):
-            display_header = header
-            if header.startswith(project_root):
-                display_header = os.path.relpath(header, project_root)
-            total_cost = cost * impact
-            print(f"    {Colors.YELLOW}{display_header}{Colors.RESET}")
-            print(f"      Cost: {cost:.0f} deps × {impact} files = {total_cost:.0f} total header compilations")
+    # Print analyses
+    print_header_analysis(changed_headers_in_graph, graph, source_to_headers, project_root, args, args.full)
+    print_gateway_analysis(gateway_headers, changed_headers, project_root, args.full)
+    print_detailed_header_analysis(changed_headers_in_graph, gateway_headers, graph, source_to_headers, project_root, args.full)
+    print_rebuild_summary(changed_headers_in_graph, graph, source_to_headers, project_root, args.full)
+    print_optimization_opportunities(changed_headers_in_graph, gateway_headers, graph, source_to_headers, project_root, args.full)
     
     return 0
 
