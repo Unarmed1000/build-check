@@ -114,6 +114,9 @@ EXAMPLES:
     # More strict threshold (30 deps) and show top 20
     ./buildCheckDependencyHell.py ../build/release/ --threshold 30 --top 20
     
+    # Exclude third-party and test headers
+    ./buildCheckDependencyHell.py ../build/release/ --exclude "*/ThirdParty/*" --exclude "*/test/*"
+    
     # Analyze only changed headers with details
     ./buildCheckDependencyHell.py ../build/release/ --changed --detailed
 """
@@ -146,6 +149,7 @@ import networkx as nx
 # Import library modules
 from lib.ninja_utils import extract_rebuild_info
 from lib.color_utils import Colors, print_error, print_warning, print_success
+from lib.file_utils import exclude_headers_by_patterns
 from lib.clang_utils import (
     IncludeGraphScanResult,
     find_clang_scan_deps, create_filtered_compile_commands,
@@ -351,6 +355,17 @@ Requires: clang-scan-deps, networkx (pip install networkx)
         action='store_true',
         help='Only analyze changed headers (from rebuild root causes). '
              'Faster and more focused on recent modifications'
+    )
+    
+    parser.add_argument(
+        '--exclude',
+        type=str,
+        action='append',
+        metavar='PATTERN',
+        help='Exclude headers matching glob pattern (can be used multiple times). '
+             'Useful for excluding third-party libraries, generated files, or test code. '
+             'Supports glob patterns: * (any chars), ** (recursive), ? (single char). '
+             'Examples: "*/ThirdParty/*", "*/build/*", "*_generated.h", "*/test/*"'
     )
     
     return parser.parse_args()
@@ -725,6 +740,24 @@ def main() -> int:
     
     problematic = analysis_result.problematic
     source_to_deps = analysis_result.source_to_deps
+    
+    # Apply exclude patterns if specified
+    if hasattr(args, 'exclude') and args.exclude:
+        original_count = len(problematic)
+        problematic_headers_set = set(h for h, _, _, _, _ in problematic)
+        
+        filtered_headers, excluded_count, no_match_patterns = exclude_headers_by_patterns(
+            problematic_headers_set, args.exclude, project_root
+        )
+        
+        if excluded_count > 0:
+            # Filter the problematic list to only include non-excluded headers
+            problematic = [(h, c, u, r, ch) for h, c, u, r, ch in problematic if h in filtered_headers]
+            print_success(f"Excluded {excluded_count} headers matching {len(args.exclude)} pattern(s)", prefix=False)
+        
+        # Warn about patterns that matched nothing
+        for pattern in no_match_patterns:
+            print_warning(f"Exclude pattern '{pattern}' matched no headers", prefix=False)
     
     # Filter to only changed headers if requested
     if args.changed and changed_headers:

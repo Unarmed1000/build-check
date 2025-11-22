@@ -27,6 +27,9 @@ EXAMPLES:
     # Show top N opportunities
     python3 buildCheckOptimize.py ./build --top 10
 
+    # Exclude third-party and test libraries
+    python3 buildCheckOptimize.py ./build --exclude "*/ThirdParty/*" --exclude "*Test*"
+
 METHOD:
     Combines multiple analyses:
     1. Library-level: Parse build.ninja for library dependencies
@@ -58,6 +61,7 @@ from enum import Enum
 from lib.color_utils import Colors, print_error, print_warning, print_success
 from lib.constants import COMPILE_COMMANDS_JSON
 from lib.library_parser import parse_ninja_libraries
+from lib.file_utils import exclude_headers_by_patterns
 
 # Check networkx availability early with helpful error message
 from lib.package_verification import require_package
@@ -595,6 +599,7 @@ Examples:
   %(prog)s ./build --focus libraries
   %(prog)s ./build --report optimization_plan.txt
   %(prog)s ./build --top 5
+  %(prog)s ./build --exclude "*/ThirdParty/*" --exclude "*Test*"
         """
     )
     
@@ -611,6 +616,14 @@ Examples:
                        help='Write optimization report to file')
     parser.add_argument('--min-impact', type=int, default=0,
                        help='Only show optimizations with impact >= threshold (0-100)')
+    parser.add_argument('--exclude',
+                       type=str,
+                       action='append',
+                       metavar='PATTERN',
+                       help='Exclude libraries/headers matching glob pattern (can be used multiple times). '
+                            'Useful for excluding third-party libraries, generated files, or test code. '
+                            'Supports glob patterns: * (any chars), ** (recursive), ? (single char). '
+                            'Examples: "*/ThirdParty/*", "*/build/*", "*Test*", "*/test/*"')
     
     args = parser.parse_args()
     
@@ -628,6 +641,30 @@ Examples:
     if args.focus in ['all', 'libraries', 'cycles']:
         print(f"{Colors.DIM}Analyzing library dependencies...{Colors.RESET}")
         lib_to_libs, exe_to_libs, all_libs, _all_exes = parse_ninja_libraries(build_ninja_path)
+        
+        # Apply exclude patterns if specified
+        if hasattr(args, 'exclude') and args.exclude:
+            try:
+                project_root = str(Path(args.build_dir).parent)
+            except Exception:
+                project_root = os.path.dirname(os.path.abspath(args.build_dir))
+            
+            original_count = len(all_libs)
+            filtered_libs, excluded_count, no_match_patterns = exclude_headers_by_patterns(
+                all_libs, args.exclude, project_root
+            )
+            
+            if excluded_count > 0:
+                # Filter libraries from the dependency maps
+                lib_to_libs = {k: v - (all_libs - filtered_libs) for k, v in lib_to_libs.items() if k in filtered_libs}
+                exe_to_libs = {k: v - (all_libs - filtered_libs) for k, v in exe_to_libs.items()}
+                all_libs = filtered_libs
+                print_success(f"Excluded {excluded_count} libraries matching {len(args.exclude)} pattern(s)", prefix=False)
+            
+            # Warn about patterns that matched nothing
+            for pattern in no_match_patterns:
+                print_warning(f"Exclude pattern '{pattern}' matched no libraries", prefix=False)
+        
         library_opts = analyze_library_impact(lib_to_libs, exe_to_libs, all_libs)
         all_optimizations.extend(library_opts)
     

@@ -28,6 +28,9 @@ EXAMPLES:
     # Show circular library dependencies
     python3 buildCheckLibraryGraph.py ./build --cycles-only
 
+    # Exclude third-party and test libraries
+    python3 buildCheckLibraryGraph.py ./build --exclude "*/ThirdParty/*" --exclude "*Test*"
+
 METHOD:
     Parses build.ninja to extract:
     - Static library build rules (CXX_STATIC_LIBRARY_LINKER)
@@ -58,6 +61,7 @@ from collections import defaultdict, deque
 from lib.library_parser import parse_ninja_libraries, compute_library_metrics
 from lib.graph_utils import build_transitive_dependents_map
 from lib.color_utils import Colors, print_error, print_warning, print_success
+from lib.file_utils import exclude_headers_by_patterns
 
 # Check networkx availability early with helpful error message
 from lib.package_verification import require_package
@@ -335,6 +339,7 @@ Examples:
   %(prog)s ./build --impacted-by libFslBase.a
   %(prog)s ./build --export graph.dot
   %(prog)s ./build --cycles-only
+  %(prog)s ./build --exclude "*/ThirdParty/*" --exclude "*Test*"
         """
     )
     
@@ -352,6 +357,14 @@ Examples:
                         help='Export dependency graph to GraphViz DOT file')
     parser.add_argument('--cycles-only', action='store_true',
                         help='Only show circular library dependencies')
+    parser.add_argument('--exclude',
+                        type=str,
+                        action='append',
+                        metavar='PATTERN',
+                        help='Exclude libraries matching glob pattern (can be used multiple times). '
+                             'Useful for excluding third-party libraries, generated files, or test code. '
+                             'Supports glob patterns: * (any chars), ** (recursive), ? (single char). '
+                             'Examples: "*/ThirdParty/*", "*/build/*", "*Test*", "*/test/*"')
     
     args = parser.parse_args()
     
@@ -366,6 +379,30 @@ Examples:
     
     # Parse build.ninja
     lib_to_libs, exe_to_libs, all_libs, all_exes = parse_ninja_libraries(build_ninja_path)
+    
+    # Apply exclude patterns if specified
+    if hasattr(args, 'exclude') and args.exclude:
+        try:
+            project_root = str(Path(args.build_dir).parent)
+        except Exception:
+            project_root = os.path.dirname(os.path.abspath(args.build_dir))
+        
+        original_count = len(all_libs)
+        filtered_libs, excluded_count, no_match_patterns = exclude_headers_by_patterns(
+            all_libs, args.exclude, project_root
+        )
+        
+        if excluded_count > 0:
+            # Filter libraries from the dependency maps and executable dependencies
+            excluded_libs = all_libs - filtered_libs
+            lib_to_libs = {k: v - excluded_libs for k, v in lib_to_libs.items() if k in filtered_libs}
+            exe_to_libs = {k: v - excluded_libs for k, v in exe_to_libs.items()}
+            all_libs = filtered_libs
+            print_success(f"Excluded {excluded_count} libraries matching {len(args.exclude)} pattern(s)", prefix=False)
+        
+        # Warn about patterns that matched nothing
+        for pattern in no_match_patterns:
+            print_warning(f"Exclude pattern '{pattern}' matched no libraries", prefix=False)
     
     # Find cycles if requested
     cycles = find_cycles(lib_to_libs)

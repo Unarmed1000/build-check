@@ -90,6 +90,9 @@ EXAMPLES:
     
     # Analyze changed headers, show top 20 affected files
     ./buildCheckIncludeGraph.py ../build/release/ --top 20
+    
+    # Exclude third-party and test headers
+    ./buildCheckIncludeGraph.py ../build/release/ --exclude "*/ThirdParty/*" --exclude "*/test/*"
 
 Performance improvements:
 - Uses NetworkX for efficient graph operations and path finding
@@ -120,6 +123,7 @@ from dataclasses import dataclass
 from lib.ninja_utils import extract_rebuild_info
 from lib.color_utils import Colors, print_warning, print_success
 from lib.constants import COMPILE_COMMANDS_JSON
+from lib.file_utils import exclude_headers_by_patterns
 from lib.clang_utils import (
     find_clang_scan_deps, create_filtered_compile_commands,
     is_valid_source_file, is_valid_header_file, CLANG_SCAN_DEPS_COMMANDS,
@@ -745,6 +749,17 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
         help='Enable verbose debug logging'
     )
     
+    parser.add_argument(
+        '--exclude',
+        type=str,
+        action='append',
+        metavar='PATTERN',
+        help='Exclude headers matching glob pattern (can be used multiple times). '
+             'Useful for excluding third-party libraries, generated files, or test code. '
+             'Supports glob patterns: * (any chars), ** (recursive), ? (single char). '
+             'Examples: "*/ThirdParty/*", "*/build/*", "*_generated.h", "*/test/*"'
+    )
+    
     args: argparse.Namespace = parser.parse_args()
     
     # Set logging level based on verbose flag
@@ -872,6 +887,23 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
         logging.error(f"Failed to analyze headers: {e}")
         print(f"{Colors.RED}Error: Failed to analyze headers: {e}{Colors.RESET}")
         return 1
+    
+    # Apply exclude patterns if specified
+    if hasattr(args, 'exclude') and args.exclude:
+        original_count = len(changed_headers_in_graph)
+        headers_set = set(changed_headers_in_graph)
+        
+        filtered_headers, excluded_count, no_match_patterns = exclude_headers_by_patterns(
+            headers_set, args.exclude, project_root
+        )
+        
+        if excluded_count > 0:
+            changed_headers_in_graph = [h for h in changed_headers_in_graph if h in filtered_headers]
+            print_success(f"Excluded {excluded_count} headers matching {len(args.exclude)} pattern(s)", prefix=False)
+        
+        # Warn about patterns that matched nothing
+        for pattern in no_match_patterns:
+            print_warning(f"Exclude pattern '{pattern}' matched no headers", prefix=False)
     
     if not changed_headers_in_graph:
         if args.full:

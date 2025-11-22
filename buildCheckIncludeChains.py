@@ -76,6 +76,9 @@ EXAMPLES:
     
     # Only show headers that appear together 10+ times
     ./buildCheckIncludeChains.py ../build/release/ --threshold 10
+    
+    # Exclude third-party and test headers
+    ./buildCheckIncludeChains.py ../build/release/ --exclude "*/ThirdParty/*" --exclude "*/test/*"
 """
 import subprocess
 import re
@@ -89,6 +92,7 @@ from pathlib import Path
 
 # Import library modules
 from lib.color_utils import Colors, print_error, print_warning, is_color_supported
+from lib.file_utils import exclude_headers_by_patterns
 from lib.ninja_utils import (
     check_ninja_available, 
     validate_build_directory, 
@@ -296,6 +300,17 @@ Use buildCheckIncludeGraph.py to see the actual include relationships.
         help='Enable verbose logging'
     )
     
+    parser.add_argument(
+        '--exclude',
+        type=str,
+        action='append',
+        metavar='PATTERN',
+        help='Exclude headers matching glob pattern (can be used multiple times). '
+             'Useful for excluding third-party libraries, generated files, or test code. '
+             'Supports glob patterns: * (any chars), ** (recursive), ? (single char). '
+             'Examples: "*/ThirdParty/*", "*/build/*", "*_generated.h", "*/test/*"'
+    )
+    
     args = parser.parse_args()
     
     # Configure logging level
@@ -364,6 +379,31 @@ Use buildCheckIncludeGraph.py to see the actual include relationships.
         f"Found {len(changed_files)} changed header(s) affecting "
         f"{len(rebuild_targets)} target(s)"
     )
+    
+    # Apply exclude patterns if specified
+    if hasattr(args, 'exclude') and args.exclude:
+        try:
+            project_root_for_filter = build_dir.parent.parent.parent
+        except Exception:
+            project_root_for_filter = build_dir.parent
+        
+        original_count = len(changed_files)
+        filtered_headers, excluded_count, no_match_patterns = exclude_headers_by_patterns(
+            changed_files, args.exclude, str(project_root_for_filter)
+        )
+        
+        if excluded_count > 0:
+            changed_files = filtered_headers
+            print(f"{Colors.GREEN}Excluded {excluded_count} headers matching {len(args.exclude)} pattern(s){Colors.RESET}")
+        
+        # Warn about patterns that matched nothing
+        for pattern in no_match_patterns:
+            print(f"{Colors.YELLOW}Warning: Exclude pattern '{pattern}' matched no headers{Colors.RESET}")
+        
+        if not changed_files:
+            logger.info("All changed headers were excluded")
+            print(f"{Colors.YELLOW}All changed headers were excluded by filters{Colors.RESET}")
+            return 0
     
     # Determine project root (heuristic: 3 levels up from build dir)
     try:
