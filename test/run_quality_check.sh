@@ -148,6 +148,47 @@ else
     QUALITY_ISSUES+=("mypy warnings")
 fi
 
+# Run pylint
+echo ""
+echo "🔍 Linting (pylint):"
+set +e  # Temporarily disable exit on error
+PYLINT_OUTPUT=$(bash "$SCRIPT_DIR/run_pylint.sh" 2>&1)
+PYLINT_EXIT_CODE=$?
+set -e  # Re-enable exit on error
+PYLINT_FAILED=false
+
+# Extract rating from output
+PYLINT_RATING=$(echo "$PYLINT_OUTPUT" | grep -oP "rated at \K[0-9]+\.[0-9]+" | head -1)
+
+if [ -n "$PYLINT_RATING" ]; then
+    # Compare rating (bash doesn't handle floats well, so multiply by 10)
+    RATING_INT=$(echo "$PYLINT_RATING * 10" | bc | cut -d. -f1)
+    
+    if [ $RATING_INT -ge 80 ]; then
+        echo -e "   ${GREEN}✓ Code rating: $PYLINT_RATING/10${NC}"
+    elif [ $RATING_INT -ge 50 ]; then
+        echo -e "   ${YELLOW}⚠ Code rating: $PYLINT_RATING/10 (below 8.0)${NC}"
+        QUALITY_SCORE=$((QUALITY_SCORE - 1))
+        QUALITY_ISSUES+=("pylint rating below 8.0")
+    else
+        echo -e "   ${RED}✗ Code rating: $PYLINT_RATING/10 (below 5.0)${NC}"
+        echo "$PYLINT_OUTPUT" | grep -E "^[CWREF]:" | head -20
+        QUALITY_SCORE=$((QUALITY_SCORE - 2))
+        QUALITY_ISSUES+=("pylint rating below 5.0")
+        PYLINT_FAILED=true
+    fi
+elif [ $PYLINT_EXIT_CODE -eq 0 ]; then
+    echo -e "   ${GREEN}✓ No issues found${NC}"
+elif python3 -c "import pylint" 2>/dev/null; then
+    # pylint is installed but had issues
+    echo -e "   ${YELLOW}⚠ Pylint completed with warnings${NC}"
+    QUALITY_SCORE=$((QUALITY_SCORE - 1))
+    QUALITY_ISSUES+=("pylint warnings")
+else
+    echo -e "   ${YELLOW}⚠ Pylint not installed (optional)${NC}"
+    QUALITY_ISSUES+=("pylint missing")
+fi
+
 # Run tests
 echo ""
 echo "🧪 Test Suite:"
@@ -212,8 +253,8 @@ if [ $DOCS_MISSING -gt 0 ]; then
 fi
 
 # Calculate quality rating based on issues found
-# If mypy or tests failed, set to lowest quality
-if [ "$MYPY_FAILED" = true ] || [ "$TESTS_FAILED" = true ]; then
+# If mypy, pylint, or tests failed, set to lowest quality
+if [ "$MYPY_FAILED" = true ] || [ "$TESTS_FAILED" = true ] || [ "$PYLINT_FAILED" = true ]; then
     QUALITY_SCORE=1
 else
     # Start with 5 stars, deduct for issues
@@ -269,7 +310,7 @@ if [ "$MYPY_FAILED" = false ]; then
     echo "  • 100% type safety"
 fi
 echo ""
-if [ "$MYPY_FAILED" = false ] && [ "$TESTS_FAILED" = false ]; then
+if [ "$MYPY_FAILED" = false ] && [ "$TESTS_FAILED" = false ] && [ "$PYLINT_FAILED" = false ]; then
     echo "Ready for production use! 🚀"
 else
     echo -e "${YELLOW}⚠ Fix issues above before production use${NC}"

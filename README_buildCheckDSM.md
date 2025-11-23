@@ -2,9 +2,9 @@
 
 ## Overview
 
-`buildCheckDSM.py` visualizes C++ header dependencies as a **Dependency Structure Matrix (DSM)**, providing a comprehensive architectural view of your codebase. It identifies circular dependencies, analyzes layered architecture, and highlights high-coupling headers that may need refactoring.
+`buildCheckDSM.py` visualizes C++ header dependencies as a **Dependency Structure Matrix (DSM)**, providing a comprehensive architectural view of your codebase. It identifies circular dependencies, analyzes layered architecture, and highlights high-coupling headers that may need refactoring. It also provides proactive improvement analysis to suggest high-impact refactorings.
 
-**Version**: 1.0.0
+**Version**: 1.2.0
 
 ## What is a Dependency Structure Matrix?
 
@@ -51,12 +51,30 @@ A DSM is a square matrix representation where:
 - Identify architectural changes: new/removed headers, cycles, coupling shifts
 - Track layer changes and cycle participants
 - Quantify impact of refactoring or feature additions
-- User manages builds manually (no git automation)
+- **Architectural insights**: Coupling statistics, stability changes, ripple impact
+- **Precise impact prediction**: Estimate source files affected by changes (default, use `--heuristic-only` for fast mode)
+- **Statistical analysis**: Mean/median/percentile coupling trends, outlier detection
+- Save/load baselines for flexible comparison workflows
 
-### 7. **Export and Filtering**
+### 7. **Advanced Metrics**
+- **PageRank centrality**: Measures architectural importance and influence
+- **Betweenness centrality**: Identifies architectural bottlenecks
+- **Hub analysis**: Finds headers with high combined degree (fan-in + fan-out)
+- **Quality scores**: Architecture quality (0-100), ADP score, interface ratio
+
+### 8. **Export and Filtering**
 - Export full matrix to CSV for offline analysis
 - Filter by glob patterns (e.g., "FslBase/*")
 - Cluster display by directory structure
+
+### 9. **Proactive Improvement Analysis** (NEW in v1.2.0)
+- Identifies high-impact refactoring opportunities WITHOUT requiring a baseline
+- Detects 5 anti-patterns: god objects, cycles, coupling outliers, unstable interfaces, hub nodes
+- Calculates ROI scores and break-even analysis for each candidate
+- Uses precise transitive closure for accurate rebuild impact estimation
+- Severity-based prioritization: 🟢 Quick Wins, 🔴 Critical, 🟡 Moderate
+- Actionable refactoring steps with effort estimates
+- Team impact estimation (hours saved per year, payback time)
 
 ## Usage
 
@@ -86,6 +104,8 @@ A DSM is a square matrix representation where:
 
 ### Differential Analysis (Compare Two Builds)
 
+#### Method 1: Compare Two Build Directories
+
 ```bash
 # Step 1: Build baseline version (e.g., main branch)
 git checkout main
@@ -108,6 +128,37 @@ FslBuild.py -c debug
 ./buildCheckDSM.py ../build-feature/debug/ --compare-with ../build-main/debug/
 ```
 
+#### Method 2: Save Baseline and Compare Later (Recommended)
+
+```bash
+# Step 1: Analyze and save baseline
+git checkout main
+./prepare.sh
+FslBuild.py -c debug
+./buildCheckDSM.py ../build/debug/ --save-results baseline.dsm.json.gz
+
+# Step 2: Switch to feature branch and compare (precise impact by default)
+git checkout feature-branch
+./prepare.sh
+FslBuild.py -c debug
+./buildCheckDSM.py ../build/debug/ --load-baseline baseline.dsm.json.gz
+
+# Step 3: Use fast heuristic mode for quick iteration (instant)
+./buildCheckDSM.py ../build/debug/ --load-baseline baseline.dsm.json.gz --heuristic-only
+
+# Step 4: Verbose output for detailed analysis
+./buildCheckDSM.py ../build/debug/ --load-baseline baseline.dsm.json.gz --verbose
+
+# Step 5: Filter to specific module with fast heuristic mode
+./buildCheckDSM.py ../build/debug/ --load-baseline baseline.dsm.json.gz --filter "Graphics/*" --heuristic-only
+```
+
+**Notes**:
+- `--save-results` saves unfiltered dependency data for later comparison
+- `--load-baseline` applies current filters to both baseline and current for fair comparison
+- **Default**: Precise transitive closure analysis (10-30s for >5000 headers, 95% confidence)
+- `--heuristic-only`: Fast heuristic estimation (instant, ±5% confidence) for quick iterations
+
 ### Filter by Module/Directory
 
 ```bash
@@ -126,6 +177,25 @@ FslBuild.py -c debug
 
 # Show module-level analysis
 ./buildCheckDSM.py ../build/release/ --cluster-by-directory
+```
+
+### Proactive Improvement Analysis (NEW)
+
+```bash
+# Analyze current codebase for improvement opportunities (no baseline required)
+./buildCheckDSM.py ../build/release/ --suggest-improvements
+
+# Focus on specific module
+./buildCheckDSM.py ../build/release/ --suggest-improvements --filter "FslBase/*"
+
+# Show detailed breakdown with verbose mode
+./buildCheckDSM.py ../build/release/ --suggest-improvements --verbose
+
+# Show more candidates
+./buildCheckDSM.py ../build/release/ --suggest-improvements --top 20
+
+# Exclude third-party code from suggestions
+./buildCheckDSM.py ../build/release/ --suggest-improvements --exclude "*/ThirdParty/*"
 ```
 
 ### Debug Mode
@@ -276,6 +346,183 @@ Layer Changes:
   FslGraphics3D/Camera.hpp: Layer 6 → Layer 7
 ```
 
+### 8. Proactive Improvement Analysis Output (with `--suggest-improvements`)
+
+NEW in v1.2.0: Identifies refactoring opportunities without requiring a baseline.
+
+```
+================================================================================
+PROACTIVE ARCHITECTURAL IMPROVEMENT ANALYSIS
+================================================================================
+
+Summary:
+  Total Improvement Candidates: 23
+  🟢 Quick Wins (ROI ≥60, break-even ≤5 commits): 5
+  🔴 Critical (cycles or ROI ≥40): 12
+  🟡 Moderate (ROI <40): 6
+  Estimated Total Rebuild Reduction: 34.2%
+  Average Break-Even Point: 7 commits
+  Architectural Debt Score: 42/100 (Moderate)
+
+Top 10 Improvement Opportunities:
+
+🟢 #1. FslBase/include/FslBase/Math/MathHelper.hpp
+   Anti-Pattern: god_object, coupling_outlier
+   Current Metrics: fan-in=89, fan-out=67, coupling=156, stability=0.43
+   ROI Score: 78.5/100
+   Estimated Impact: 47 coupling reduction, 8.2% rebuild reduction
+   Effort: High
+   Break-Even: 3 commits
+
+   Issues Detected:
+     • Includes 67 headers (god object pattern)
+     • Coupling 156 is 3.2σ above mean (48.5)
+
+   Actionable Steps:
+     → Split into focused modules (target: <20 includes each)
+     → Extract common utilities to separate headers
+     → Reduce coupling by 47 to reach mean
+
+   Affects 89 downstream headers
+
+🔴 #2. FslGraphics/Render/Adapter.hpp
+   Anti-Pattern: cycle_participant, unstable_interface
+   Current Metrics: fan-in=45, fan-out=23, coupling=68, stability=0.66
+   ROI Score: 65.2/100
+   Estimated Impact: 18 coupling reduction, 5.1% rebuild reduction
+   Effort: Medium
+   Break-Even: 4 commits
+
+   Issues Detected:
+     • Part of circular dependency group #2 (8 headers)
+     • High instability (0.66) with 45 dependents
+     • Changes ripple to 45 headers
+
+   Actionable Steps:
+     → Break circular dependency by introducing interface layer
+     → Use forward declarations to reduce includes
+     → Extract stable interface (reduce fan-out to <5)
+     → Move implementation details to separate .cpp or impl header
+
+🟡 #3. FslUtil/String/StringParser.hpp
+   Anti-Pattern: hub_node
+   Current Metrics: fan-in=34, fan-out=12, coupling=46, stability=0.26
+   ROI Score: 42.3/100
+   Estimated Impact: 12 coupling reduction, 3.2% rebuild reduction
+   Effort: Medium
+   Break-Even: 8 commits
+
+   Issues Detected:
+     • Critical hub node (betweenness: 0.087)
+     • Bottleneck in dependency graph
+
+   Actionable Steps:
+     → Reduce centrality by extracting interfaces
+     → Consider breaking into multiple focused headers
+
+Recommended Action Plan:
+
+  1. START WITH QUICK WINS (5 candidates)
+     Low effort, high reward. Break-even in ≤5 commits.
+     • FslBase/Math/MathHelper.hpp
+     • FslGraphics/Render/Adapter.hpp
+     • FslUtil/Config/ConfigParser.hpp
+
+  2. ADDRESS CRITICAL ISSUES (12 candidates)
+     Focus on cycle elimination and high-impact refactorings.
+     Priority: 8 headers in circular dependencies
+
+  3. PLAN MODERATE REFACTORINGS (6 candidates)
+     Schedule for future iterations based on team capacity.
+
+  Team Impact Estimation:
+     Average payback time: 1.4 weeks
+     Estimated developer-hours saved/year: 312 hours
+     Equivalent to: 2.0 developer-months/year
+```
+
+**Anti-Patterns Detected:**
+- **God Objects**: Headers with fan-out >50 (includes too many other headers)
+- **Cycle Participants**: Headers in circular dependency groups  
+- **Coupling Outliers**: Headers with coupling >2.5σ above mean
+- **Unstable Interfaces**: High instability (>0.5) with many dependents (≥10)
+- **Hub Nodes**: Critical bottlenecks with high betweenness centrality
+
+**ROI Calculation:**
+- **ROI Score (0-100)**: Composite metric
+  - 40%: Cycle elimination (highest priority)
+  - 30%: Rebuild reduction (ongoing benefit)
+  - 20%: Coupling decrease (architectural health)
+  - 10%: Ease of change (effort estimate)
+- **Break-Even Commits**: Estimated commits until benefits exceed refactoring costs
+- **Effort Levels**: Low (5 hours), Medium (20 hours), High (40 hours)
+
+**Severity Classification:**
+- 🟢 **Quick Wins**: ROI ≥60, break-even ≤5 commits (low-hanging fruit)
+- 🔴 **Critical**: Cycles or ROI ≥40 (high-impact, must address)
+- 🟡 **Moderate**: ROI <40 (beneficial but lower priority)
+
+### 9. Architectural Insights (with `--compare-with` or `--load-baseline`)
+
+When comparing builds, additional architectural insights are displayed:
+
+#### Coupling Statistics
+```
+=== COUPLING STATISTICS ===
+
+Distribution Analysis:
+  Mean coupling:    Baseline: 12.3 → Current: 13.1 (+6.5%)
+  Median coupling:  Baseline: 8.0 → Current: 9.0 (+12.5%)
+  95th percentile:  Baseline: 28 → Current: 31 (+10.7%)
+
+Outliers (>2σ above mean):
+  Baseline: 8 headers → Current: 12 headers (+50.0%)
+
+Top Coupling Increases:
+  • FslGraphics/Render/Basic.hpp: +8 (15 → 23)
+  • FslBase/Math/Vector3.hpp: +5 (18 → 23)
+```
+
+#### Stability Changes
+```
+=== STABILITY CHANGES ===
+
+Headers Became Unstable (stability > 0.5):
+  • FslGraphics/Render/Context.hpp: 0.45 → 0.62
+
+Headers Became Stable (stability ≤ 0.5):
+  • FslBase/Interface/IRenderer.hpp: 0.55 → 0.33
+```
+
+#### Ripple Impact (Precise Analysis - Default)
+```
+=== RIPPLE IMPACT ANALYSIS ===
+
+Changed Headers Ripple Effect:
+  • FslGraphics/Render/Basic.hpp
+    Direct dependents: 23 headers
+    Transitive impact: 156 source files (7.8% of codebase)
+
+Total Estimated Rebuild Impact: 390 source files (19.5%)
+```
+
+#### Architectural Recommendations
+```
+=== RECOMMENDATIONS ===
+
+🔴 CRITICAL: 1 new circular dependency introduced
+   Break cycle by removing: FslGraphics/Render/NewFeature.hpp → Context.hpp
+
+🟡 MODERATE: 2 headers became unstable (stability > 0.5)
+   Consider inverting dependencies
+
+🟢 POSITIVE: 2 headers reduced coupling
+   Continue this trend
+
+Overall Assessment: Architecture degraded slightly
+  Quality Score: 78.5 → 76.2 (-2.3 points)
+```
+
 ## Metrics Explained
 
 ### Fan-out
@@ -303,9 +550,49 @@ Percentage of empty cells in the matrix: `100% × (1 - actual_deps / possible_de
 - **High cohesion (>80%)**: Good module boundaries
 - **Low cohesion (<60%)**: Module boundaries may need improvement
 
+### PageRank
+Measures architectural importance using Google's PageRank algorithm. Headers with high PageRank are influential in the dependency graph and changes to them have wide-reaching effects.
+
+### Betweenness Centrality
+Measures how often a header appears on shortest paths between other headers. High betweenness indicates architectural bottlenecks — headers that connect different parts of the system.
+
+### Architecture Quality Score (0-100)
+Composite metric based on:
+- Sparsity (40%): Lower coupling is better
+- Cycles (30%): Fewer cycles is better
+- High coupling outliers (20%): Fewer high-coupling headers is better
+- Stable interfaces (10%): More stable interfaces is better
+
+Score interpretation:
+- **90-100**: Excellent architecture
+- **75-89**: Good architecture
+- **60-74**: Acceptable with room for improvement
+- **<60**: Needs architectural refactoring
+
 ## Use Cases
 
-### 1. Architectural Review
+### 1. Proactive Improvement Planning (NEW)
+**Question**: "What should I refactor to improve my codebase?"
+
+```bash
+./buildCheckDSM.py ../build/release/ --suggest-improvements
+```
+
+Get ROI-ranked recommendations for:
+- Breaking circular dependencies
+- Splitting god objects  
+- Reducing coupling outliers
+- Stabilizing volatile interfaces
+- Removing architectural bottlenecks
+
+No baseline required — analyzes current state only.
+
+**Follow-up questions:**
+- "Which refactorings give the best return on investment?"
+- "What are the quick wins I can tackle first?"
+- "How many commits until this refactoring pays for itself?"
+
+### 2. Architectural Review
 **Question**: "What's the overall structure of my codebase?"
 
 ```bash
@@ -418,6 +705,7 @@ Look for:
 | Tool | Focus | When to Use |
 |------|-------|-------------|
 | **buildCheckDSM.py** | Architectural structure (DSM view) | Architectural reviews, refactoring planning |
+| **buildCheckDSM.py --suggest-improvements** | Proactive refactoring opportunities | Identifying improvement candidates, ROI analysis |
 | **buildCheckDSM.py --compare-with** | Architectural changes between builds | Impact analysis, before/after comparisons |
 | **buildCheckSummary.py** | What changed, what will rebuild | After making changes, before builds |
 | **buildCheckImpact.py** | Quick rebuild impact estimates | Fast impact checks |
@@ -522,6 +810,9 @@ This is normal for large projects (500+ headers). Use `--export` to save results
 
 # 5. Export for detailed analysis
 ./buildCheckDSM.py ../build/release/ --export full_dsm.csv
+
+# 6. 🆕 Get proactive improvement recommendations
+./buildCheckDSM.py ../build/release/ --suggest-improvements --top 20
 ```
 
 ### Focus on Specific Module
@@ -583,6 +874,24 @@ Based on DSM analysis, prioritize refactoring:
 5. **Establish clear layers** — Move foundation code to higher layers (depended upon by others)
 
 ## Version History
+
+- **1.2.0** (2025-11-23): Proactive improvement analysis
+  - Added `--suggest-improvements` for single-run refactoring recommendations
+  - Anti-pattern detection: god objects, cycles, outliers, unstable interfaces, hub nodes
+  - ROI calculation with break-even analysis
+  - Severity-based prioritization (🟢 Quick Wins, 🔴 Critical, 🟡 Moderate)
+  - Precise transitive closure for accurate rebuild impact estimation
+  - Team impact estimation (hours saved, payback time)
+  - No baseline required — analyzes current state only
+
+- **1.1.0** (2025-11-21): Differential analysis enhancements
+  - Added `--save-results` and `--load-baseline` for flexible baseline workflows
+  - Comprehensive architectural insights with coupling statistics
+  - Precise ripple impact analysis (default) with `--heuristic-only` fast mode
+  - Statistical analysis: mean/median/percentile coupling trends
+  - Stability change tracking and interface extraction detection
+  - Layer movement analysis and ROI-based recommendations
+  - Severity-scored recommendations (🔴 Critical, 🟡 Moderate, 🟢 Positive)
 
 - **1.0.0** (2025-11-21): Initial release
   - Dependency Structure Matrix visualization

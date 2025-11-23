@@ -17,3 +17,6 @@ GitPython>=3.1.40
 # Optional: For colored terminal output (gracefully falls back if missing)
 # Used by: all scripts via lib/color_utils
 colorama>=0.4.6
+
+# Development tools
+black>=24.0

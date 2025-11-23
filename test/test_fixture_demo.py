@@ -32,11 +32,11 @@ def test_dsm_graph_parametrized(mock_dsm_graph_parametrized: Any) -> None:
 def test_library_mapping_simple(mock_library_mapping_simple: Dict[str, str]) -> None:
     """Test simple library mapping fixture."""
     assert len(mock_library_mapping_simple) == 10
-    assert 'libCore.a' in mock_library_mapping_simple.values()
+    assert "libCore.a" in mock_library_mapping_simple.values()
 
 
 @pytest.mark.unit
 def test_dependency_graph_simple(sample_dependency_graph_simple: Dict[str, Set[str]]) -> None:
     """Test simple dependency graph fixture."""
     assert len(sample_dependency_graph_simple) == 3
-    assert 'A.hpp' in sample_dependency_graph_simple
+    assert "A.hpp" in sample_dependency_graph_simple

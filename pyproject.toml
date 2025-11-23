@@ -1,0 +1,5 @@
+[tool.black]
+line-length = 160
+target-version = ['py37']
+# Prefer more compact formatting
+skip-magic-trailing-comma = true

@@ -11,7 +11,11 @@ The `lib/` directory provides reusable functionality that was previously duplica
 - **Testability**: Library modules can be tested independently
 - **Reusability**: Other projects can use these modules
 
+**Module Count**: 20 modules (15 production, 5 testing/scenario modules)
+
 ## Modules
+
+### Core Modules
 
 ### `ninja_utils.py`
 Utilities for interacting with the Ninja build system.
@@ -106,6 +110,194 @@ Utilities for Git operations using GitPython library.
 - Commit ranges: `HEAD~5..HEAD`
 - Uncommitted changes (staged and unstaged)
 - Security: Path traversal protection for all file operations
+
+### `cache_utils.py`
+Caching utilities for expensive operations.
+
+**Key Functions:**
+- `compute_hash()`: Compute hash of file or directory contents
+- `is_cache_valid()`: Check if cached result is still valid
+- `save_to_cache()`: Save analysis results to cache file
+- `load_from_cache()`: Load cached analysis results
+- `clear_cache()`: Clear expired cache entries
+
+**Features:**
+- Timestamp-based cache validation
+- Content hashing for integrity checking
+- Automatic cache expiration
+- JSON serialization for complex data structures
+
+**Use Cases:**
+- Caching clang-scan-deps results (expensive operation)
+- Storing dependency graph computations
+- Reusing analysis results across tool runs
+
+### `dsm_analysis.py`
+Comprehensive DSM (Dependency Structure Matrix) analysis functions.
+
+**Key Functions:**
+- `run_dsm_analysis()`: Complete DSM analysis with metrics, cycles, layers
+- `display_analysis_results()`: Format and display DSM results
+- `compare_dsm_results()`: Compare two DSM analyses (differential analysis)
+- `run_differential_analysis()`: Compare DSMs from two build directories
+- `run_differential_analysis_with_baseline()`: Compare with saved baseline
+- `run_git_working_tree_analysis()`: Analyze uncommitted git changes
+- `run_proactive_improvement_analysis()`: Identify refactoring opportunities (NEW v1.2.0)
+- `identify_improvement_candidates()`: Detect anti-patterns
+- `estimate_improvement_roi()`: Calculate ROI for refactoring
+- `rank_improvements_by_impact()`: Priority ranking
+- `calculate_matrix_statistics()`: Compute sparsity, coupling, quality scores
+- `compute_ripple_impact()`: Estimate rebuild impact of changes
+
+**Features:**
+- Circular dependency detection with SCC analysis
+- Layered architecture computation
+- Coupling metrics (fan-in, fan-out, stability)
+- Architectural quality scoring (0-100)
+- Statistical analysis (mean, median, percentiles, outliers)
+- Precise transitive closure for rebuild predictions
+- ROI-based improvement recommendations
+
+**Metrics:**
+- Architecture quality score (sparsity, cycles, coupling, stability)
+- ADP score (Acyclic Dependencies Principle compliance)
+- Interface ratio (percentage of stable interfaces)
+- PageRank and betweenness centrality
+
+### `dsm_serialization.py`
+Save and load DSM analysis results for baseline comparison.
+
+**Key Functions:**
+- `save_dsm_results()`: Save DSM to compressed JSON (gzip)
+- `load_dsm_results()`: Load DSM from saved file
+- `validate_baseline()`: Check baseline compatibility
+
+**Features:**
+- Compressed storage (~200-500KB for 1000 headers)
+- Metadata tracking (build dir, filters, timestamp)
+- Version compatibility checking
+- Cross-platform path normalization
+
+**Use Cases:**
+- Save baseline for later comparison
+- Flexible comparison workflows
+- CI/CD architectural regression testing
+
+### `dsm_types.py`
+Type definitions and dataclasses for DSM analysis.
+
+**Key Classes:**
+- `MatrixStatistics`: DSM matrix stats (sparsity, coupling, quality)
+- `DSMAnalysisResults`: Complete analysis results container
+- `DSMDelta`: Differences between two DSM analyses
+- `CouplingStatistics`: Statistical coupling analysis
+- `CycleComplexityStats`: Cycle analysis results
+- `StabilityChange`: Stability threshold crossings
+- `RippleImpactAnalysis`: Build impact assessment
+- `ArchitecturalInsights`: Comprehensive change analysis
+- `FutureRebuildPrediction`: Rebuild reduction predictions
+- `LayerMovementStats`: Layer depth changes
+- `ImprovementCandidate`: Refactoring opportunity (NEW v1.2.0)
+
+**Features:**
+- Type safety with dataclasses
+- Comprehensive architectural metrics
+- Severity classification support
+
+### `export_utils.py`
+Export utilities for analysis results.
+
+**Key Functions:**
+- `export_dsm_to_csv()`: Export DSM matrix to CSV
+- `export_dependency_graph()`: Export graph to GraphML/DOT/GEXF/JSON
+- `export_library_graph()`: Export library dependencies
+- `format_json_output()`: Format results as JSON
+- `generate_html_report()`: Create HTML visualization
+
+**Supported Formats:**
+- CSV: Spreadsheet analysis
+- GraphML: Gephi, yEd, Cytoscape
+- DOT: Graphviz visualization
+- GEXF: Gephi format
+- JSON: Custom tools, D3.js
+
+**Features:**
+- Relative path normalization
+- Metadata embedding
+- Library/module grouping
+- Centrality metrics inclusion
+
+### `file_utils.py`
+File system utilities and filtering.
+
+**Key Functions:**
+- `filter_headers_by_pattern()`: Glob-based header filtering
+- `exclude_headers_by_patterns()`: Exclude patterns
+- `filter_system_headers()`: Remove system headers
+- `cluster_headers_by_directory()`: Group by directory
+- `normalize_path()`: Cross-platform path normalization
+- `find_project_root()`: Detect project root directory
+
+**Classes:**
+- `FilterStatistics`: Track filtering operations
+
+**Features:**
+- Glob pattern support (*, **, ?)
+- System header detection (/usr/*, /lib/*, /opt/*)
+- Statistics tracking
+- Progress indicators for large datasets
+
+### `package_verification.py`
+Dependency version checking and validation.
+
+**Key Functions:**
+- `check_python_version()`: Verify Python version
+- `check_package_version()`: Check package version
+- `verify_all_dependencies()`: Verify all requirements
+- `suggest_installation()`: Installation suggestions
+
+**Features:**
+- Version comparison (semantic versioning)
+- Graceful degradation for optional packages
+- User-friendly error messages
+- Installation instructions
+
+### `scenario_creators.py`
+Test scenario creation for DSM testing (internal).
+
+**Key Functions:**
+- `create_test_headers()`: Generate test header files
+- `create_cycle_scenario()`: Create circular dependency scenario
+- `create_layer_scenario()`: Create layered architecture
+- `create_coupling_scenario()`: Create high-coupling scenario
+
+**Use Cases:**
+- Unit testing DSM analysis
+- Demo script generation
+- Regression testing
+
+### `scenario_definitions.py`
+Architectural scenario definitions for testing (internal).
+
+**Defines:**
+- 10 architectural scenarios (baseline, cycles, coupling, etc.)
+- Expected outcomes for each scenario
+- Test data structures
+
+### `scenario_git_utils.py`
+Git scenario utilities for testing (internal).
+
+**Key Functions:**
+- `create_git_scenario()`: Create git repository with scenario
+- `apply_scenario_changes()`: Apply changes to git repo
+- `commit_scenario()`: Commit scenario changes
+
+### `scenario_test_utils.py`
+Testing utilities for scenario validation (internal).
+
+**Key Functions:**
+- `validate_scenario_output()`: Check analysis results
+- `compare_scenarios()`: Compare scenario outcomes
 
 ### `color_utils.py`
 Colorama wrapper utilities for colored terminal output.
@@ -321,14 +513,17 @@ python3 -c "from lib.color_utils import print_success; print_success('Test passe
 5. **Documentation**: Comprehensive docstrings for all public functions
 6. **Error Handling**: Proper exception handling with informative messages
 
-## Future Enhancements
+## Module Summary
 
-Potential additions:
-- `cache_utils.py`: Caching for expensive operations
-- `report_utils.py`: Common report formatting
-- `config_utils.py`: Configuration file handling
-- `metrics_utils.py`: Common metric calculations
-- `path_utils.py`: Path manipulation and project structure detection
+**Production Modules** (15):
+- Core utilities: `ninja_utils`, `clang_utils`, `git_utils`, `color_utils`, `constants`
+- Analysis: `dsm_analysis`, `graph_utils`, `dependency_utils`, `library_parser`
+- Data structures: `dsm_types`, `dsm_serialization`
+- I/O: `export_utils`, `file_utils`, `cache_utils`, `package_verification`
+
+**Testing/Scenario Modules** (5):
+- `scenario_creators`, `scenario_definitions`, `scenario_git_utils`, `scenario_test_utils`
+- Used by demo scripts and test suite
 
 ## Contributing
 

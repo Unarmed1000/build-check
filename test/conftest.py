@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-#****************************************************************************************************************************************************
-#* BSD 3-Clause License
-#*
-#* Copyright (c) 2025, Mana Battery
-#* All rights reserved.
-#*
-#* Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
-#*
-#* 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
-#* 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the
-#*    documentation and/or other materials provided with the distribution.
-#* 3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this
-#*    software without specific prior written permission.
-#*
-#* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
-#* THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
-#* CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-#* PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-#* LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
-#* EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#****************************************************************************************************************************************************
+# ****************************************************************************************************************************************************
+# * BSD 3-Clause License
+# *
+# * Copyright (c) 2025, Mana Battery
+# * All rights reserved.
+# *
+# * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+# *
+# * 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+# * 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the
+# *    documentation and/or other materials provided with the distribution.
+# * 3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this
+# *    software without specific prior written permission.
+# *
+# * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+# * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+# * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+# * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+# * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# ****************************************************************************************************************************************************
 """Pytest configuration and shared base fixtures for BuildCheck tests.
 
 This module provides base fixtures used across all tests. Specialized fixtures
@@ -45,24 +45,20 @@ import json
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Dict, Generator, List, Tuple
+from typing import Any, Dict, Generator, List, Tuple
 import pytest
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import specialized fixture modules
-pytest_plugins = [
-    'test.conftest_dsm',
-    'test.conftest_graph',
-    'test.conftest_library',
-]
+pytest_plugins = ["test.conftest_dsm", "test.conftest_graph", "test.conftest_library"]
 
 
 @pytest.fixture
 def temp_dir() -> Generator[str, None, None]:
     """Create a temporary directory for tests.
-    
+
     Scope: function (default)
     Use for: File I/O operations that need isolation
     """
@@ -74,17 +70,18 @@ def temp_dir() -> Generator[str, None, None]:
 @pytest.fixture
 def mock_build_dir(temp_dir: str) -> str:
     """Create a mock ninja build directory with build.ninja.
-    
+
     Scope: function
     Dependencies: temp_dir
     Use for: Testing ninja-related functionality
     """
     build_dir = Path(temp_dir) / "build" / "release"
     build_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Create build.ninja
     build_ninja = build_dir / "build.ninja"
-    build_ninja.write_text("""
+    build_ninja.write_text(
+        """
 rule CXX_COMPILER
   command = g++ -c $in -o $out
 
@@ -92,122 +89,121 @@ build main.cpp.o: CXX_COMPILER ../src/main.cpp
 build utils.cpp.o: CXX_COMPILER ../src/utils.cpp
 
 build app: phony main.cpp.o utils.cpp.o
-""")
-    
+"""
+    )
+
     return str(build_dir)
 
 
 @pytest.fixture
 def mock_compile_commands(mock_build_dir: str, temp_dir: str) -> str:
     """Create a mock compile_commands.json in the build directory.
-    
+
     Scope: function
     Dependencies: mock_build_dir, temp_dir
     Use for: Testing compilation database parsing
     """
     # Get absolute paths for source files
     src_dir = Path(temp_dir) / "src"
-    
+
     compile_commands = [
-        {
-            "directory": mock_build_dir,
-            "command": f"g++ -I{src_dir} -c -o main.cpp.o {src_dir}/main.cpp",
-            "file": str(src_dir / "main.cpp")
-        },
-        {
-            "directory": mock_build_dir,
-            "command": f"g++ -I{src_dir} -c -o utils.cpp.o {src_dir}/utils.cpp",
-            "file": str(src_dir / "utils.cpp")
-        }
+        {"directory": mock_build_dir, "command": f"g++ -I{src_dir} -c -o main.cpp.o {src_dir}/main.cpp", "file": str(src_dir / "main.cpp")},
+        {"directory": mock_build_dir, "command": f"g++ -I{src_dir} -c -o utils.cpp.o {src_dir}/utils.cpp", "file": str(src_dir / "utils.cpp")},
     ]
-    
+
     compile_db_path = Path(mock_build_dir) / "compile_commands.json"
-    with open(compile_db_path, 'w') as f:
+    with open(compile_db_path, "w") as f:
         json.dump(compile_commands, f, indent=2)
-    
+
     return str(compile_db_path)
 
 
 @pytest.fixture
 def mock_source_files(temp_dir: str) -> str:
     """Create mock C++ source files.
-    
+
     Scope: function
     Dependencies: temp_dir
     Use for: Testing file parsing and analysis
     """
     src_dir = Path(temp_dir) / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Create header files
-    (src_dir / "utils.hpp").write_text("""
+    (src_dir / "utils.hpp").write_text(
+        """
 #ifndef UTILS_HPP
 #define UTILS_HPP
 
 int add(int a, int b);
 
 #endif
-""")
-    
-    (src_dir / "config.hpp").write_text("""
+"""
+    )
+
+    (src_dir / "config.hpp").write_text(
+        """
 #ifndef CONFIG_HPP
 #define CONFIG_HPP
 
 #define VERSION "1.0.0"
 
 #endif
-""")
-    
+"""
+    )
+
     # Create source files
-    (src_dir / "main.cpp").write_text("""
+    (src_dir / "main.cpp").write_text(
+        """
 #include "utils.hpp"
 #include "config.hpp"
 
 int main() {
     return add(1, 2);
 }
-""")
-    
-    (src_dir / "utils.cpp").write_text("""
+"""
+    )
+
+    (src_dir / "utils.cpp").write_text(
+        """
 #include "utils.hpp"
 
 int add(int a, int b) {
     return a + b;
 }
-""")
-    
+"""
+    )
+
     return str(src_dir)
 
 
 @pytest.fixture
 def mock_git_repo(temp_dir: str, mock_source_files: str) -> Generator[str, None, None]:
     """Create a mock git repository with commit history.
-    
+
     Scope: function
     Dependencies: temp_dir, mock_source_files
     Use for: Testing git-related functionality
     Requires: git command available
     """
     import subprocess
-    
+
     repo_dir = temp_dir
-    
+
     try:
         # Initialize git repo
         subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "test@example.com"], 
-                      cwd=repo_dir, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Test User"], 
-                      cwd=repo_dir, check=True, capture_output=True)
-        
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True, capture_output=True)
+
         # Add files and commit
         subprocess.run(["git", "add", "."], cwd=repo_dir, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "Initial commit"], 
-                      cwd=repo_dir, check=True, capture_output=True)
-        
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo_dir, check=True, capture_output=True)
+
         # Make a change to utils.hpp
         utils_hpp = Path(mock_source_files) / "utils.hpp"
-        utils_hpp.write_text("""
+        utils_hpp.write_text(
+            """
 #ifndef UTILS_HPP
 #define UTILS_HPP
 
@@ -215,15 +211,14 @@ int add(int a, int b);
 int subtract(int a, int b);  // Added function
 
 #endif
-""")
-        
-        subprocess.run(["git", "add", "src/utils.hpp"], cwd=repo_dir, 
-                      check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "Add subtract function"], 
-                      cwd=repo_dir, check=True, capture_output=True)
-        
+"""
+        )
+
+        subprocess.run(["git", "add", "src/utils.hpp"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Add subtract function"], cwd=repo_dir, check=True, capture_output=True)
+
         yield repo_dir
-        
+
     except subprocess.CalledProcessError as e:
         pytest.skip(f"Git not available or failed: {e}")
 
@@ -231,7 +226,7 @@ int subtract(int a, int b);  // Added function
 @pytest.fixture
 def mock_ninja_explain_output() -> str:
     """Mock output from ninja -n -d explain.
-    
+
     Scope: function
     Use for: Testing ninja explain parsing
     """
@@ -245,21 +240,18 @@ ninja explain: output utils.cpp.o older than most recent input src/utils.hpp (12
 """
 
 
-def create_mock_clang_scan_deps_output(
-    source_files: List[str],
-    dependencies: Dict[str, List[str]]
-) -> str:
+def create_mock_clang_scan_deps_output(source_files: List[str], dependencies: Dict[str, List[str]]) -> str:
     """Create mock output from clang-scan-deps in makefile format.
-    
+
     Helper function (not a fixture) for generating realistic clang-scan-deps output.
-    
+
     Args:
         source_files: List of source file paths
         dependencies: Dict mapping source files to their header dependencies
-    
+
     Returns:
         Mock makefile-format output
-    
+
     Example:
         >>> output = create_mock_clang_scan_deps_output(
         ...     ['main.cpp'],
@@ -271,3 +263,101 @@ def create_mock_clang_scan_deps_output(
         deps = dependencies.get(source, [])
         output.append(f"{source}.o: {source} \\\n  " + " \\\n  ".join(deps))
     return "\n".join(output)
+
+
+# ============================================================================
+# Cache Testing Fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def cache_test_files(temp_dir: str) -> Dict[str, Any]:
+    """Create realistic test files for cache validation testing.
+
+    Returns dict with paths to:
+    - filtered_db: compile_commands.json
+    - build_ninja: build.ninja
+    - source_files: list of .cpp/.hpp files
+    - cache_dir: .buildcheck_cache directory
+
+    Scope: function
+    Use for: Testing cache validation, invalidation, and file operations
+    """
+    base = Path(temp_dir)
+
+    # Create filtered compile_commands.json
+    filtered_db = base / "filtered_compile_commands.json"
+    filtered_db.write_text(json.dumps([{"directory": str(base), "command": "g++ -c test.cpp", "file": "test.cpp"}], indent=2))
+
+    # Create build.ninja
+    build_ninja = base / "build.ninja"
+    build_ninja.write_text("rule cxx\n  command = g++ $in -o $out\n\nbuild test.o: cxx test.cpp\n")
+
+    # Create source files for realistic testing
+    src_dir = base / "src"
+    src_dir.mkdir(exist_ok=True)
+
+    source_files = []
+    for i in range(5):
+        cpp_file = src_dir / f"file{i}.cpp"
+        cpp_file.write_text(f"// File {i}\nint func{i}() {{ return {i}; }}\n")
+        source_files.append(cpp_file)
+
+        hpp_file = src_dir / f"file{i}.hpp"
+        hpp_file.write_text(f"// Header {i}\nint func{i}();\n")
+        source_files.append(hpp_file)
+
+    # Create cache directory
+    cache_dir = base / ".buildcheck_cache"
+    cache_dir.mkdir(exist_ok=True)
+
+    return {"filtered_db": filtered_db, "build_ninja": build_ninja, "source_files": source_files, "cache_dir": cache_dir, "base_dir": base}
+
+
+@pytest.fixture(scope="module")
+def real_git_repo_module(tmp_path_factory: pytest.TempPathFactory) -> Generator[Path, None, None]:
+    """Create a real git repository with realistic commit history.
+
+    Scope: module (shared across test class for performance)
+    Use for: Testing git operations with actual git commands
+    Requires: git command available
+
+    Provides helper methods via the GitRepoHelper wrapper:
+    - create_commit(message, files): Create a commit with modified files
+    - create_branch(name): Create a new branch
+    - checkout(ref): Checkout a branch/commit
+    - get_current_ref(): Get current HEAD commit
+    """
+    import subprocess
+
+    tmp_dir = tmp_path_factory.mktemp("git_repo")
+
+    try:
+        # Initialize git repo with explicit default branch
+        subprocess.run(["git", "init", "-b", "main"], cwd=tmp_dir, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.email", "test@buildcheck.test"], cwd=tmp_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "BuildCheck Test"], cwd=tmp_dir, check=True, capture_output=True)
+
+        # Create initial files and commit
+        (tmp_dir / "README.md").write_text("# Test Project\n")
+        (tmp_dir / "main.cpp").write_text("#include <iostream>\nint main() { return 0; }\n")
+        (tmp_dir / "test.txt").write_text("Initial test content\n")
+
+        subprocess.run(["git", "add", "."], cwd=tmp_dir, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=tmp_dir, check=True, capture_output=True)
+
+        # Create a feature branch with additional commits
+        subprocess.run(["git", "checkout", "-b", "feature"], cwd=tmp_dir, check=True, capture_output=True)
+        (tmp_dir / "feature.cpp").write_text("void feature() {}\n")
+        subprocess.run(["git", "add", "feature.cpp"], cwd=tmp_dir, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Add feature"], cwd=tmp_dir, check=True, capture_output=True)
+
+        # Return to main branch
+        subprocess.run(["git", "checkout", "main"], cwd=tmp_dir, check=True, capture_output=True)
+
+        yield tmp_dir
+
+    except subprocess.CalledProcessError as e:
+        pytest.skip(f"Git not available or failed: {e}")
+    except FileNotFoundError:
+        pytest.skip("Git command not found")

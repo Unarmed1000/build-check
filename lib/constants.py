@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-#****************************************************************************************************************************************************
-#* BSD 3-Clause License
-#*
-#* Copyright (c) 2025, Mana Battery
-#* All rights reserved.
-#*
-#* Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
-#*
-#* 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
-#* 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the
-#*    documentation and/or other materials provided with the distribution.
-#* 3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this
-#*    software without specific prior written permission.
-#*
-#* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
-#* THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
-#* CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-#* PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-#* LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
-#* EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#****************************************************************************************************************************************************
+# ****************************************************************************************************************************************************
+# * BSD 3-Clause License
+# *
+# * Copyright (c) 2025, Mana Battery
+# * All rights reserved.
+# *
+# * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+# *
+# * 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+# * 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the
+# *    documentation and/or other materials provided with the distribution.
+# * 3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this
+# *    software without specific prior written permission.
+# *
+# * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+# * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+# * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+# * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+# * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# ****************************************************************************************************************************************************
 """Shared constants for buildCheck tools.
 
 This module provides centralized constants used across multiple buildCheck tools
@@ -50,9 +50,9 @@ DEFAULT_TOP_N = 30  # Default number of headers to show in DSM matrix
 MAX_DSM_DISPLAY = 100  # Maximum headers to display in matrix
 
 # Matrix visualization symbols
-CYCLE_HIGHLIGHT = '●'  # Symbol for headers in cycles
-DEPENDENCY_MARKER = 'X'  # Symbol for dependencies in matrix
-EMPTY_CELL = '·'  # Symbol for no dependency
+CYCLE_HIGHLIGHT = "●"  # Symbol for headers in cycles
+DEPENDENCY_MARKER = "X"  # Symbol for dependencies in matrix
+EMPTY_CELL = "·"  # Symbol for no dependency
 
 # Architecture health thresholds (matrix sparsity %)
 SPARSITY_HEALTHY = 95.0  # Above this = healthy (low coupling)
@@ -112,35 +112,35 @@ TRUNCATE_OUTPUT_KB = 60  # Truncate terminal output after this size (KB)
 # Build System Constants
 # =============================================================================
 
-COMPILE_COMMANDS_JSON = 'compile_commands.json'  # Standard compilation database filename
+COMPILE_COMMANDS_JSON = "compile_commands.json"  # Standard compilation database filename
 
 # =============================================================================
 # Cache Constants
 # =============================================================================
 
-CACHE_DIR = '.buildcheck_cache'  # Cache directory name in build directory
-CLANG_SCAN_DEPS_CACHE_FILE = 'clang_scan_deps_output.pickle'  # Cached clang-scan-deps output
+CACHE_DIR = ".buildcheck_cache"  # Cache directory name in build directory
+CLANG_SCAN_DEPS_CACHE_FILE = "clang_scan_deps_output.pickle"  # Cached clang-scan-deps output
 MAX_CACHE_AGE_HOURS = 168  # Maximum cache age in hours (7 days)
 
 # =============================================================================
 # Graph Export Constants
 # =============================================================================
 
-SUPPORTED_GRAPH_FORMATS = ['.graphml', '.dot', '.gexf', '.json']
-DEFAULT_GRAPH_FORMAT = 'graphml'
+SUPPORTED_GRAPH_FORMATS = [".graphml", ".dot", ".gexf", ".json"]
+DEFAULT_GRAPH_FORMAT = "graphml"
 
 # =============================================================================
 # Color Severity Mapping
 # =============================================================================
 
 # These map to Colors class attributes in color_utils.py
-COLOR_CRITICAL = 'RED'
-COLOR_HIGH = 'YELLOW'
-COLOR_MODERATE = 'CYAN'
-COLOR_LOW = 'GREEN'
-COLOR_INFO = 'WHITE'
-COLOR_DIM = 'DIM'
-COLOR_BRIGHT = 'BRIGHT'
+COLOR_CRITICAL = "RED"
+COLOR_HIGH = "YELLOW"
+COLOR_MODERATE = "CYAN"
+COLOR_LOW = "GREEN"
+COLOR_INFO = "WHITE"
+COLOR_DIM = "DIM"
+COLOR_BRIGHT = "BRIGHT"
 
 # =============================================================================
 # Additional Exit Codes
@@ -153,13 +153,15 @@ EXIT_UNEXPECTED = 1  # Unexpected error occurred
 # Exception Classes
 # =============================================================================
 
+
 class BuildCheckError(Exception):
     """Base exception for all buildCheck errors.
-    
+
     All buildCheck exceptions carry an exit_code attribute that indicates
     what exit code the program should use when this error is caught at the
     main entry point.
     """
+
     def __init__(self, message: str, exit_code: int = EXIT_RUNTIME_ERROR):
         super().__init__(message)
         self.exit_code = exit_code
@@ -168,54 +170,50 @@ class BuildCheckError(Exception):
 # Validation errors (EXIT_INVALID_ARGS)
 class ValidationError(BuildCheckError):
     """Raised when input validation fails (arguments, paths, etc)."""
+
     def __init__(self, message: str):
         super().__init__(message, EXIT_INVALID_ARGS)
 
 
 class BuildDirectoryError(ValidationError):
     """Raised when build directory is invalid or inaccessible."""
-    pass
 
 
 class ArgumentError(ValidationError):
     """Raised when command-line arguments are invalid."""
-    pass
 
 
 class GitRepositoryError(ValidationError):
     """Raised when git repository validation fails."""
-    pass
 
 
 # External tool errors
 class ExternalToolError(BuildCheckError):
     """Raised when external tools (ninja, clang, git) fail."""
-    def __init__(self, message: str, exit_code: int = EXIT_RUNTIME_ERROR):
+
+    def __init__(self, message: str, exit_code: int = EXIT_RUNTIME_ERROR):  # pylint: disable=useless-parent-delegation
         super().__init__(message, exit_code)
 
 
 class NinjaError(ExternalToolError):
     """Raised when ninja command fails or is not found."""
-    def __init__(self, message: str):
+
+    def __init__(self, message: str):  # pylint: disable=useless-parent-delegation
         super().__init__(message, EXIT_NINJA_FAILED)
 
 
 class ClangError(ExternalToolError):
     """Raised when clang-scan-deps or other clang tools fail."""
-    pass
 
 
 # Analysis/processing errors (EXIT_RUNTIME_ERROR)
 class AnalysisError(BuildCheckError):
     """Raised when analysis or processing operations fail."""
-    pass
 
 
 class GraphBuildError(AnalysisError):
     """Raised when dependency graph construction fails."""
-    pass
 
 
 class DependencyAnalysisError(AnalysisError):
     """Raised when dependency analysis fails."""
-    pass

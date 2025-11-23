@@ -1,0 +1,100 @@
+[MASTER]
+# Use multiple processes to speed up Pylint
+jobs=1
+
+# Pickle collected data for later comparisons
+persistent=yes
+
+# Discover python modules and packages in the file system subtree
+recursive=no
+
+[MESSAGES CONTROL]
+# Disable specific warnings that are too strict or not relevant
+disable=
+    # Style/formatting (handled by other tools)
+    line-too-long,
+    missing-docstring,
+    invalid-name,
+    # Too strict for practical use
+    too-many-arguments,
+    too-many-locals,
+    too-many-branches,
+    too-many-statements,
+    too-few-public-methods,
+    too-many-instance-attributes,
+    too-many-return-statements,
+    # Compatibility with type hints
+    no-member,
+    # Allow TODO comments
+    fixme,
+    # Common false positives
+    protected-access,
+    broad-except,
+    # Subprocess security warnings (we need shell commands)
+    subprocess-run-check,
+    consider-using-with,
+
+[REPORTS]
+# Set the output format
+output-format=text
+
+# Tells whether to display a full report or only the messages
+reports=no
+
+# Evaluate score
+score=yes
+
+[BASIC]
+# Regular expression for good variable names
+variable-rgx=[a-z_][a-z0-9_]{0,30}$
+
+# Regular expression for good constant names
+const-rgx=(([A-Z_][A-Z0-9_]*)|(__.*__))$
+
+[FORMAT]
+# Maximum number of characters on a single line
+max-line-length=160
+
+# Maximum number of lines in a module
+max-module-lines=1500
+
+[DESIGN]
+# Maximum number of arguments for function / method
+max-args=10
+
+# Maximum number of locals for function / method body
+max-locals=25
+
+# Maximum number of return / yield for function / method body
+max-returns=10
+
+# Maximum number of branch for function / method body
+max-branches=20
+
+# Maximum number of statements in function / method body
+max-statements=75
+
+[SIMILARITIES]
+# Minimum lines number of a similarity
+min-similarity-lines=10
+
+# Ignore comments when computing similarities
+ignore-comments=yes
+
+# Ignore docstrings when computing similarities
+ignore-docstrings=yes
+
+[TYPECHECK]
+# Tells whether missing members accessed in mixin class should be ignored
+ignore-mixin-members=yes
+
+# List of class names for which member attributes should not be checked
+ignored-classes=optparse.Values,thread._local,_thread._local
+
+[IMPORTS]
+# Deprecated modules which should not be used
+deprecated-modules=optparse
+
+[EXCEPTIONS]
+# Exceptions that will emit a warning when being caught
+overgeneral-exceptions=BaseException,Exception

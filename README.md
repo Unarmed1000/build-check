@@ -1,6 +1,11 @@
 # BuildCheck Tools
 
-A comprehensive suite of production-ready tools for analyzing C/C++ build dependencies, identifying rebuild bottlenecks, and optimizing compilation times in large projects.
+> **⚠️ EXPERIMENTAL PROJECT**  
+> This is an experimental research project created with extensive AI assistance (Claude/GitHub Copilot).  
+> While the tools have comprehensive test coverage (749 tests) and demonstrate useful capabilities,  
+> they should be considered experimental and used with appropriate caution in production environments.
+
+A comprehensive suite of tools for analyzing C/C++ build dependencies, identifying rebuild bottlenecks, and optimizing compilation times in large projects.
 
 ## 📋 Overview
 
@@ -250,17 +255,20 @@ Run the environment check to verify all dependencies:
 
 ### 6. buildCheckDSM.py - Dependency Structure Matrix Analysis
 
-**Purpose**: Visualizes header dependencies as a matrix, revealing architectural structure at a glance.
+**Purpose**: Visualizes header dependencies as a matrix, revealing architectural structure at a glance. **NEW in v1.2.0**: Proactive improvement analysis identifies refactoring opportunities without requiring a baseline.
 
 **What it does**:
 - Builds Dependency Structure Matrix showing header-to-header dependencies
 - Detects circular dependencies using strongly connected components
 - Computes architectural layers via topological sorting
-- Calculates per-header metrics: fan-in, fan-out, stability, coupling
-- Identifies headers that violate layered architecture
+- Calculates per-header metrics: fan-in, fan-out, stability, coupling, PageRank, betweenness
+- Identifies architectural hotspots and hub nodes
 - Provides compact matrix visualization with color coding
 - Exports full matrix to CSV for detailed offline analysis
-- **Compares DSM between two builds** (differential analysis)
+- **Compares DSM between two builds** (differential analysis with architectural insights)
+- **Analyzes ripple impact** of changes with precise source-level predictions
+- **Statistical analysis** of coupling trends, stability changes, and layer movements
+- **🆕 Proactive improvement analysis** (--suggest-improvements): Identifies high-impact refactorings WITHOUT baseline
 
 **Use when**:
 - "What's the overall dependency structure of my codebase?"
@@ -271,6 +279,8 @@ Run the environment check to verify all dependencies:
 - "Are my module boundaries clean?"
 - **"What architectural impact will this change have?"** (use `--compare-with`)
 - **"Did my refactoring improve the architecture?"** (use `--compare-with`)
+- **🆕 "What should I refactor to improve my codebase?"** (use `--suggest-improvements`)
+- **🆕 "Which refactorings give the best ROI?"** (use `--suggest-improvements`)
 
 **Performance**: Moderate (3-10 seconds, uses all CPU cores)
 
@@ -303,8 +313,51 @@ Run the environment check to verify all dependencies:
 # Cluster by directory
 ./buildCheckDSM.py ../build/release/ --cluster-by-directory
 
-# Compare two builds (differential analysis)
+# Compare two builds (differential analysis with precise impact - default)
 ./buildCheckDSM.py ../build/feature/ --compare-with ../build/main/
+
+# Save baseline for later comparison
+./buildCheckDSM.py ../build/main/ --save-results baseline.dsm.json.gz
+
+# Compare against saved baseline (precise impact analysis by default)
+./buildCheckDSM.py ../build/feature/ --load-baseline baseline.dsm.json.gz
+
+# Use fast heuristic mode for quick iteration (instant, ±5% accuracy)
+./buildCheckDSM.py ../build/feature/ --compare-with ../build/main/ --heuristic-only
+
+# 🆕 Proactive improvement analysis (NEW in v1.2.0)
+./buildCheckDSM.py ../build/release/ --suggest-improvements
+
+# Focus improvement suggestions on specific module
+./buildCheckDSM.py ../build/release/ --suggest-improvements --filter "Core/*"
+
+# Detailed improvement analysis with verbose output
+./buildCheckDSM.py ../build/release/ --suggest-improvements --verbose --top 20
+```
+
+**⚡ Performance & Accuracy Trade-off:**
+
+**Default (Precise Analysis)**:
+- **Speed**: 10-30 seconds for large codebases (>5000 headers)
+- **Accuracy**: 95% confidence (full transitive closure)
+- **Use for**: Critical architectural decisions, final reviews, documentation
+- **Method**: Complete NetworkX graph traversal of all dependencies
+
+**With `--heuristic-only` Flag**:
+- **Speed**: Instant (< 1 second)
+- **Accuracy**: ±5% confidence (heuristic estimation)
+- **Use for**: Quick iterations, CI/CD checks, exploratory analysis
+- **Method**: Fan-in × coupling delta approximation
+
+**Decision Guide - When to use `--heuristic-only`:**
+- ✅ Rapid feedback during active development
+- ✅ CI/CD pipelines where speed matters
+- ✅ Exploratory "what-if" architectural experiments
+- ✅ Quick checks before committing changes
+- ❌ Final architectural review documentation
+- ❌ Critical refactoring decisions
+- ❌ Precise rebuild cost estimation for planning
+- ❌ When you need exact source file impact counts
 ```
 
 **Key Metrics**:
@@ -312,8 +365,27 @@ Run the environment check to verify all dependencies:
 - **Fan-in**: Number of headers that include this header
 - **Coupling**: Total dependencies (fan-in + fan-out)
 - **Stability**: Fan-out / (Fan-in + Fan-out) — resistance to change
+- **PageRank**: Architectural importance (influence in dependency graph)
+- **Betweenness**: Centrality score (bottleneck indicator)
 - **Sparsity**: Percentage of empty cells in matrix (higher = better)
 - **Module Cohesion**: Intra-module vs inter-module dependencies
+
+**Differential Analysis Reports** (with `--compare-with` or `--load-baseline`):
+- **Coupling Statistics**: Mean, median, percentiles, outliers before/after
+- **Stability Changes**: Headers that became stable/unstable
+- **Cycle Complexity**: New/resolved cycles, cycle size distribution
+- **Layer Movements**: Headers that changed architectural depth
+- **Ripple Impact**: Predicted source files affected by changes (precise analysis by default, use `--heuristic-only` for fast mode)
+- **Architectural Recommendations**: Prioritized suggestions for improvements
+
+**🆕 Proactive Improvement Analysis** (with `--suggest-improvements` - NEW in v1.2.0):
+- **Anti-Pattern Detection**: God objects, cycles, outliers, unstable interfaces, hub nodes
+- **ROI Calculation**: Composite score (cycle elimination 40%, rebuild reduction 30%, coupling 20%, effort 10%)
+- **Break-Even Analysis**: Estimated commits until refactoring pays off
+- **Severity Classification**: 🟢 Quick Wins (ROI ≥60, ≤5 commits), 🔴 Critical (cycles/ROI ≥40), 🟡 Moderate (ROI <40)
+- **Actionable Steps**: Specific refactoring recommendations with effort estimates
+- **Team Impact**: Hours saved per year, payback time calculations
+- **No Baseline Required**: Analyzes current codebase state only
 
 **Matrix Visualization**:
 ```

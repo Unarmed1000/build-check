@@ -92,8 +92,11 @@ build-check/
 │   ├── conftest.py        # Pytest fixtures
 │   ├── run_tests.sh       # Test runner script
 │   └── ...
+├── demo/                   # Demo scripts and documentation
+│   ├── demo_*.py          # Demo scripts
+│   ├── EXAMPLES.md        # Usage examples
+│   └── DEMO_SUMMARY.md    # Demo summaries
 ├── README*.md              # Documentation
-├── EXAMPLES.md             # Usage examples
 └── LICENSE                 # BSD 3-Clause License
 ```
 
@@ -411,7 +414,7 @@ We use semantic versioning (MAJOR.MINOR.PATCH):
 
 4. Add tests in `test/test_buildCheckNewTool.py`
 5. Update README.md with new tool description
-6. Add examples to EXAMPLES.md
+6. Add examples to demo/EXAMPLES.md
 
 ### Adding a Library Function
 
@@ -436,7 +439,7 @@ We use semantic versioning (MAJOR.MINOR.PATCH):
 ### Adding Documentation
 
 1. Tool-specific: Update docstring and README_*.md
-2. General usage: Update EXAMPLES.md
+2. General usage: Update demo/EXAMPLES.md
 3. API documentation: Update lib/README.md
 4. Contributing: Update this file
 
@@ -444,7 +447,7 @@ We use semantic versioning (MAJOR.MINOR.PATCH):
 
 - Open an issue for discussion
 - Check existing issues and PRs
-- Review EXAMPLES.md for usage patterns
+- Review demo/EXAMPLES.md for usage patterns
 - Read tool docstrings for implementation details
 
 ## License

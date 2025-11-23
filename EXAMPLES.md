@@ -229,7 +229,16 @@ Interpretation:
 # Summary only (no matrix display)
 ./buildCheckDSM.py ../build/release/ --top 0
 
-# Compare two builds (differential analysis)
+# Save baseline for later comparison
+./buildCheckDSM.py ../build/release/ --save-results baseline.dsm.json.gz
+
+# Compare against saved baseline (precise analysis by default)
+./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz
+
+# Compare with fast heuristic mode for quick iteration
+./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz --heuristic-only
+
+# Compare two builds directly
 ./buildCheckDSM.py ../build/feature/ --compare-with ../build/main/
 ```
 
@@ -265,7 +274,7 @@ High-Coupling Headers:
      Stability: 0.25 (stable)
 ```
 
-**Differential Analysis Output** (with `--compare-with`):
+**Differential Analysis Output** (with `--compare-with` or `--load-baseline`):
 ```
 === DSM Differential Analysis ===
 
@@ -289,11 +298,149 @@ Coupling Changes (threshold: ±5):
   Increased:
     include/core/Engine.hpp: 89 → 97 (+8)
     include/render/Renderer.hpp: 56 → 63 (+7)
+
+=== ARCHITECTURAL INSIGHTS ===
+
+Coupling Statistics:
+  Mean coupling:    12.3 → 13.1 (+6.5%)
+  Median coupling:  8.0 → 9.0 (+12.5%)
+  95th percentile:  28 → 31 (+10.7%)
+  Outliers (>2σ):   8 → 12 headers (+50.0%)
+
+Stability Changes:
+  Headers became unstable: 2
+    • include/render/Context.hpp: 0.45 → 0.62
+  
+Ripple Impact Analysis (Precise - Default):
+  • include/core/Engine.hpp
+    Direct dependents: 67 headers
+    Transitive impact: 234 source files (11.7% of codebase)
+  
+  Total estimated rebuild impact: 456 source files (22.8%)
+
+Recommendations:
+  🔴 CRITICAL: 1 new circular dependency introduced
+     Break cycle: include/feature/NewFeature.hpp → include/core/Engine.hpp
+  
+  🟡 MODERATE: 2 headers became unstable (stability > 0.5)
+     Consider inverting dependencies
+  
+  Overall Assessment: Architecture degraded slightly
+    Quality Score: 78.5 → 76.2 (-2.3 points)
 ```
 
 ---
 
-### 8. Library Dependency Graph
+### 8. Proactive Architectural Improvement Analysis (NEW)
+**Scenario**: Identify high-impact refactoring opportunities without needing a baseline.
+
+```bash
+# Analyze current codebase for improvement opportunities
+./buildCheckDSM.py ../build/release/ --suggest-improvements
+
+# Focus on specific module
+./buildCheckDSM.py ../build/release/ --suggest-improvements --filter "Core/*"
+
+# Show detailed breakdown
+./buildCheckDSM.py ../build/release/ --suggest-improvements --verbose
+
+# Show top 20 candidates
+./buildCheckDSM.py ../build/release/ --suggest-improvements --top 20
+
+# Exclude third-party code
+./buildCheckDSM.py ../build/release/ --suggest-improvements --exclude "*/ThirdParty/*"
+```
+
+**Expected Output**:
+```
+================================================================================
+PROACTIVE ARCHITECTURAL IMPROVEMENT ANALYSIS
+================================================================================
+
+Summary:
+  Total Improvement Candidates: 18
+  🟢 Quick Wins (ROI ≥60, break-even ≤5 commits): 4
+  🔴 Critical (cycles or ROI ≥40): 9
+  🟡 Moderate (ROI <40): 5
+  Estimated Total Rebuild Reduction: 28.7%
+  Average Break-Even Point: 6 commits
+  Architectural Debt Score: 38/100 (Moderate)
+
+Top 10 Improvement Opportunities:
+
+🟢 #1. include/core/Engine.hpp
+   Anti-Pattern: god_object, coupling_outlier
+   Current Metrics: fan-in=67, fan-out=58, coupling=125, stability=0.46
+   ROI Score: 82.3/100
+   Estimated Impact: 41 coupling reduction, 11.7% rebuild reduction
+   Effort: High
+   Break-Even: 2 commits
+
+   Issues Detected:
+     • Includes 58 headers (god object pattern)
+     • Coupling 125 is 3.8σ above mean (32.4)
+
+   Actionable Steps:
+     → Split into focused modules (target: <20 includes each)
+     → Extract common utilities to separate headers
+     → Reduce coupling by 41 to reach mean
+
+🔴 #2. include/render/Context.hpp
+   Anti-Pattern: cycle_participant, unstable_interface
+   Current Metrics: fan-in=34, fan-out=19, coupling=53, stability=0.64
+   ROI Score: 71.5/100
+   Estimated Impact: 15 coupling reduction, 6.8% rebuild reduction
+   Effort: Medium
+   Break-Even: 3 commits
+
+   Issues Detected:
+     • Part of circular dependency group #1 (5 headers)
+     • High instability (0.64) with 34 dependents
+     • Changes ripple to 34 headers
+
+   Actionable Steps:
+     → Break circular dependency by introducing interface layer
+     → Use forward declarations to reduce includes
+     → Extract stable interface (reduce fan-out to <5)
+
+Recommended Action Plan:
+
+  1. START WITH QUICK WINS (4 candidates)
+     Low effort, high reward. Break-even in ≤5 commits.
+     • include/core/Engine.hpp
+     • include/render/Context.hpp
+     • include/util/Config.hpp
+
+  2. ADDRESS CRITICAL ISSUES (9 candidates)
+     Focus on cycle elimination and high-impact refactorings.
+     Priority: 5 headers in circular dependencies
+
+  3. PLAN MODERATE REFACTORINGS (5 candidates)
+     Schedule for future iterations based on team capacity.
+
+  Team Impact Estimation:
+     Average payback time: 1.2 weeks
+     Estimated developer-hours saved/year: 268 hours
+     Equivalent to: 1.7 developer-months/year
+```
+
+**What it identifies:**
+- **God Objects**: Headers with excessive includes (fan-out >50)
+- **Cycle Participants**: Headers in circular dependencies
+- **Coupling Outliers**: Headers >2.5σ above mean coupling
+- **Unstable Interfaces**: High-impact headers that change frequently
+- **Hub Nodes**: Architectural bottlenecks
+
+**ROI Analysis includes:**
+- Composite ROI score (0-100)
+- Estimated coupling reduction
+- Rebuild impact reduction percentage
+- Break-even point (commits until payoff)
+- Effort estimate (low/medium/high)
+
+---
+
+### 9. Library Dependency Graph
 **Scenario**: Analyze library-level dependencies (not headers).
 
 ```bash
@@ -331,7 +478,7 @@ Circular Library Dependencies:
 
 ---
 
-### 9. Build Optimization Recommendations
+### 10. Build Optimization Recommendations
 **Scenario**: Get actionable advice for improving build times.
 
 ```bash
@@ -425,16 +572,19 @@ fi
 
 ### Refactoring Workflow
 ```bash
-# 1. Find problem headers
+# 1. Identify improvement opportunities (NEW)
+./buildCheckDSM.py ./build --suggest-improvements --top 20 > improvement-plan.txt
+
+# 2. Find problem headers (alternative detailed analysis)
 ./buildCheckDependencyHell.py ./build --top 10 > problem-headers.txt
 
-# 2. Analyze specific header's impact
+# 3. Analyze specific header's impact
 ./buildCheckIncludeGraph.py ./build | grep "MyHeader.hpp"
 
-# 3. Check what it pulls in
+# 4. Check what it pulls in
 ./buildCheckIncludeChains.py ./build | grep "MyHeader.hpp"
 
-# 4. Get optimization suggestions
+# 5. Get optimization suggestions
 ./buildCheckOptimize.py ./build --focus headers
 ```
 

@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-#****************************************************************************************************************************************************
-#* BSD 3-Clause License
-#*
-#* Copyright (c) 2025, Mana Battery
-#* All rights reserved.
-#*
-#* Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
-#*
-#* 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
-#* 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the
-#*    documentation and/or other materials provided with the distribution.
-#* 3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this
-#*    software without specific prior written permission.
-#*
-#* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
-#* THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
-#* CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
-#* PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
-#* LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
-#* EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#****************************************************************************************************************************************************
+# ****************************************************************************************************************************************************
+# * BSD 3-Clause License
+# *
+# * Copyright (c) 2025, Mana Battery
+# * All rights reserved.
+# *
+# * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+# *
+# * 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+# * 2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the
+# *    documentation and/or other materials provided with the distribution.
+# * 3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this
+# *    software without specific prior written permission.
+# *
+# * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+# * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+# * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+# * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+# * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# ****************************************************************************************************************************************************
 """Analyze changed headers and their impact on rebuild targets.
 
 PURPOSE:
@@ -63,7 +63,7 @@ COMPLEMENTARY TOOLS:
 EXAMPLES:
     # Show changed headers and their impact
     ./buildCheckImpact.py ../build/release/
-    
+
     # Show all high-impact headers (not just changed)
     ./buildCheckImpact.py ../build/release/ --all-headers
 """
@@ -75,7 +75,7 @@ import argparse
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Set, Dict, List, Tuple, Optional
+from typing import Set, Dict, List, Tuple
 
 # Import library modules
 from lib.color_utils import Colors, print_error, print_warning
@@ -87,54 +87,49 @@ RE_OUTPUT = re.compile(r"ninja explain: (.*)")
 # get_dependencies moved to lib.ninja_utils
 
 
-def build_dependency_impact_map(
-    build_dir: str, 
-    rebuild_targets: List[str], 
-    changed_files: Optional[Set[str]] = None
-) -> Tuple[Dict[str, Set[str]], str, int]:
+def build_dependency_impact_map(build_dir: str, rebuild_targets: List[str]) -> Tuple[Dict[str, Set[str]], str, int]:
     """Build a map of which files impact how many rebuild targets.
-    
+
     Args:
         build_dir: Path to the build directory
         rebuild_targets: List of targets that need rebuilding
-        changed_files: Optional set of changed files
-        
+
     Returns:
         Tuple of (impact_map, project_root, target_count)
     """
     impact_map: Dict[str, Set[str]] = defaultdict(set)
-    
+
     try:
         project_root = str(Path(build_dir).resolve().parent.parent.parent)
     except Exception as e:
-        logging.warning(f"Could not determine project root: {e}")
+        logging.warning("Could not determine project root: %s", e)
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(build_dir)))
-    
-    logging.info(f"Analyzing dependencies for {len(rebuild_targets)} rebuild targets...")
-    
+
+    logging.info("Analyzing dependencies for %s rebuild targets...", len(rebuild_targets))
+
     for idx, target in enumerate(rebuild_targets, 1):
         if idx % 100 == 0:
-            logging.debug(f"Processing target {idx}/{len(rebuild_targets)}")
-        
+            logging.debug("Processing target %s/%s", idx, len(rebuild_targets))
+
         deps = get_dependencies(build_dir, target)
-        
+
         for dep in deps:
-            if dep.endswith(('.h', '.hpp', '.hxx')):
-                if not dep.startswith('/usr/') and not dep.startswith('/lib/'):
+            if dep.endswith((".h", ".hpp", ".hxx")):
+                if not dep.startswith("/usr/") and not dep.startswith("/lib/"):
                     impact_map[dep].add(target)
-    
+
     return impact_map, project_root, len(rebuild_targets)
 
 
 def main() -> int:
     """Main entry point for the build impact analysis tool.
-    
+
     Returns:
         Exit code (0 for success, non-zero for errors)
     """
     parser = argparse.ArgumentParser(
-        description='Quick impact analysis: shows how many targets each changed header affects.',
-        epilog='''
+        description="Quick impact analysis: shows how many targets each changed header affects.",
+        epilog="""
 This tool provides fast, basic impact analysis using Ninja's built-in dependency tracking.
 For more detailed analysis, use buildCheckIncludeGraph.py or buildCheckDependencyHell.py.
 
@@ -142,59 +137,34 @@ Typical workflow:
   1. Make changes to header files
   2. Run this tool to see immediate rebuild impact
   3. Use other tools for deeper analysis if needed
-        ''',
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    
-    parser.add_argument(
-        'build_directory',
-        metavar='BUILD_DIR',
-        help='Path to the ninja build directory (e.g., build/release)'
-    )
-    
-    parser.add_argument(
-        '--all-headers',
-        action='store_true',
-        help='Show all high-impact headers, not just changed ones'
-    )
-    
-    parser.add_argument(
-        '--verbose', '-v',
-        action='store_true',
-        help='Enable verbose logging output'
-    )
-    
-    parser.add_argument(
-        '--limit',
-        type=int,
-        default=20,
-        help='Maximum number of headers to display (default: 20)'
-    )
-    
+
+    parser.add_argument("build_directory", metavar="BUILD_DIR", help="Path to the ninja build directory (e.g., build/release)")
+
+    parser.add_argument("--all-headers", action="store_true", help="Show all high-impact headers, not just changed ones")
+
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging output")
+
+    parser.add_argument("--limit", type=int, default=20, help="Maximum number of headers to display (default: 20)")
+
     args = parser.parse_args()
-    
+
     # Configure logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format='%(levelname)s: %(message)s'
-    )
-    
+    logging.basicConfig(level=log_level, format="%(levelname)s: %(message)s")
+
     # Validate build directory using library helper
     try:
         build_dir, _ = validate_build_directory_with_feedback(args.build_directory, verbose=args.verbose)
-    except (ValueError, RuntimeError) as e:
+    except (ValueError, RuntimeError):
         # Error message already printed by helper
         return 1
-    
+
     # Check if ninja is available
     try:
-        subprocess.run(
-            ["ninja", "--version"],
-            capture_output=True,
-            check=True,
-            timeout=5
-        )
+        subprocess.run(["ninja", "--version"], capture_output=True, check=True, timeout=5)
     except FileNotFoundError:
         logging.error("Ninja build system not found. Please install ninja.")
         return 1
@@ -204,29 +174,23 @@ Typical workflow:
     except subprocess.TimeoutExpired:
         logging.error("Ninja command timed out.")
         return 1
-    
+
     # Store original directory to restore later
     original_dir = os.getcwd()
-    
+
     try:
         os.chdir(build_dir)
     except PermissionError:
-        logging.error(f"Permission denied accessing directory: '{build_dir}'")
+        logging.error("Permission denied accessing directory: '%s'", build_dir)
         return 1
     except Exception as e:
-        logging.error(f"Failed to change to build directory: {e}")
+        logging.error("Failed to change to build directory: %s", e)
         return 1
 
     # Run ninja -n -d explain
     try:
         logging.info("Running ninja -n -d explain...")
-        result = subprocess.run(
-            ["ninja", "-n", "-d", "explain"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=120
-        )
+        result = subprocess.run(["ninja", "-n", "-d", "explain"], capture_output=True, text=True, check=True, timeout=120)
     except subprocess.TimeoutExpired:
         logging.error("Ninja command timed out after 120 seconds")
         os.chdir(original_dir)
@@ -238,27 +202,27 @@ Typical workflow:
         os.chdir(original_dir)
         return 1
     except Exception as e:
-        logging.error(f"Unexpected error running ninja: {e}")
+        logging.error("Unexpected error running ninja: %s", e)
         os.chdir(original_dir)
         return 1
 
     lines = result.stderr.splitlines()
-    
+
     rebuild_targets: List[str] = []
     changed_files: Set[str] = set()
 
-    logging.debug(f"Parsing {len(lines)} lines of ninja output...")
-    
+    logging.debug("Parsing %s lines of ninja output...", len(lines))
+
     for line in lines:
         m = RE_OUTPUT.search(line)
         if not m:
             continue
 
         explain_msg = m.group(1)
-        
+
         if "is dirty" in explain_msg:
             continue
-        
+
         output_file = "unknown"
         if explain_msg.startswith("output "):
             parts = explain_msg.split(" ", 2)
@@ -266,14 +230,14 @@ Typical workflow:
                 output_file = parts[1]
         elif "command line changed for " in explain_msg:
             output_file = explain_msg.split("command line changed for ", 1)[1]
-        
+
         rebuild_targets.append(output_file)
-        
+
         # Extract changed files
-        match = re.search(r'most recent input\s+([^\s\(]+)', line)
+        match = re.search(r"most recent input\s+([^\s\(]+)", line)
         if match:
             file_path = match.group(1)
-            if file_path.endswith(('.h', '.hpp', '.hxx', '.cpp', '.c', '.cc')):
+            if file_path.endswith((".h", ".hpp", ".hxx", ".cpp", ".c", ".cc")):
                 changed_files.add(file_path)
 
     if not rebuild_targets:
@@ -282,33 +246,27 @@ Typical workflow:
         return 0
 
     print(f"\n{Colors.CYAN}Analyzing dependencies (found {len(changed_files)} changed files)...{Colors.RESET}")
-    
+
     try:
-        impact_map, project_root, sample_count = build_dependency_impact_map(build_dir, rebuild_targets, changed_files)
+        impact_map, project_root, _ = build_dependency_impact_map(build_dir, rebuild_targets)
     except Exception as e:
-        logging.error(f"Failed to build dependency impact map: {e}")
+        logging.error("Failed to build dependency impact map: %s", e)
         os.chdir(original_dir)
         return 1
-    
+
     # Filter changed headers with impact
-    changed_with_impact = {f: targets for f, targets in impact_map.items() 
-                          if len(targets) > 1 and f in changed_files}
-    
+    changed_with_impact = {f: targets for f, targets in impact_map.items() if len(targets) > 1 and f in changed_files}
+
     # All high-impact headers
-    all_high_impact = {f: targets for f, targets in impact_map.items() 
-                      if len(targets) > 1}
-    
-    changed_with_impact = dict(sorted(changed_with_impact.items(), 
-                                     key=lambda x: len(x[1]), 
-                                     reverse=True))
-    all_high_impact = dict(sorted(all_high_impact.items(), 
-                                 key=lambda x: len(x[1]), 
-                                 reverse=True))
+    all_high_impact = {f: targets for f, targets in impact_map.items() if len(targets) > 1}
+
+    changed_with_impact = dict(sorted(changed_with_impact.items(), key=lambda x: len(x[1]), reverse=True))
+    all_high_impact = dict(sorted(all_high_impact.items(), key=lambda x: len(x[1]), reverse=True))
 
     # Print changed headers
     if changed_with_impact:
         print(f"\n{Colors.BRIGHT}Changed Headers (impacting multiple targets):{Colors.RESET}")
-        
+
         displayed = 0
         for file_path, impacted_targets in changed_with_impact.items():
             if displayed >= args.limit:
@@ -316,24 +274,24 @@ Typical workflow:
                 if remaining > 0:
                     print(f"\n  ... and {remaining} more (use --limit to show more)")
                 break
-            
+
             try:
                 display_path = file_path
                 if file_path.startswith(project_root):
                     display_path = os.path.relpath(file_path, project_root)
             except ValueError:
                 display_path = file_path
-            
+
             count = len(impacted_targets)
             print_error(f"  {display_path} → impacts {Colors.BRIGHT}{count}{Colors.RESET} targets", prefix=False)
             displayed += 1
     else:
         print_warning("\nNo changed headers with dependencies found", prefix=False)
-    
+
     # Show all high-impact headers if requested
     if args.all_headers and all_high_impact:
         print(f"\n{Colors.BRIGHT}All High-Impact Headers:{Colors.RESET}")
-        
+
         displayed = 0
         for file_path, impacted_targets in all_high_impact.items():
             if displayed >= args.limit:
@@ -341,30 +299,27 @@ Typical workflow:
                 if remaining > 0:
                     print(f"\n  ... and {remaining} more (use --limit to show more)")
                 break
-            
+
             try:
                 display_path = file_path
                 if file_path.startswith(project_root):
                     display_path = os.path.relpath(file_path, project_root)
             except ValueError:
                 display_path = file_path
-            
+
             count = len(impacted_targets)
             marker = f" {Colors.RED}[CHANGED]{Colors.RESET}" if file_path in changed_files else ""
             print(f"  {Colors.MAGENTA}{display_path}{Colors.RESET} → impacts {Colors.BRIGHT}{count}{Colors.RESET} targets{marker}")
             displayed += 1
-    
+
     # Restore original directory
     os.chdir(original_dir)
     return 0
 
 
 if __name__ == "__main__":
-    from lib.constants import (
-        EXIT_SUCCESS, EXIT_KEYBOARD_INTERRUPT, EXIT_RUNTIME_ERROR,
-        BuildCheckError
-    )
-    
+    from lib.constants import EXIT_KEYBOARD_INTERRUPT, EXIT_RUNTIME_ERROR, BuildCheckError
+
     try:
         exit_code = main()
         sys.exit(exit_code)
@@ -375,8 +330,9 @@ if __name__ == "__main__":
         logging.error(str(e))
         sys.exit(e.exit_code)
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
+        logging.error("Unexpected error: %s", e)
         if logging.getLogger().level == logging.DEBUG:
             import traceback
+
             traceback.print_exc()
         sys.exit(EXIT_RUNTIME_ERROR)
