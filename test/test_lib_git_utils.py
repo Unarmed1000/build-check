@@ -42,6 +42,7 @@ from lib.git_utils import (
     is_ancestor,
     get_working_tree_changes_from_commit,
 )
+from lib.clang_utils import is_system_header
 
 
 class TestFindGitRepo:
@@ -170,6 +171,50 @@ class TestCategorizeChangedFiles:
         assert "include/header.hpp" in headers
         assert "src/file.cpp" in sources
         assert "src/code.cpp" in sources
+
+    def test_categorize_with_system_header_filtering(self) -> None:
+        """Test that system headers can be filtered from git changed files.
+        fffffffffffffffffffffffffffffffff
+                This is a regression test for the issue where system headers were appearing
+                in the git working tree analysis output even when --include-system-headers
+                was not set. The fix applies filtering after categorization.
+        """
+        # Simulate git diff output with mix of project and system headers
+        changed_files = [
+            "src/MyHeader.h",
+            "include/MyClass.hpp",
+            "/usr/include/stdlib.h",
+            "/usr/include/c++/13/iostream",  # C++ stdlib header without extension
+            "/usr/include/stdio.h",
+            "/usr/local/include/boost/shared_ptr.hpp",
+            "src/Implementation.cpp",
+            "src/main.c",
+        ]
+
+        # Categorize files (note: files without extensions like iostream won't be categorized as headers)
+        headers, sources = categorize_changed_files(changed_files)
+
+        # Verify categorization worked - iostream has no extension so not categorized
+        assert len(headers) == 5  # .h and .hpp files only
+        assert len(sources) == 2  # .cpp and .c files
+
+        # Apply system header filtering (as done in run_git_working_tree_analysis)
+        filtered_headers = [h for h in headers if not is_system_header(h)]
+        filtered_sources = [s for s in sources if not is_system_header(s)]
+
+        # Verify filtering worked correctly
+        assert len(filtered_headers) == 2, f"Expected 2 headers after filtering, got {len(filtered_headers)}: {filtered_headers}"
+        assert len(filtered_sources) == 2, f"Expected 2 sources after filtering, got {len(filtered_sources)}"
+
+        # Verify only project headers remain
+        assert "src/MyHeader.h" in filtered_headers
+        assert "include/MyClass.hpp" in filtered_headers
+        assert "/usr/include/stdlib.h" not in filtered_headers
+        assert "/usr/include/stdio.h" not in filtered_headers
+        assert "/usr/local/include/boost/shared_ptr.hpp" not in filtered_headers
+
+        # Note: /usr/include/c++/13/iostream is not in headers list because
+        # categorize_changed_files only recognizes files with known extensions
 
 
 class TestGetStagedFiles:

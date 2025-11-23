@@ -159,6 +159,50 @@ class TestSystemHeader:
         result = is_system_header("C:\\Program Files\\include\\header.h")
         assert isinstance(result, bool)
 
+    def test_cpp_stdlib_headers_no_extension(self) -> None:
+        """Test C++ standard library headers without file extensions."""
+        cpp_stdlib_headers = [
+            "/usr/include/c++/13/iostream",
+            "/usr/include/c++/11/vector",
+            "/usr/include/c++/13/string",
+            "/usr/include/c++/12/algorithm",
+            "/usr/include/c++/11/memory",
+            "/usr/include/c++/13/map",
+            "/usr/include/c++/13/unordered_map",
+        ]
+        for header in cpp_stdlib_headers:
+            assert is_system_header(header) is True, f"Failed to detect C++ stdlib header: {header}"
+
+    def test_cpp_stdlib_with_subdirs(self) -> None:
+        """Test C++ standard library headers in subdirectories."""
+        assert is_system_header("/usr/include/c++/13/bits/stl_vector.h") is True
+        assert is_system_header("/usr/include/c++/11/bits/basic_string.h") is True
+        assert is_system_header("/usr/include/c++/13/ext/alloc_traits.h") is True
+
+    def test_boost_headers(self) -> None:
+        """Test Boost library headers are detected as system headers."""
+        assert is_system_header("/usr/include/boost/shared_ptr.hpp") is True
+        assert is_system_header("/usr/local/include/boost/filesystem.hpp") is True
+        assert is_system_header("/opt/boost/include/boost/thread.hpp") is True
+
+    def test_system_c_headers(self) -> None:
+        """Test various C standard library headers."""
+        c_headers = ["/usr/include/stdlib.h", "/usr/include/stdio.h", "/usr/include/string.h", "/usr/include/stdint.h", "/usr/include/unistd.h"]
+        for header in c_headers:
+            assert is_system_header(header) is True
+
+    def test_lib_paths(self) -> None:
+        """Test various /lib/ paths are system headers."""
+        assert is_system_header("/lib/modules/header.h") is True
+        assert is_system_header("/lib64/include/header.h") is True
+
+    def test_project_with_cpp_in_name(self) -> None:
+        """Test that project paths with 'c++' in directory name are not false positives."""
+        # This should NOT be a system header - only /c++/ pattern in system paths counts
+        assert is_system_header("/home/user/my-c++-project/include/header.h") is False
+        # But if it's under /usr/ with c++, it should be system
+        assert is_system_header("/usr/local/c++/custom/header.h") is True
+
 
 class TestCreateFilteredCompileCommands:
     """Tests for create_filtered_compile_commands function."""
@@ -561,18 +605,40 @@ class TestSystemHeaderDetection:
     @pytest.mark.unit
     def test_various_system_paths(self) -> None:
         """Test detection of various system header paths."""
-        system_paths = ["/usr/include/stdio.h", "/usr/local/include/boost/vector.hpp", "/lib/gcc/include/stddef.h", "/opt/qt/include/QtCore"]
+        system_paths = [
+            "/usr/include/stdio.h",
+            "/usr/local/include/boost/vector.hpp",
+            "/lib/gcc/include/stddef.h",
+            "/opt/qt/include/QtCore",
+            "/usr/include/c++/13/iostream",
+            "/usr/include/c++/11/vector",
+        ]
 
         for path in system_paths:
-            assert is_system_header(path) is True
+            assert is_system_header(path) is True, f"Failed to detect as system header: {path}"
 
     @pytest.mark.unit
     def test_project_paths(self) -> None:
         """Test project paths are not system headers."""
-        project_paths = ["/home/user/project/include/header.h", "/var/project/src/file.cpp", "relative/path/header.h"]
+        project_paths = ["/home/user/project/include/header.h", "/var/project/src/file.cpp", "relative/path/header.h", "src/MyHeader.h", "include/MyClass.hpp"]
 
         for path in project_paths:
-            assert is_system_header(path) is False
+            assert is_system_header(path) is False, f"Incorrectly detected as system header: {path}"
+
+    @pytest.mark.unit
+    def test_edge_cases(self) -> None:
+        """Test edge cases in system header detection."""
+        # Empty string
+        assert is_system_header("") is False
+
+        # Just a filename
+        assert is_system_header("iostream") is False
+
+        # Relative path that looks like system
+        assert is_system_header("usr/include/stdio.h") is False
+
+        # Path containing c++ but not in system location
+        assert is_system_header("/home/user/c++/project/header.h") is False
 
 
 class TestCreateFilteredCompileCommandsEdgeCases:

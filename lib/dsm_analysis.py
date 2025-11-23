@@ -66,7 +66,7 @@ from .dsm_types import (
 from .graph_utils import DSMMetrics, build_reverse_dependencies, calculate_dsm_metrics, analyze_cycles, compute_layers as compute_layer_structure, visualize_dsm
 from .library_parser import analyze_cross_library_dependencies
 from .ninja_utils import validate_build_directory_with_feedback
-from .clang_utils import build_include_graph
+from .clang_utils import build_include_graph, is_system_header
 from .git_utils import find_git_repo, get_working_tree_changes_from_commit, categorize_changed_files
 from .dependency_utils import build_reverse_dependency_map, compute_affected_sources
 
@@ -2974,6 +2974,12 @@ def run_git_working_tree_analysis(
     # Step 3: Categorize changed files (headers vs sources)
     try:
         changed_headers, changed_sources = categorize_changed_files(changed_files)
+
+        # Filter system headers from git changes if requested
+        if not include_system_headers:
+            changed_headers = [h for h in changed_headers if not is_system_header(h)]
+            changed_sources = [s for s in changed_sources if not is_system_header(s)]
+
         print(f"  • {len(changed_headers)} headers changed")
         print(f"  • {len(changed_sources)} sources changed\n")
     except Exception as e:

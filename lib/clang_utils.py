@@ -52,7 +52,7 @@ CLANG_SCAN_DEPS_COMMANDS = ["clang-scan-deps-19", "clang-scan-deps-18", "clang-s
 VALID_SOURCE_EXTENSIONS = (".cpp", ".c", ".cc", ".cxx")
 VALID_HEADER_EXTENSIONS = (".h", ".hpp", ".hxx", ".hh")
 COMPILER_NAMES = ("g++", "gcc", "clang++", "clang", "/c++")
-SYSTEM_PATH_PREFIXES = ("/usr/", "/lib/", "/opt/")
+SYSTEM_PATH_PREFIXES = ("/usr/", "/lib/", "/lib64/", "/opt/")
 
 
 @dataclass
@@ -126,13 +126,23 @@ def is_valid_header_file(filepath: str) -> bool:
 def is_system_header(filepath: str) -> bool:
     """Check if a header is a system header.
 
+    Detects system headers including:
+    - Standard prefixes: /usr/, /lib/, /lib64/, /opt/
+    - C++ standard library headers under system paths (e.g., /usr/include/c++/*/iostream)
+
     Args:
         filepath: Path to the header file
 
     Returns:
         True if the header is a system header
     """
-    return any(filepath.startswith(prefix) for prefix in SYSTEM_PATH_PREFIXES)
+    # Check standard system path prefixes first
+    # This catches most cases including /usr/include/c++/13/iostream
+    for prefix in SYSTEM_PATH_PREFIXES:
+        if filepath.startswith(prefix):
+            return True
+
+    return False
 
 
 def create_filtered_compile_commands(build_dir: str) -> str:
