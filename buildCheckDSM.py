@@ -678,7 +678,14 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
 
         # Check if differential analysis is requested
         if args.compare_with:
-            return run_differential_analysis(build_dir, args.compare_with, project_root, compute_precise_impact=not args.heuristic_only, verbose=args.verbose)
+            return run_differential_analysis(
+                build_dir,
+                args.compare_with,
+                project_root,
+                compute_precise_impact=not args.heuristic_only,
+                verbose=args.verbose,
+                include_system_headers=args.include_system_headers if hasattr(args, "include_system_headers") else False,
+            )
 
         # Phase 2: Build dependency graph
         print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")

@@ -2066,16 +2066,18 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
 
                     print(f"{Colors.BRIGHT}{'─'*80}{Colors.RESET}")
                     print(f"{Colors.CYAN}KEY INSIGHT:{Colors.RESET}\n")
-                    print(f"  The DSM tool shows {Colors.YELLOW}current commit impact{Colors.RESET} (today's cost: {ri.this_commit_rebuild_percentage:.1f}%).")
                     print(
-                        f"  But the real value is {Colors.GREEN}preventing future cascades{Colors.RESET} (ongoing cost: {ri.future_ongoing_rebuild_percentage:.1f}%)."
+                        f"  The DSM tool helps you understand {Colors.GREEN}future ongoing costs{Colors.RESET} (every commit: {ri.future_ongoing_rebuild_percentage:.1f}%)."
+                    )
+                    print(
+                        f"  Today's one-time cost ({Colors.YELLOW}{ri.this_commit_rebuild_percentage:.1f}%{Colors.RESET}) is the investment to achieve future savings."
                     )
                     print()
                     if savings_pct > 0:
                         print(f"  {Colors.BRIGHT}Think of it like this:{Colors.RESET}")
-                        print(f"    • Today: Pay {ri.this_commit_rebuild_percentage:.1f}% refactoring tax (move code)")
-                        print(f"    • Future: Save {savings_pct:.1f}% on every implementation change")
-                        print(f"    • Net effect: {Colors.GREEN}Massively positive{Colors.RESET} after just {int(ri.roi_payback_commits)} commits")
+                        print(f"    • Today: Pay {ri.this_commit_rebuild_percentage:.1f}% refactoring tax (one-time investment)")
+                        print(f"    • Future: Save {savings_pct:.1f}% on every implementation change (ongoing benefit)")
+                        print(f"    • Net effect: {Colors.GREEN}Massively positive ROI{Colors.RESET} after just {int(ri.roi_payback_commits)} commits")
                         print()
             else:
                 print(f"{Colors.DIM}This change has moderate future build impact{Colors.RESET}\n")
@@ -2369,33 +2371,44 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
                             print(f"    • Layer {layer}: {count} headers ({count / avg_cohesion:.1f}x average)")
             print()
 
-        # Build Impact Assessment - Only show if NO future savings (otherwise redundant with new section above)
-        if not ri.future_savings:
-            section_num = str(int(section_num) + 1)
-            print(f"{Colors.BRIGHT}{section_num}. Build Impact Assessment{Colors.RESET}")
-            print(f"   {Colors.DIM}(Impact of changes in this commit - one-time cost){Colors.RESET}\n")
+        # Build Impact Assessment - ALWAYS SHOW (represents future ongoing architectural cost)
+        section_num = str(int(section_num) + 1)
+        print(f"{Colors.BRIGHT}{section_num}. Build Impact Assessment{Colors.RESET}")
+        print(f"   {Colors.DIM}(Future ongoing impact - every subsequent commit to these headers){Colors.RESET}\n")
 
-            # Heuristic (always shown)
-            current_headers_count = len(current.sorted_headers) if current.sorted_headers else 1
-            heuristic_pct = ri.heuristic_score / current_headers_count * 100
-            print(f"  {Colors.BRIGHT}Heuristic:{Colors.RESET} ~{heuristic_pct:.0f}% more downstream rebuilds")
-            print(f"  Confidence: ±{ri.heuristic_confidence:.0f}% (instant estimate based on fan-in × coupling delta)")
-            print(f"  Estimated affected files: ~{ri.affected_file_estimate}")
+        # Heuristic (always shown)
+        current_headers_count = len(current.sorted_headers) if current.sorted_headers else 1
+        heuristic_pct = ri.heuristic_score / current_headers_count * 100
+        print(f"  {Colors.BRIGHT}Heuristic:{Colors.RESET} ~{heuristic_pct:.0f}% ongoing downstream rebuild cost")
+        print(f"  Confidence: ±{ri.heuristic_confidence:.0f}% (estimates future cascading impact per commit)")
+        print(f"  Interpretation: Future changes to modified headers will affect ~{ri.affected_file_estimate} files")
 
-            # Precise (only if computed)
-            if ri.precise_score is not None:
-                precise_pct = ri.precise_score / current_headers_count * 100
-                print(f"\n  {Colors.BRIGHT}Precise:{Colors.RESET} {precise_pct:.0f}% more downstream rebuilds")
-                print(f"  Confidence: {ri.precise_confidence:.0f}% (full transitive closure analysis)")
-                print(f"  Exact downstream headers affected: {ri.precise_score}")
+        # Precise (only if computed)
+        if ri.precise_score is not None:
+            precise_pct = ri.precise_score / current_headers_count * 100
+            print(f"\n  {Colors.BRIGHT}Precise:{Colors.RESET} {precise_pct:.0f}% ongoing downstream rebuild cost")
+            print(f"  Confidence: {ri.precise_confidence:.0f}% (exact transitive impact per future commit)")
+            print(f"  Exact downstream headers affected per change: {ri.precise_score}")
 
-            if verbose and ri.high_impact_headers:
-                print(f"\n  {Colors.DIM}High-Impact Headers:{Colors.RESET}")
-                for header, fan_in, coupling_delta in ri.high_impact_headers[:5]:
-                    rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else header
-                    print(f"    • {rel_path}")
-                    print(f"      Fan-in: {fan_in}, Coupling Δ: +{coupling_delta}")
-            print()
+        # Contextual clarification
+        print(f"\n  {Colors.CYAN}💡 Context:{Colors.RESET}")
+        print(f"  These metrics show the {Colors.BRIGHT}ongoing architectural cost{Colors.RESET} of coupling changes.")
+        print(f"  Every future commit touching these headers will trigger the indicated rebuild percentage.")
+        if ri.future_savings:
+            print(f"  See 'Future Build Impact' section above for detailed source file rebuild metrics.")
+        else:
+            print(f"  This represents the incremental cost of maintaining high-coupling headers.")
+
+        # High-impact headers (verbose mode with future-focused language)
+        if verbose and ri.high_impact_headers:
+            print(f"\n  {Colors.BRIGHT}Future Hotspots (High-Impact Headers):{Colors.RESET}")
+            print(f"  {Colors.DIM}These headers will trigger widespread rebuilds when modified in future commits:{Colors.RESET}")
+            for header, fan_in, coupling_delta in ri.high_impact_headers[:5]:
+                rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else header
+                print(f"    • {rel_path}")
+                print(f"      Fan-in: {fan_in}, Coupling Δ: +{coupling_delta}")
+                print(f"      {Colors.YELLOW}→ Every change will cascade to {fan_in}+ downstream headers{Colors.RESET}")
+        print()
 
         # STEP 4: UNIFIED KEY FINDINGS (consolidated interpretation)
         print(f"{Colors.BRIGHT}{'─'*80}{Colors.RESET}")
@@ -2748,7 +2761,12 @@ def _display_library_boundary_analysis(header_to_headers: DefaultDict[str, Set[s
 
 
 def run_differential_analysis(
-    current_build_dir: str, baseline_build_dir: str, project_root: str, compute_precise_impact: bool = False, verbose: bool = False
+    current_build_dir: str,
+    baseline_build_dir: str,
+    project_root: str,
+    compute_precise_impact: bool = False,
+    verbose: bool = False,
+    include_system_headers: bool = False,
 ) -> int:
     """Run differential DSM analysis comparing two builds.
 
@@ -2758,6 +2776,7 @@ def run_differential_analysis(
         project_root: Project root directory for relative path display
         compute_precise_impact: Whether to compute precise ripple impact (slower)
         verbose: Show detailed statistical breakdowns
+        include_system_headers: Include system headers in analysis
 
     Returns:
         Exit code (0 for success, non-zero for errors)
@@ -2811,6 +2830,14 @@ def run_differential_analysis(
         logger.error("Failed to analyze current build: %s", e)
         print_error(f"Failed to analyze current build: {e}")
         return EXIT_RUNTIME_ERROR
+
+    # Filter system headers if requested (for both baseline and current)
+    if not include_system_headers:
+        from .file_utils import filter_system_headers
+
+        baseline_headers, _ = filter_system_headers(baseline_headers, show_progress=False)
+        current_headers, _ = filter_system_headers(current_headers, show_progress=False)
+        print(f"\n{Colors.DIM}System headers excluded from analysis{Colors.RESET}")
 
     # Run DSM analysis on both
     print(f"\n{Colors.BRIGHT}Computing DSM metrics...{Colors.RESET}")

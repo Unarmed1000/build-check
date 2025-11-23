@@ -97,6 +97,7 @@ from lib.git_utils import find_git_repo, get_uncommitted_changes, get_working_tr
 from lib.ninja_utils import validate_and_prepare_build_dir, validate_build_directory_with_feedback
 from lib.dependency_utils import build_reverse_dependency_map, compute_affected_sources, SourceDependencyMap
 from lib.color_utils import Colors, print_error, print_warning, print_success
+from lib.file_utils import filter_system_headers
 
 
 @dataclass
@@ -327,7 +328,9 @@ def print_ripple_report(changed_headers: List[str], changed_sources: List[str], 
                 print(f"    {Colors.DIM}... and {num_affected - 10} more{Colors.RESET}")
 
 
-def get_ripple_effect_data(build_dir: str, repo_dir: str, from_ref: Optional[str] = None) -> RippleEffectData:
+def get_ripple_effect_data(
+    build_dir: str, repo_dir: str, from_ref: Optional[str] = None, include_system_headers: bool = False, verbose: bool = False
+) -> RippleEffectData:
     """
     Get structured ripple effect analysis data without printing.
 
@@ -335,6 +338,8 @@ def get_ripple_effect_data(build_dir: str, repo_dir: str, from_ref: Optional[str
         build_dir: Path to ninja build directory
         repo_dir: Path to git repository
         from_ref: Git reference to compare against (default: None = HEAD, uncommitted only)
+        include_system_headers: Include system headers in analysis (default: False)
+        verbose: Enable verbose output (default: False)
 
     Returns:
         dict with keys:
@@ -381,6 +386,21 @@ def get_ripple_effect_data(build_dir: str, repo_dir: str, from_ref: Optional[str
         return RippleEffectData(
             changed_headers=[], changed_sources=[], affected_sources_by_header={}, all_affected_sources=[], total_sources=0, rebuild_percentage=0.0
         )
+
+    # Filter system headers unless explicitly included
+    if not include_system_headers:
+        original_count = len(changed_headers)
+        filtered_headers, stats = filter_system_headers(set(changed_headers), show_progress=False)
+        changed_headers = list(filtered_headers)
+
+        if stats["total_excluded"] > 0 and verbose:
+            print_success(f"Excluded {stats['total_excluded']} system headers from analysis", prefix=False)
+
+        # If all headers were system headers, return early
+        if not changed_headers and not changed_sources:
+            return RippleEffectData(
+                changed_headers=[], changed_sources=[], affected_sources_by_header={}, all_affected_sources=[], total_sources=0, rebuild_percentage=0.0
+            )
 
     # Analyze ripple effect (verbose=False to suppress progress messages)
     analysis_result = analyze_ripple_effect(build_dir, changed_headers, changed_sources, verbose=False)
@@ -464,6 +484,8 @@ Requires: git, clang-scan-deps, networkx (pip install networkx)
         "--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], default="WARNING", help="Set logging level (default: WARNING)"
     )
 
+    parser.add_argument("--include-system-headers", action="store_true", help="Include system headers in analysis (default: exclude /usr/*, /lib/*, /opt/*)")
+
     return parser.parse_args()
 
 
@@ -530,7 +552,7 @@ def validate_git_repository_path(repo_path: Optional[str], build_dir: str) -> st
         raise RuntimeError(f"Error validating git repository: {e}") from e
 
 
-def write_json_output_file(json_path: str, build_dir: str, repo_dir: str, from_ref: Optional[str] = None) -> None:
+def write_json_output_file(json_path: str, build_dir: str, repo_dir: str, from_ref: Optional[str] = None, include_system_headers: bool = False) -> None:
     """Generate and write JSON output to file.
 
     Args:
@@ -538,13 +560,14 @@ def write_json_output_file(json_path: str, build_dir: str, repo_dir: str, from_r
         build_dir: Build directory path
         repo_dir: Repository directory path
         from_ref: Git reference to compare against (default: None = HEAD)
+        include_system_headers: Include system headers in analysis (default: False)
 
     Raises:
         SystemExit: If JSON generation fails
     """
     try:
         logging.info("Generating JSON output to: %s", json_path)
-        ripple_result = get_ripple_effect_data(build_dir, repo_dir, from_ref)
+        ripple_result = get_ripple_effect_data(build_dir, repo_dir, from_ref, include_system_headers)
         json_output = json.dumps(asdict(ripple_result), indent=2)
 
         # Ensure output directory exists
@@ -562,7 +585,7 @@ def write_json_output_file(json_path: str, build_dir: str, repo_dir: str, from_r
         raise RuntimeError(f"Failed to write JSON output: {e}") from e
 
 
-def run_analysis_workflow(build_dir: str, repo_dir: str, verbose: bool, from_ref: Optional[str] = None) -> None:
+def run_analysis_workflow(build_dir: str, repo_dir: str, verbose: bool, from_ref: Optional[str] = None, include_system_headers: bool = False) -> None:
     """Execute the main ripple effect analysis workflow.
 
     Args:
@@ -570,6 +593,7 @@ def run_analysis_workflow(build_dir: str, repo_dir: str, verbose: bool, from_ref
         repo_dir: Repository directory path
         verbose: Whether to show verbose output
         from_ref: Git reference to compare against (default: None = HEAD)
+        include_system_headers: Include system headers in analysis (default: False)
 
     Raises:
         SystemExit: If analysis fails
@@ -600,6 +624,14 @@ def run_analysis_workflow(build_dir: str, repo_dir: str, verbose: bool, from_ref
             logging.info("No C/C++ files changed")
             print_warning("No C/C++ source or header files changed", prefix=False)
             return
+
+        # Filter system headers unless explicitly included
+        if not include_system_headers and changed_headers:
+            filtered_headers, stats = filter_system_headers(set(changed_headers), show_progress=False)
+            changed_headers = list(filtered_headers)
+
+            if stats["total_excluded"] > 0:
+                print_success(f"Excluded {stats['total_excluded']} system headers from analysis", prefix=False)
 
         print(f"{Colors.BLUE}C/C++ changes: {len(changed_headers)} headers, {len(changed_sources)} sources{Colors.RESET}")
 
@@ -652,14 +684,14 @@ def main() -> int:
     # JSON output mode
     if args.json:
         try:
-            write_json_output_file(args.json, build_dir, repo_dir, args.from_ref)
+            write_json_output_file(args.json, build_dir, repo_dir, args.from_ref, args.include_system_headers)
             return 0
         except RuntimeError:
             # Error message already printed
             return 1
 
     # Run main analysis workflow
-    run_analysis_workflow(build_dir, repo_dir, args.verbose, args.from_ref)
+    run_analysis_workflow(build_dir, repo_dir, args.verbose, args.from_ref, args.include_system_headers)
     return 0
 
 

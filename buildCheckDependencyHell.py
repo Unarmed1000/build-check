@@ -135,7 +135,7 @@ from lib.constants import EXIT_RUNTIME_ERROR, EXIT_KEYBOARD_INTERRUPT, BuildChec
 # Import library modules
 from lib.ninja_utils import extract_rebuild_info, parse_ninja_explain_line
 from lib.color_utils import Colors, print_warning, print_success
-from lib.file_utils import exclude_headers_by_patterns
+from lib.file_utils import exclude_headers_by_patterns, filter_system_headers
 from lib.clang_utils import is_system_header as is_system_header_lib, build_include_graph, VALID_SOURCE_EXTENSIONS, VALID_HEADER_EXTENSIONS
 from lib.graph_utils import build_dependency_graph, compute_reverse_dependencies, compute_transitive_metrics, compute_chain_lengths
 from lib.dependency_utils import find_dependency_fanout, DependencyAnalysisResult, SourceDependencyMap, compute_header_usage, identify_problematic_headers
@@ -319,6 +319,8 @@ Requires: clang-scan-deps, networkx (pip install networkx)
         "Supports glob patterns: * (any chars), ** (recursive), ? (single char). "
         'Examples: "*/ThirdParty/*", "*/build/*", "*_generated.h", "*/test/*"',
     )
+
+    parser.add_argument("--include-system-headers", action="store_true", help="Include system headers in analysis (default: exclude /usr/*, /lib/*, /opt/*)")
 
     return parser.parse_args()
 
@@ -686,6 +688,16 @@ def main() -> int:
         # Warn about patterns that matched nothing
         for pattern in no_match_patterns:
             print_warning(f"Exclude pattern '{pattern}' matched no headers", prefix=False)
+
+    # Filter system headers unless explicitly included
+    if not getattr(args, "include_system_headers", False):
+        original_count = len(problematic)
+        problematic_headers_set = set(h for h, _, _, _, _ in problematic)
+        filtered_headers, stats = filter_system_headers(problematic_headers_set, show_progress=False)
+
+        if stats["total_excluded"] > 0:
+            problematic = [(h, c, u, r, ch) for h, c, u, r, ch in problematic if h in filtered_headers]
+            print_success(f"Excluded {stats['total_excluded']} system headers", prefix=False)
 
     # Filter to only changed headers if requested
     if args.changed and changed_headers:

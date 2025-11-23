@@ -115,7 +115,7 @@ import networkx as nx
 from lib.ninja_utils import extract_rebuild_info
 from lib.color_utils import Colors, print_warning, print_success
 from lib.constants import COMPILE_COMMANDS_JSON
-from lib.file_utils import exclude_headers_by_patterns
+from lib.file_utils import exclude_headers_by_patterns, filter_system_headers
 from lib.clang_utils import CLANG_SCAN_DEPS_COMMANDS, VALID_SOURCE_EXTENSIONS, VALID_HEADER_EXTENSIONS, run_clang_scan_deps, create_filtered_compile_commands
 
 # Constants
@@ -576,6 +576,8 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
         'Examples: "*/ThirdParty/*", "*/build/*", "*_generated.h", "*/test/*"',
     )
 
+    parser.add_argument("--include-system-headers", action="store_true", help="Include system headers in analysis (default: exclude /usr/*, /lib/*, /opt/*)")
+
     return parser.parse_args()
 
 
@@ -761,6 +763,15 @@ def filter_headers_to_analyze(
 
         for pattern in no_match_patterns:
             print_warning(f"Exclude pattern '{pattern}' matched no headers", prefix=False)
+
+    # Filter system headers unless explicitly included
+    if not getattr(args, "include_system_headers", False):
+        headers_set = set(changed_headers_in_graph)
+        filtered_headers, stats = filter_system_headers(headers_set, show_progress=False)
+
+        if stats["total_excluded"] > 0:
+            changed_headers_in_graph = [h for h in changed_headers_in_graph if h in filtered_headers]
+            print_success(f"Excluded {stats['total_excluded']} system headers", prefix=False)
 
     if not changed_headers_in_graph:
         if args.full:
