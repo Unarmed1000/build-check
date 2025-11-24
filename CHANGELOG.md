@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Statistical analysis improvements**: Migrated from Python `statistics` module to NumPy for all statistical calculations
+  - Added NumPy dependency (`numpy>=1.24.0`) to `requirements.txt`
+  - Replaced manual percentile calculations with `numpy.percentile()` for proper linear interpolation
+  - Replaced `statistics.mean()` with `numpy.mean()` for consistency
+  - Replaced `statistics.stdev()` with `numpy.std(ddof=1)` for correct sample standard deviation
+  - Replaced `statistics.median()` with `numpy.median()` for consistency
+  - Improved accuracy for coupling distribution analysis (μ, σ, P95, P99)
+  - More accurate percentiles, especially important for small sample sizes
+  - Better performance with vectorized operations on large datasets
+
 ### Added
 - **buildCheckDSM.py v1.2.0**: Proactive improvement analysis (`--suggest-improvements`)
   - Single-run refactoring recommendations without requiring a baseline
@@ -32,8 +43,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - EXAMPLES.md: Proactive analysis workflow examples
   - README.md: Feature overview and integration
   - Updated USE CASES in buildCheckDSM.py docstring
+- Demo script `verify_numpy_statistics.py` demonstrating improved percentile accuracy
 
-### Changed
+### Changed (Breaking)
+- **Statistical analysis improvements**: Migrated from Python `statistics` module to NumPy for all statistical calculations
+  - Added NumPy dependency (`numpy>=1.24.0`) to `requirements.txt`
+  - Replaced manual percentile calculations with `numpy.percentile()` for proper linear interpolation
+  - Replaced `statistics.mean()` with `numpy.mean()` for consistency
+  - Replaced `statistics.stdev()` with `numpy.std(ddof=1)` for correct sample standard deviation
+  - Replaced `statistics.median()` with `numpy.median()` for consistency
+  - Improved accuracy for coupling distribution analysis (μ, σ, P95, P99)
+  - More accurate percentiles, especially important for small sample sizes
+  - Better performance with vectorized operations on large datasets
 - **[BREAKING]** `buildCheckDSM.py`: Precise transitive closure analysis is now the default for differential analysis
   - Removed `--precise-impact` flag (was opt-in)
   - Added `--heuristic-only` flag for fast mode (opt-out)

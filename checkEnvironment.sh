@@ -40,6 +40,15 @@ else
     OPTIONAL_MISSING+=("colorama")
 fi
 
+# Check numpy (required for statistical analysis)
+echo -n "✓ Checking numpy... "
+if python3 -c "import numpy" 2>/dev/null; then
+    echo -e "${GREEN}OK${NC}"
+else
+    echo -e "${RED}MISSING (required for statistical analysis)${NC}"
+    CRITICAL_MISSING=true
+fi
+
 echo ""
 
 # Run Python verification for all other packages

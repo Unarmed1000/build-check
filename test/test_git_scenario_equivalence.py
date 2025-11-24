@@ -37,7 +37,7 @@ def test_git_scenario_equivalence(scenario_id: int, tmp_path: Path) -> None:
 
     dsm_direct_baseline, _, _, _ = baseline_creator()
     dsm_direct_current, _, _, _ = scenario_creator()
-    dsm_direct_delta = compare_dsm_results(dsm_direct_baseline, dsm_direct_current, compute_precise_impact=True)
+    dsm_direct_delta = compare_dsm_results(dsm_direct_baseline, dsm_direct_current)
 
     # Create physical git repo with baseline committed and current in working tree
     repo_path = tmp_path / f"scenario_{scenario_id}_repo"
@@ -91,7 +91,7 @@ def test_git_scenario_equivalence(scenario_id: int, tmp_path: Path) -> None:
     )
 
     # Compare baseline and current using git-based analysis
-    git_based_delta = compare_dsm_results(git_baseline_dsm, git_current_dsm, compute_precise_impact=True)
+    git_based_delta = compare_dsm_results(git_baseline_dsm, git_current_dsm)
 
     # NOW COMPARE: DSM-direct vs Git-based analysis results
     # Both should produce equivalent architectural metrics

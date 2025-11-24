@@ -235,8 +235,8 @@ Interpretation:
 # Compare against saved baseline (precise analysis by default)
 ./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz
 
-# Compare with fast heuristic mode for quick iteration
-./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz --heuristic-only
+# Compare with baseline for comprehensive analysis
+./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz
 
 # Compare two builds directly
 ./buildCheckDSM.py ../build/feature/ --compare-with ../build/main/

@@ -29,10 +29,10 @@ and reused across the codebase. Extracted from buildCheckDSM.py for better modul
 
 import os
 import logging
-import statistics
 from typing import Dict, Set, List, Tuple, Any, DefaultDict, Optional
 
 import networkx as nx
+import numpy as np
 
 from .color_utils import Colors, print_error, print_warning, print_success
 from .constants import (
@@ -146,11 +146,8 @@ def calculate_matrix_statistics(
         # Calculate coupling percentiles for quality score
         couplings = [m.coupling for m in metrics.values()]
         if couplings:
-            couplings_sorted = sorted(couplings)
-            p95_idx = int(len(couplings_sorted) * 0.95)
-            p99_idx = int(len(couplings_sorted) * 0.99)
-            coupling_p95 = couplings_sorted[p95_idx] if p95_idx < len(couplings_sorted) else couplings_sorted[-1]
-            coupling_p99 = couplings_sorted[p99_idx] if p99_idx < len(couplings_sorted) else couplings_sorted[-1]
+            coupling_p95 = float(np.percentile(couplings, 95))
+            coupling_p99 = float(np.percentile(couplings, 99))
 
             # Count stable interfaces (stability < 0.3)
             num_stable_interfaces = sum(1 for m in metrics.values() if m.stability < 0.3)
@@ -583,13 +580,12 @@ def print_recommendations(
         print("  • Architecture appears healthy")
 
 
-def compare_dsm_results(baseline: DSMAnalysisResults, current: DSMAnalysisResults, compute_precise_impact: bool = False) -> DSMDelta:
+def compare_dsm_results(baseline: DSMAnalysisResults, current: DSMAnalysisResults) -> DSMDelta:
     """Compare two DSM analysis results and compute differences.
 
     Args:
         baseline: DSM analysis results from baseline build
         current: DSM analysis results from current build
-        compute_precise_impact: Whether to compute precise ripple impact
 
     Returns:
         DSMDelta containing all differences and architectural insights
@@ -639,15 +635,43 @@ def compare_dsm_results(baseline: DSMAnalysisResults, current: DSMAnalysisResult
     new_cycle_participants = (current_in_cycles & common_headers) - baseline_in_cycles
     resolved_cycle_participants = (baseline_in_cycles & common_headers) - current_in_cycles
 
+    # Track pre-existing cycle headers (were in cycles in baseline, still in cycles in current)
+    pre_existing_cycle_headers = baseline_in_cycles & current_in_cycles & common_headers
+
+    # Track escalated cycle headers (pre-existing cycles + modified headers)
+    modified_headers = set(coupling_increased.keys()) | set(coupling_decreased.keys()) | headers_added
+    escalated_cycle_headers = pre_existing_cycle_headers & modified_headers
+
+    # Track pre-existing unstable headers (stability >0.5 in both baseline and current)
+    pre_existing_unstable_headers: Set[str] = set()
+    for header in common_headers:
+        if baseline.metrics[header].stability > 0.5 and current.metrics[header].stability > 0.5:
+            pre_existing_unstable_headers.add(header)
+
+    # Track pre-existing coupling outliers (will be computed in architectural insights)
+    pre_existing_coupling_outliers: List[Tuple[str, float]] = []
+
     # Compute architectural insights
     architectural_insights: Optional[ArchitecturalInsights] = None
     if common_headers:  # Only compute if there are common headers
         # Detect interface extraction first
         future_savings = compute_future_rebuild_prediction(baseline.metrics, current.metrics, headers_removed, headers_added)
 
-        architectural_insights = compute_architectural_insights(
-            baseline.metrics, current.metrics, baseline, current, compute_precise_impact=compute_precise_impact, future_savings=future_savings
-        )
+        architectural_insights = compute_architectural_insights(baseline.metrics, current.metrics, baseline, current, future_savings=future_savings)
+
+        # Compute pre-existing coupling outliers from architectural insights
+        if architectural_insights and architectural_insights.coupling_stats:
+            cs = architectural_insights.coupling_stats
+            # Find outliers (>2σ) that existed in both baseline and current
+            baseline_outliers_2sigma = {h for h, c in cs.outliers_2sigma if h in baseline.metrics}
+            for header, coupling in cs.outliers_2sigma:
+                if header in common_headers:
+                    # Check if this was also an outlier in baseline
+                    baseline_coupling = baseline.metrics[header].coupling
+                    baseline_mean = cs.mean_baseline
+                    baseline_stddev = cs.stddev_baseline
+                    if baseline_stddev > 0 and abs(baseline_coupling - baseline_mean) > 2 * baseline_stddev:
+                        pre_existing_coupling_outliers.append((header, coupling))
 
     return DSMDelta(
         headers_added=headers_added,
@@ -660,6 +684,10 @@ def compare_dsm_results(baseline: DSMAnalysisResults, current: DSMAnalysisResult
         new_cycle_participants=new_cycle_participants,
         resolved_cycle_participants=resolved_cycle_participants,
         architectural_insights=architectural_insights,
+        pre_existing_cycle_headers=pre_existing_cycle_headers,
+        escalated_cycle_headers=escalated_cycle_headers,
+        pre_existing_unstable_headers=pre_existing_unstable_headers,
+        pre_existing_coupling_outliers=pre_existing_coupling_outliers,
     )
 
 
@@ -703,31 +731,25 @@ def compute_coupling_trends(baseline_metrics: Dict[str, DSMMetrics], current_met
     baseline_couplings = [baseline_metrics[h].coupling for h in common_headers]
     current_couplings = [current_metrics[h].coupling for h in common_headers]
 
-    # Compute statistics
-    mean_baseline = statistics.mean(baseline_couplings)
-    mean_current = statistics.mean(current_couplings)
-    median_baseline = statistics.median(baseline_couplings)
-    median_current = statistics.median(current_couplings)
-    min_baseline = min(baseline_couplings) if baseline_couplings else 0
-    min_current = min(current_couplings) if current_couplings else 0
-    max_baseline = max(baseline_couplings) if baseline_couplings else 0
-    max_current = max(current_couplings) if current_couplings else 0
+    # Compute statistics using numpy for accuracy
+    mean_baseline = float(np.mean(baseline_couplings))
+    mean_current = float(np.mean(current_couplings))
+    median_baseline = float(np.median(baseline_couplings))
+    median_current = float(np.median(current_couplings))
+    min_baseline = float(np.min(baseline_couplings)) if baseline_couplings else 0
+    min_current = float(np.min(current_couplings)) if current_couplings else 0
+    max_baseline = float(np.max(baseline_couplings)) if baseline_couplings else 0
+    max_current = float(np.max(current_couplings)) if current_couplings else 0
 
     # Standard deviation (need at least 2 values)
-    stddev_baseline = statistics.stdev(baseline_couplings) if len(baseline_couplings) > 1 else 0
-    stddev_current = statistics.stdev(current_couplings) if len(current_couplings) > 1 else 0
+    stddev_baseline = float(np.std(baseline_couplings, ddof=1)) if len(baseline_couplings) > 1 else 0
+    stddev_current = float(np.std(current_couplings, ddof=1)) if len(current_couplings) > 1 else 0
 
-    # Percentiles
-    sorted_baseline = sorted(baseline_couplings)
-    sorted_current = sorted(current_couplings)
-
-    p95_idx = int(len(sorted_baseline) * 0.95)
-    p99_idx = int(len(sorted_baseline) * 0.99)
-
-    p95_baseline = sorted_baseline[p95_idx] if p95_idx < len(sorted_baseline) else sorted_baseline[-1]
-    p95_current = sorted_current[p95_idx] if p95_idx < len(sorted_current) else sorted_current[-1]
-    p99_baseline = sorted_baseline[p99_idx] if p99_idx < len(sorted_baseline) else sorted_baseline[-1]
-    p99_current = sorted_current[p99_idx] if p99_idx < len(sorted_current) else sorted_current[-1]
+    # Percentiles using numpy for accurate calculation
+    p95_baseline = float(np.percentile(baseline_couplings, 95))
+    p95_current = float(np.percentile(current_couplings, 95))
+    p99_baseline = float(np.percentile(baseline_couplings, 99))
+    p99_current = float(np.percentile(current_couplings, 99))
 
     # Percentage changes
     mean_delta_pct = ((mean_current - mean_baseline) / mean_baseline * 100) if mean_baseline > 0 else 0
@@ -803,8 +825,8 @@ def compute_cycle_insights(baseline_cycles: List[Set[str]], current_cycles: List
     baseline_sizes = [len(c) for c in baseline_cycles] if baseline_cycles else [0]
     current_sizes = [len(c) for c in current_cycles]
 
-    avg_cycle_size_baseline = statistics.mean(baseline_sizes) if baseline_sizes else 0
-    avg_cycle_size_current = statistics.mean(current_sizes)
+    avg_cycle_size_baseline = float(np.mean(baseline_sizes)) if baseline_sizes else 0
+    avg_cycle_size_current = float(np.mean(current_sizes))
     max_cycle_size_baseline = max(baseline_sizes) if baseline_sizes else 0
     max_cycle_size_current = max(current_sizes)
 
@@ -857,11 +879,9 @@ def compute_ripple_impact(
     compute_precise: bool = True,
     source_to_deps: Optional[Dict[str, List[str]]] = None,
 ) -> RippleImpactAnalysis:
-    """Compute ripple impact with precise transitive closure analysis (default) and fast heuristic fallback.
+    """Compute ripple impact with precise transitive closure analysis.
 
-    By default, performs accurate transitive closure analysis for precise rebuild predictions (95% confidence).
-    For large codebases (>5000 headers), precise analysis may take 10-30 seconds. Set compute_precise=False
-    for instant heuristic estimation (±5% confidence) during quick iterations.
+    Performs accurate transitive closure analysis for precise rebuild predictions (95% confidence).
 
     Args:
         baseline_graph: NetworkX graph for baseline
@@ -874,10 +894,9 @@ def compute_ripple_impact(
         source_to_deps: Optional mapping of source files to header dependencies
 
     Returns:
-        RippleImpactAnalysis with heuristic (always) and precise scores (if compute_precise=True)
+        RippleImpactAnalysis with precise impact scores
     """
-    # Heuristic: sum(fan_in × coupling_delta) for fast approximation
-    heuristic_score = 0.0
+    # Track high-impact headers
     high_impact_headers: List[Tuple[str, int, int]] = []
 
     for header in changed_headers:
@@ -888,20 +907,11 @@ def compute_ripple_impact(
             coupling_delta = current_coupling - baseline_coupling
 
             if coupling_delta > 0:
-                impact = fan_in * coupling_delta
-                heuristic_score += impact
                 high_impact_headers.append((header, fan_in, coupling_delta))
 
     # Sort by impact
     high_impact_headers.sort(key=lambda x: x[1] * x[2], reverse=True)
     high_impact_headers = high_impact_headers[:15]  # Top 15
-
-    # Heuristic confidence: ±5% based on fan-in approximation
-    heuristic_confidence = 5.0
-
-    # Estimate affected files (heuristic based on average fan-in)
-    avg_fan_in = statistics.mean([m.fan_in for m in current_metrics.values()]) if current_metrics else 0
-    affected_file_estimate = int(len(changed_headers) * avg_fan_in * 1.2)  # 20% buffer
 
     # Identify headers with reduced coupling (ripple reduction)
     ripple_reduction: List[Tuple[str, int]] = []
@@ -930,7 +940,7 @@ def compute_ripple_impact(
 
     unique_downstream_count = len(unique_downstream_headers)
 
-    # Precise analysis (optional, slower)
+    # Precise analysis
     precise_score: Optional[int] = None
     precise_confidence: Optional[float] = None
 
@@ -1147,13 +1157,10 @@ def compute_ripple_impact(
         )
 
     return RippleImpactAnalysis(
-        heuristic_score=heuristic_score,
-        heuristic_confidence=heuristic_confidence,
         precise_score=precise_score,
         precise_confidence=precise_confidence,
         high_impact_headers=high_impact_headers,
         ripple_reduction=ripple_reduction,
-        affected_file_estimate=affected_file_estimate,
         total_downstream_impact=total_downstream_impact,
         unique_downstream_count=unique_downstream_count,
         this_commit_rebuild_count=this_commit_rebuild_count,
@@ -1333,15 +1340,50 @@ def generate_recommendations(
     ripple_impact: RippleImpactAnalysis,
     current_cycles: List[Set[str]],
     current: DSMAnalysisResults,
+    delta: DSMDelta,
 ) -> List[str]:
-    """Generate actionable recommendations based on insights.
+    """Generate actionable recommendations based on insights, prioritizing by change attribution.
+
+    Prioritization order:
+    1. NEW cycles (introduced by this change)
+    2. ESCALATED pre-existing cycles (modified headers in existing cycles)
+    3. Other NEW issues (coupling, instability, etc.)
+    4. PRE-EXISTING issues (informational, dimmed)
 
     Returns:
         List of recommendation strings with severity indicators
     """
     recommendations: List[str] = []
 
-    # Interface extraction pattern detected
+    # PRIORITY 1: NEW CYCLES (introduced by this change)
+    if cycle_complexity and current_cycles:
+        # Check if any new cycles introduced
+        new_cycles = [cycle for cycle in current_cycles if not any(h in delta.pre_existing_cycle_headers for h in cycle)]
+        if new_cycles:
+            if cycle_complexity.max_cycle_size_current > 5:
+                recommendations.append(
+                    f"🔴 CRITICAL: NEW large cycle ({cycle_complexity.max_cycle_size_current} nodes) introduced by this change - "
+                    f"MUST eliminate before further development"
+                )
+
+            if cycle_complexity.critical_breaking_edges:
+                edge, betweenness = cycle_complexity.critical_breaking_edges[0]
+                recommendations.append(
+                    f"🔴 CRITICAL: Break NEW edge {os.path.basename(edge[0])} → {os.path.basename(edge[1])} "
+                    f"(betweenness: {betweenness:.2f}) introduced by this change"
+                )
+
+    # PRIORITY 2: ESCALATED PRE-EXISTING CYCLES (your modified headers in existing cycles)
+    if delta.escalated_cycle_headers:
+        escalated_names = ", ".join([os.path.basename(h) for h in sorted(delta.escalated_cycle_headers)[:3]])
+        if len(delta.escalated_cycle_headers) > 3:
+            escalated_names += "..."
+        recommendations.append(
+            f"🔴 CRITICAL: Your modified headers ({escalated_names}) are in PRE-EXISTING cycles - "
+            f"resolve cycle before continuing changes to avoid compounding technical debt"
+        )
+
+    # PRIORITY 3: INTERFACE EXTRACTION (positive pattern)
     if ripple_impact.future_savings:
         future_pred = ripple_impact.future_savings
         recommendations.append(
@@ -1351,35 +1393,14 @@ def generate_recommendations(
             f"instead of {future_pred.baseline_volatile_fanin} ({future_pred.reduction_percentage}% reduction)"
         )
 
-    # Critical cycle recommendations
-    if cycle_complexity and current_cycles:
-        if cycle_complexity.max_cycle_size_current > 5:
-            recommendations.append(f"🔴 CRITICAL: Break large cycle ({cycle_complexity.max_cycle_size_current} nodes) " f"to eliminate cascading dependencies")
-
-        # Detect cycle churn (cycles both added and removed)
-        if cycle_complexity.avg_cycle_size_baseline > 0 and cycle_complexity.avg_cycle_size_current > 0:
-            baseline_cycles_count = int(cycle_complexity.avg_cycle_size_baseline)
-            current_cycles_count = len(current_cycles)
-            if baseline_cycles_count != current_cycles_count and min(baseline_cycles_count, current_cycles_count) > 0:
-                recommendations.append(
-                    f"🟡 MODERATE: Cycle churn detected ({baseline_cycles_count}→{current_cycles_count} cycles). "
-                    f"Review refactoring strategy to stabilize architecture"
-                )
-
-        if cycle_complexity.critical_breaking_edges:
-            edge, betweenness = cycle_complexity.critical_breaking_edges[0]
-            recommendations.append(
-                f"🔴 CRITICAL: Break edge {os.path.basename(edge[0])} → {os.path.basename(edge[1])} "
-                f"(betweenness: {betweenness:.2f}) to significantly reduce cycle complexity"
-            )
-
-    # Coupling hotspot recommendations
+    # PRIORITY 4: OTHER NEW ISSUES (coupling hotspots, instability)
+    # Coupling hotspot recommendations (only if NOT pre-existing)
     if ripple_impact.high_impact_headers:
         top_header, fan_in, coupling_delta = ripple_impact.high_impact_headers[0]
         if top_header in current.metrics:
             pct_change = (coupling_delta / current.metrics[top_header].coupling) * 100
             recommendations.append(
-                f"🔴 CRITICAL: Refactor hotspot header (coupling +{pct_change:.0f}%, "
+                f"🔴 CRITICAL: NEW refactor hotspot header (coupling +{pct_change:.0f}%, "
                 f"triggers rebuilds of {fan_in} files). Split into 2-3 focused headers to reduce blast radius by ~60%"
             )
 
@@ -1390,10 +1411,11 @@ def generate_recommendations(
             f"indicates emerging architectural hotspots. Review outlier headers for refactoring opportunities"
         )
 
-    # Stability degradations
-    if len(stability_changes.became_unstable) > 0:
+    # New stability degradations (not pre-existing)
+    new_unstable = [h for h in stability_changes.became_unstable if h not in delta.pre_existing_unstable_headers]
+    if len(new_unstable) > 0:
         recommendations.append(
-            f"🟡 MODERATE: {len(stability_changes.became_unstable)} headers became unstable (stability > 0.5). "
+            f"🟡 MODERATE: {len(new_unstable)} headers became unstable (stability > 0.5) due to this change. "
             f"Consider inverting dependencies to improve stability"
         )
 
@@ -1403,6 +1425,31 @@ def generate_recommendations(
         recommendations.append(
             f"🟢 POSITIVE: {len(ripple_impact.ripple_reduction)} headers reduced coupling by {total_reduction} total. "
             f"Continue this trend to improve architectural health"
+        )
+
+    # PRIORITY 5: PRE-EXISTING ISSUES (informational, dimmed)
+    # Pre-existing cycle churn (cycles both added and removed, but NOT new cycles)
+    if cycle_complexity and current_cycles and delta.pre_existing_cycle_headers:
+        if cycle_complexity.avg_cycle_size_baseline > 0 and cycle_complexity.avg_cycle_size_current > 0:
+            baseline_cycles_count = int(cycle_complexity.avg_cycle_size_baseline)
+            current_cycles_count = len(current_cycles)
+            if baseline_cycles_count != current_cycles_count and min(baseline_cycles_count, current_cycles_count) > 0:
+                recommendations.append(
+                    f"⚪ INFO: Pre-existing cycle churn ({baseline_cycles_count}→{current_cycles_count} cycles existed before this change). "
+                    f"Consider separate refactoring to stabilize architecture"
+                )
+
+    # Pre-existing coupling outliers
+    if delta.pre_existing_coupling_outliers:
+        recommendations.append(
+            f"⚪ INFO: {len(delta.pre_existing_coupling_outliers)} coupling outliers (>2σ) existed in baseline - "
+            f"consider separate technical debt reduction effort"
+        )
+
+    # Pre-existing unstable headers
+    if delta.pre_existing_unstable_headers:
+        recommendations.append(
+            f"⚪ INFO: {len(delta.pre_existing_unstable_headers)} unstable headers (>0.5) existed in baseline - " f"not caused by this change"
         )
 
     if not recommendations:
@@ -1416,7 +1463,6 @@ def compute_architectural_insights(
     current_metrics: Dict[str, DSMMetrics],
     baseline: DSMAnalysisResults,
     current: DSMAnalysisResults,
-    compute_precise_impact: bool = False,
     future_savings: Optional["FutureRebuildPrediction"] = None,
 ) -> ArchitecturalInsights:
     """Compute comprehensive architectural insights from differential analysis.
@@ -1426,7 +1472,6 @@ def compute_architectural_insights(
         current_metrics: Current per-header metrics
         baseline: Baseline analysis results
         current: Current analysis results
-        compute_precise_impact: Whether to compute precise ripple impact
         future_savings: Optional interface extraction prediction
 
     Returns:
@@ -1484,7 +1529,7 @@ def compute_architectural_insights(
         current_metrics,
         changed_headers,
         current.reverse_deps,
-        compute_precise=compute_precise_impact,
+        compute_precise=True,
         source_to_deps=current.source_to_deps,
     )
 
@@ -1545,8 +1590,63 @@ def compute_architectural_insights(
             headers_stayed_same=headers_stayed_same,
         )
 
-    # Generate recommendations
-    recommendations = generate_recommendations(coupling_stats, cycle_complexity, stability_changes, ripple_impact, current.cycles, current)
+    # Generate recommendations (basic version without delta awareness)
+    # These will be replaced with delta-aware versions in print_dsm_delta when delta is available
+    recommendations: List[str] = []
+
+    # Interface extraction pattern detected
+    if ripple_impact.future_savings:
+        future_pred = ripple_impact.future_savings
+        recommendations.append(
+            f"🟢 POSITIVE: Interface extraction detected - {future_pred.interface_headers} interface(s) "
+            f"isolate {future_pred.isolated_impl_headers} implementation(s). "
+            f"Future changes cascade to ~{future_pred.current_volatile_fanin} headers "
+            f"instead of {future_pred.baseline_volatile_fanin} ({future_pred.reduction_percentage}% reduction)"
+        )
+
+    # Critical cycle recommendations
+    if cycle_complexity and current.cycles:
+        if cycle_complexity.max_cycle_size_current > 5:
+            recommendations.append(f"🔴 CRITICAL: Break large cycle ({cycle_complexity.max_cycle_size_current} nodes) " f"to eliminate cascading dependencies")
+
+        if cycle_complexity.critical_breaking_edges:
+            edge, betweenness = cycle_complexity.critical_breaking_edges[0]
+            recommendations.append(
+                f"🔴 CRITICAL: Break edge {os.path.basename(edge[0])} → {os.path.basename(edge[1])} "
+                f"(betweenness: {betweenness:.2f}) to significantly reduce cycle complexity"
+            )
+
+    # Coupling hotspot recommendations
+    if ripple_impact.high_impact_headers:
+        top_header, fan_in, coupling_delta = ripple_impact.high_impact_headers[0]
+        if top_header in current.metrics:
+            pct_change = (coupling_delta / current.metrics[top_header].coupling) * 100
+            recommendations.append(
+                f"🔴 CRITICAL: Refactor hotspot header (coupling +{pct_change:.0f}%, "
+                f"triggers rebuilds of {fan_in} files). Split into 2-3 focused headers to reduce blast radius by ~60%"
+            )
+
+    # Variance spike concerns
+    if coupling_stats.stddev_delta_pct > 50:
+        recommendations.append(
+            f"🟡 MODERATE: Coupling variance increased {coupling_stats.stddev_delta_pct:.0f}% - "
+            f"indicates emerging architectural hotspots. Review outlier headers for refactoring opportunities"
+        )
+
+    # Stability degradations
+    if len(stability_changes.became_unstable) > 0:
+        recommendations.append(
+            f"🟡 MODERATE: {len(stability_changes.became_unstable)} headers became unstable (stability > 0.5). "
+            f"Consider inverting dependencies to improve stability"
+        )
+
+    # Positive improvements
+    if ripple_impact.ripple_reduction:
+        total_reduction = sum(r[1] for r in ripple_impact.ripple_reduction)
+        recommendations.append(
+            f"🟢 POSITIVE: {len(ripple_impact.ripple_reduction)} headers reduced coupling by {total_reduction} total. "
+            f"Continue this trend to improve architectural health"
+        )
 
     # Determine overall severity
     severity = determine_severity(coupling_stats, cycle_complexity, len(current.cycles), len(baseline.cycles), ripple_impact)
@@ -1652,35 +1752,108 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
             else:
                 print(f"  {Colors.GREEN}🚀 Future rebuild reduction: {fs.reduction_percentage}% (details below){Colors.RESET}")
         elif ri.ongoing_rebuild_delta_percentage < -5.0:
-            # Significant improvement in ongoing cost - show as positive even if this-commit is high
+            # Significant improvement in ongoing cost - categorize by magnitude
             if ri.total_source_files > 0 and ri.baseline_ongoing_rebuild_percentage > 0:
+                files_saved = ri.baseline_ongoing_rebuild_count - ri.future_ongoing_rebuild_count
+                delta_pct = abs(ri.ongoing_rebuild_delta_percentage)
+
+                # Determine magnitude and visual style
+                if delta_pct >= 15.0:
+                    # Significantly improved (>= 15%)
+                    symbol = "✓✓✓"
+                    color = Colors.BRIGHT + Colors.GREEN
+                    magnitude = "SIGNIFICANTLY IMPROVED"
+                elif delta_pct >= 10.0:
+                    # Improved (10-15%)
+                    symbol = "✓✓"
+                    color = Colors.GREEN
+                    magnitude = "improved"
+                else:
+                    # Slightly improved (5-10%)
+                    symbol = "✓"
+                    color = Colors.GREEN
+                    magnitude = "slightly improved"
+
                 print(
-                    f"  {Colors.GREEN}✓ Future rebuild improvement: "
-                    f"{ri.baseline_ongoing_rebuild_percentage:.1f}%→{ri.future_ongoing_rebuild_percentage:.1f}% "
-                    f"({abs(ri.ongoing_rebuild_delta_percentage):.1f}% reduction, details below){Colors.RESET}"
+                    f"  {color}{symbol} Future rebuild impact: {magnitude} "
+                    f"(saves {files_saved} of {ri.total_source_files} files per commit, {delta_pct:.1f}% reduction, details below){Colors.RESET}"
                 )
             else:
-                print(f"  {Colors.GREEN}✓ Future rebuild improvement: {abs(rebuild_impact):.0f}% fewer downstream rebuilds (details below){Colors.RESET}")
-        elif ri.ongoing_rebuild_delta_percentage > 5.0:
-            # Significant regression in ongoing cost - show as negative (PRIORITIZE ONGOING OVER ONE-TIME)
-            if ri.total_source_files > 0:
                 print(
-                    f"  {Colors.RED}⚠ Future rebuild regression: "
-                    f"{ri.baseline_ongoing_rebuild_percentage:.1f}%↑{ri.future_ongoing_rebuild_percentage:.1f}% "
-                    f"({abs(ri.ongoing_rebuild_delta_percentage):.1f}% MORE per commit, details below){Colors.RESET}"
+                    f"  {Colors.GREEN}✓ Future rebuild improvement: {abs(rebuild_impact):.0f}% fewer downstream header rebuilds (details below){Colors.RESET}"
+                )
+        elif ri.ongoing_rebuild_delta_percentage > 5.0:
+            # Significant regression in ongoing cost - categorize by magnitude (PRIORITIZE ONGOING OVER ONE-TIME)
+            if ri.total_source_files > 0:
+                files_added = ri.future_ongoing_rebuild_count - ri.baseline_ongoing_rebuild_count
+                delta_pct = abs(ri.ongoing_rebuild_delta_percentage)
+
+                # Determine magnitude and visual style
+                if delta_pct >= 15.0:
+                    # Significantly degraded (>= 15%)
+                    symbol = "⚠⚠⚠"
+                    color = Colors.BRIGHT + Colors.RED
+                    magnitude = "SIGNIFICANTLY DEGRADED"
+                elif delta_pct >= 10.0:
+                    # Degraded (10-15%)
+                    symbol = "⚠⚠"
+                    color = Colors.RED
+                    magnitude = "DEGRADED"
+                else:
+                    # Slightly degraded (5-10%)
+                    symbol = "⚠"
+                    color = Colors.YELLOW
+                    magnitude = "slightly degraded"
+
+                print(
+                    f"  {color}{symbol} Future rebuild impact: {magnitude} "
+                    f"(adds {files_added} of {ri.total_source_files} files per commit, {delta_pct:.1f}% increase, details below){Colors.RESET}"
                 )
             else:
                 print(f"  {Colors.RED}⚠ Future rebuild cost: {rebuild_impact:.0f}% of build in blast radius (details below){Colors.RESET}")
         elif abs(ri.ongoing_rebuild_delta_percentage) < 5.0 and ri.total_source_files > 0:
-            # Minimal change in ongoing cost
+            # Minimal change in ongoing cost - categorize with file counts and colors
             if ri.baseline_ongoing_rebuild_percentage > 0:
-                print(
-                    f"  {Colors.YELLOW}○ Future rebuild impact: "
-                    f"{ri.baseline_ongoing_rebuild_percentage:.1f}%→{ri.future_ongoing_rebuild_percentage:.1f}% "
-                    f"(minimal change, details below){Colors.RESET}"
-                )
+                delta_pct = ri.ongoing_rebuild_delta_percentage
+
+                # Determine status, color, and file delta
+                if abs(delta_pct) < 1.0:
+                    # Unchanged (< 1%)
+                    status_text = "unchanged"
+                    color = Colors.DIM + Colors.YELLOW
+                    symbol = "○"
+                    file_detail = f"{ri.future_ongoing_rebuild_count} of {ri.total_source_files} files per commit"
+                elif delta_pct < -1.0:
+                    # Slightly improved (1-5%)
+                    status_text = "slightly improved"
+                    color = Colors.GREEN
+                    symbol = "✓"
+                    files_saved = ri.baseline_ongoing_rebuild_count - ri.future_ongoing_rebuild_count
+                    file_detail = f"saves {files_saved} of {ri.total_source_files} files per commit, {abs(delta_pct):.1f}% reduction"
+                elif delta_pct > 1.0:
+                    # Slightly degraded (1-5%)
+                    status_text = "slightly degraded"
+                    color = Colors.YELLOW
+                    symbol = "⚠"
+                    files_added = ri.future_ongoing_rebuild_count - ri.baseline_ongoing_rebuild_count
+                    file_detail = f"adds {files_added} of {ri.total_source_files} files per commit, {abs(delta_pct):.1f}% increase"
+                else:
+                    # Stable (very close to unchanged)
+                    status_text = "stable"
+                    color = Colors.DIM + Colors.YELLOW
+                    symbol = "○"
+                    file_detail = f"{ri.future_ongoing_rebuild_count} of {ri.total_source_files} files per commit"
+
+                print(f"  {color}{symbol} Future rebuild impact: {status_text} " f"({file_detail}, details below){Colors.RESET}")
             else:
-                print(f"  {Colors.YELLOW}○ Future rebuild impact: minimal change (details below){Colors.RESET}")
+                # No baseline available - show current file count
+                if ri.future_ongoing_rebuild_count > 0:
+                    print(
+                        f"  {Colors.YELLOW}○ Future rebuild impact: no significant change "
+                        f"({ri.future_ongoing_rebuild_count} of {ri.total_source_files} files per commit, details below){Colors.RESET}"
+                    )
+                else:
+                    print(f"  {Colors.YELLOW}○ Future rebuild impact: no significant change (details below){Colors.RESET}")
 
     # FUTURE BUILD IMPACT section (always shown when architectural_insights available)
     if delta.architectural_insights:
@@ -1718,8 +1891,10 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
 
             if ri.total_source_files > 0:
                 print(f"\n{Colors.BRIGHT}Current Build Impact:{Colors.RESET}")
-                print(f"  • This commit: {ri.this_commit_rebuild_percentage:.1f}% source recompilation")
-                print(f"    ({ri.this_commit_rebuild_count}/{ri.total_source_files} .c/.cpp files)")
+                print(
+                    f"  • {Colors.BRIGHT}{ri.this_commit_rebuild_count} of {ri.total_source_files} .c/.cpp files{Colors.RESET} must rebuild ({ri.this_commit_rebuild_percentage:.1f}%)"
+                )
+                print(f"    {Colors.DIM}Immediate cost for introducing this cycle{Colors.RESET}")
                 print(f"  • {Colors.YELLOW}Note: Other metrics (coupling, rebuild impact) are masked by cycle regression{Colors.RESET}")
 
             print(f"\n{Colors.BRIGHT}{Colors.RED}🔴 PRIORITY ACTION REQUIRED:{Colors.RESET}")
@@ -1740,22 +1915,33 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
             # Show ongoing cost first (long-term impact), then one-time cost
             print(f"\n{Colors.BRIGHT}Future Commits (Ongoing Cost):{Colors.RESET}")
             if ri.total_source_files > 0:
-                print(f"  • {Colors.GREEN}{Colors.BRIGHT}{ri.future_ongoing_rebuild_percentage:.1f}% of source files per change{Colors.RESET}")
-                print(f"    ({ri.future_ongoing_rebuild_count}/{ri.total_source_files} .c/.cpp files)")
-            print(f"  • {Colors.GREEN}{Colors.BRIGHT}{fs.reduction_percentage}% fewer downstream rebuilds{Colors.RESET}")
+                print(
+                    f"  • {Colors.GREEN}{Colors.BRIGHT}{ri.future_ongoing_rebuild_count} of {ri.total_source_files} .c/.cpp files{Colors.RESET} per change ({ri.future_ongoing_rebuild_percentage:.1f}%)"
+                )
+                if ri.baseline_ongoing_rebuild_count > 0 and ri.baseline_ongoing_rebuild_count != ri.future_ongoing_rebuild_count:
+                    files_saved = ri.baseline_ongoing_rebuild_count - ri.future_ongoing_rebuild_count
+                    if files_saved > 0:
+                        file_word = "file" if files_saved == 1 else "files"
+                        print(
+                            f"    {Colors.GREEN}({files_saved} {file_word} saved vs. baseline: {ri.baseline_ongoing_rebuild_count} → {ri.future_ongoing_rebuild_count}){Colors.RESET}"
+                        )
+            print(
+                f"  • {Colors.GREEN}{Colors.BRIGHT}{fs.reduction_percentage}% fewer downstream header rebuilds{Colors.RESET} (which cascade to .c/.cpp files)"
+            )
 
             print(f"\n{Colors.BRIGHT}This Commit (One-Time Cost):{Colors.RESET}")
             if ri.total_source_files > 0:
-                print(f"  • {ri.this_commit_rebuild_percentage:.1f}% of source files need recompilation")
-                print(f"    ({ri.this_commit_rebuild_count}/{ri.total_source_files} .c/.cpp files)")
-            print(f"  • {rebuild_impact:.1f}% of headers in blast radius")
-            print(f"  • {ri.unique_downstream_count} unique downstream headers affected")
+                print(
+                    f"  • {Colors.BRIGHT}{ri.this_commit_rebuild_count} of {ri.total_source_files} .c/.cpp files{Colors.RESET} must rebuild ({ri.this_commit_rebuild_percentage:.1f}%)"
+                )
+                print(f"    {Colors.DIM}One-time rebuild for this architectural change{Colors.RESET}")
+            print(f"  • {rebuild_impact:.1f}% of headers in blast radius ({ri.unique_downstream_count} unique downstream headers)")
 
             if fs.isolated_impl_headers > 0:
                 print(f"\n{Colors.BRIGHT}Implementation Isolation:{Colors.RESET}")
                 print(f"  • {Colors.GREEN}✓ {fs.isolated_impl_headers} implementation header(s) fully isolated{Colors.RESET}")
                 print(f"  • Future changes to these implementations will NOT cascade to dependent code")
-                print(f"  • Developers can modify implementation details without triggering widespread rebuilds")
+                print(f"  • Developers can modify implementation details without triggering widespread header and .c/.cpp file rebuilds")
 
             # ROI with edge cases
             print(f"\n{Colors.BRIGHT}{Colors.CYAN}💡 ROI Analysis:{Colors.RESET}")
@@ -1772,8 +1958,12 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
                 else:
                     roi_color = Colors.RED
 
-                print(f"  • One-time cost: {ri.this_commit_rebuild_percentage:.1f}% source rebuild")
-                print(f"  • Ongoing savings: {ri.this_commit_rebuild_percentage - ri.future_ongoing_rebuild_percentage:.1f}% per commit")
+                savings_pct = ri.this_commit_rebuild_percentage - ri.future_ongoing_rebuild_percentage
+                savings_files = ri.this_commit_rebuild_count - ri.future_ongoing_rebuild_count
+                print(
+                    f"  • One-time cost: {Colors.BRIGHT}{ri.this_commit_rebuild_count} files{Colors.RESET} rebuild now ({ri.this_commit_rebuild_percentage:.1f}%)"
+                )
+                print(f"  • Ongoing savings: {Colors.GREEN}{Colors.BRIGHT}{savings_files} fewer files{Colors.RESET} per future commit ({savings_pct:.1f}%)")
                 print(f"  • {roi_color}Break-even: {int(ri.roi_payback_min)}-{int(ri.roi_payback_max)} commits{Colors.RESET}")
                 print(f"  • {Colors.GREEN}Long-term: Massive cumulative savings over project lifetime{Colors.RESET}")
 
@@ -1791,27 +1981,57 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
             # Show ongoing cost first (long-term impact), then one-time cost
             print(f"\n{Colors.BRIGHT}Future Commits (Ongoing Cost):{Colors.RESET}")
             if ri.total_source_files > 0:
-                # Color code based on improvement/regression
+                # Lead with improvement/regression in bold color with clear visual indicators
                 if ri.ongoing_rebuild_delta_percentage < -5.0:
-                    cost_color = Colors.GREEN
-                    comparison = f" (was {ri.baseline_ongoing_rebuild_percentage:.1f}%, {abs(ri.ongoing_rebuild_delta_percentage):.1f}% improvement)"
+                    # Improvement - green with success indicators throughout
+                    files_saved = ri.baseline_ongoing_rebuild_count - ri.future_ongoing_rebuild_count
+                    print(
+                        f"  {Colors.GREEN}{Colors.BRIGHT}✓ {abs(ri.ongoing_rebuild_delta_percentage):.1f}% FEWER FILES REBUILD{Colors.RESET} {Colors.GREEN}— {files_saved} files saved per future commit{Colors.RESET}"
+                    )
+                    print(
+                        f"    {Colors.BRIGHT}Was:{Colors.RESET} {ri.baseline_ongoing_rebuild_count} files ({ri.baseline_ongoing_rebuild_percentage:.1f}%)  {Colors.GREEN}→{Colors.RESET}  {Colors.BRIGHT}Now:{Colors.RESET} {ri.future_ongoing_rebuild_count} files ({ri.future_ongoing_rebuild_percentage:.1f}%)"
+                    )
+                    print(
+                        f"    {Colors.DIM}Each future change to these headers will trigger {files_saved} fewer files to rebuild (of {ri.total_source_files} total){Colors.RESET}"
+                    )
                 elif ri.ongoing_rebuild_delta_percentage > 5.0:
-                    cost_color = Colors.RED
-                    comparison = f" (was {ri.baseline_ongoing_rebuild_percentage:.1f}%, {abs(ri.ongoing_rebuild_delta_percentage):.1f}% regression)"
+                    # Regression - red with warning indicators throughout
+                    files_added = ri.future_ongoing_rebuild_count - ri.baseline_ongoing_rebuild_count
+                    print(
+                        f"  {Colors.RED}{Colors.BRIGHT}⚠ {abs(ri.ongoing_rebuild_delta_percentage):.1f}% MORE FILES REBUILD{Colors.RESET} {Colors.RED}— {files_added} extra files per future commit{Colors.RESET}"
+                    )
+                    print(
+                        f"    {Colors.BRIGHT}Was:{Colors.RESET} {ri.baseline_ongoing_rebuild_count} files ({ri.baseline_ongoing_rebuild_percentage:.1f}%)  {Colors.RED}→{Colors.RESET}  {Colors.BRIGHT}Now:{Colors.RESET} {Colors.RED}{ri.future_ongoing_rebuild_count} files ({ri.future_ongoing_rebuild_percentage:.1f}%){Colors.RESET}"
+                    )
+                    print(
+                        f"    {Colors.DIM}Each future change to these headers will trigger {files_added} additional files to rebuild (of {ri.total_source_files} total){Colors.RESET}"
+                    )
                 else:
-                    cost_color = Colors.YELLOW
-                    comparison = f" (baseline: {ri.baseline_ongoing_rebuild_percentage:.1f}%)"
+                    # Minimal change
+                    files_delta = ri.baseline_ongoing_rebuild_count - ri.future_ongoing_rebuild_count
+                    print(f"  • {Colors.BRIGHT}{ri.future_ongoing_rebuild_percentage:.1f}% of .c/.cpp files{Colors.RESET} will rebuild per change")
 
-                print(f"  • {cost_color}{Colors.BRIGHT}{ri.future_ongoing_rebuild_percentage:.1f}% of source files per change{Colors.RESET}{comparison}")
-                print(f"    ({ri.future_ongoing_rebuild_count}/{ri.total_source_files} .c/.cpp files will rebuild)")
+                    if files_delta > 0:
+                        file_word = "file" if files_delta == 1 else "files"
+                        print(
+                            f"    {Colors.GREEN}{files_delta} {file_word} saved{Colors.RESET} vs. baseline: {ri.baseline_ongoing_rebuild_count} → {ri.future_ongoing_rebuild_count} files"
+                        )
+                    elif files_delta < 0:
+                        file_word = "file" if abs(files_delta) == 1 else "files"
+                        print(
+                            f"    {Colors.YELLOW}{abs(files_delta)} more {file_word}{Colors.RESET} vs. baseline: {ri.baseline_ongoing_rebuild_count} → {ri.future_ongoing_rebuild_count} files"
+                        )
+                    else:
+                        print(f"    No change from baseline: {ri.baseline_ongoing_rebuild_count} → {ri.future_ongoing_rebuild_count} files")
             print(f"  • {ri.unique_downstream_count} unique downstream headers affected")
             print(f"  • Average blast radius: {total_impact_pct:.0f}% (sum of fan-ins)")
-            print(f"  • Estimated: ~{ri.affected_file_estimate} files affected per change")
 
             print(f"\n{Colors.BRIGHT}This Commit (One-Time Cost):{Colors.RESET}")
             if ri.total_source_files > 0:
-                print(f"  • {ri.this_commit_rebuild_percentage:.1f}% of source files need recompilation")
-                print(f"    ({ri.this_commit_rebuild_count}/{ri.total_source_files} .c/.cpp files)")
+                print(
+                    f"  • {Colors.BRIGHT}{ri.this_commit_rebuild_count} of {ri.total_source_files} .c/.cpp files{Colors.RESET} must rebuild ({ri.this_commit_rebuild_percentage:.1f}%)"
+                )
+                print(f"    {Colors.DIM}Immediate rebuild cost for this change{Colors.RESET}")
             print(f"  • {rebuild_impact:.1f}% of headers in blast radius")
 
             if ri.high_impact_headers:
@@ -1819,8 +2039,8 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
                 for header, fan_in, coupling_delta in ri.high_impact_headers[:3]:
                     rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else header
                     print(f"  • {rel_path}")
-                    print(f"    Fan-in: {fan_in} files, Coupling increase: +{coupling_delta}")
-                    print(f"    {Colors.RED}→ Every change will trigger {fan_in}+ rebuilds{Colors.RESET}")
+                    print(f"    Fan-in: {fan_in} headers depend on this, Coupling increase: +{coupling_delta}")
+                    print(f"    {Colors.RED}→ Every change triggers rebuilds in {fan_in}+ headers and their .c/.cpp files{Colors.RESET}")
 
             # Check if there are actually future savings despite high rebuild_impact
             has_future_savings = (
@@ -1849,12 +2069,12 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
                         old_fanin = baseline.metrics[header].fan_in
                         new_fanin = current.metrics[header].fan_in
                         reduction_pct = int((old_fanin - new_fanin) / old_fanin * 100) if old_fanin > 0 else 0
-                        print(f"    • {rel_path}: {old_fanin} → {new_fanin} downstream rebuilds ({reduction_pct}% reduction)")
+                        print(f"    • {rel_path}: {old_fanin} → {new_fanin} downstream headers rebuild ({reduction_pct}% reduction, cascades to .c/.cpp files)")
                 print()
 
             print(f"\n{Colors.BRIGHT}{Colors.CYAN}💰 Cost Analysis:{Colors.RESET}")
             print(f"  • This commit: {ri.this_commit_rebuild_percentage:.1f}% rebuild (one-time cost)")
-            print(f"  • {Colors.RED}Ongoing regression: {abs(ri.ongoing_rebuild_delta_percentage):.1f}% MORE rebuilds per future commit{Colors.RESET}")
+            print(f"  • {Colors.RED}Ongoing regression: {abs(ri.ongoing_rebuild_delta_percentage):.1f}% MORE files rebuild per future commit{Colors.RESET}")
             print(f"  • Baseline was: {ri.baseline_ongoing_rebuild_percentage:.1f}%, now: {ri.future_ongoing_rebuild_percentage:.1f}%")
             if has_future_savings:
                 print(
@@ -1881,12 +2101,21 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
 
                 # Show dual metrics for clarity with baseline comparison
                 if ri.total_source_files > 0:
-                    print(f"  • This commit: {ri.this_commit_rebuild_percentage:.1f}% source recompilation")
-                    print(f"    ({ri.this_commit_rebuild_count}/{ri.total_source_files} .c/.cpp files)")
+                    print(
+                        f"  • This commit: {ri.this_commit_rebuild_count} of {ri.total_source_files} .c/.cpp files must rebuild ({ri.this_commit_rebuild_percentage:.1f}%)"
+                    )
                     if ri.baseline_ongoing_rebuild_percentage > 0:
-                        print(f"  • Future ongoing: {ri.baseline_ongoing_rebuild_percentage:.1f}% → {ri.future_ongoing_rebuild_percentage:.1f}% per commit")
+                        files_delta = ri.baseline_ongoing_rebuild_count - ri.future_ongoing_rebuild_count
+                        if files_delta != 0:
+                            print(
+                                f"  • Future ongoing: {ri.baseline_ongoing_rebuild_count} → {ri.future_ongoing_rebuild_count} .c/.cpp files ({ri.baseline_ongoing_rebuild_percentage:.1f}% → {ri.future_ongoing_rebuild_percentage:.1f}%)"
+                            )
+                        else:
+                            print(
+                                f"  • Future ongoing: {ri.future_ongoing_rebuild_count} .c/.cpp files per commit ({ri.future_ongoing_rebuild_percentage:.1f}%)"
+                            )
                     else:
-                        print(f"  • Future ongoing: {ri.future_ongoing_rebuild_percentage:.1f}% per commit")
+                        print(f"  • Future ongoing: {ri.future_ongoing_rebuild_count} .c/.cpp files per commit ({ri.future_ongoing_rebuild_percentage:.1f}%)")
 
                 # SUPPLEMENTARY: Header metrics
                 print(f"  • Header rebuild impact: {rebuild_impact:+.1f}% (ongoing delta: {ri.ongoing_rebuild_delta_percentage:+.1f}%, negligible)")
@@ -1991,7 +2220,9 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
 
                         if baseline_total_fanin > 0 and current_total_fanin < baseline_total_fanin:
                             reduction_pct = int((baseline_total_fanin - current_total_fanin) / baseline_total_fanin * 100)
-                            print(f"  {Colors.BRIGHT}{Colors.GREEN}→ Future rebuild reduction: {reduction_pct}% fewer cascading rebuilds{Colors.RESET}")
+                            print(
+                                f"  {Colors.BRIGHT}{Colors.GREEN}→ Future rebuild reduction: {reduction_pct}% fewer cascading header rebuilds (and their .c/.cpp files){Colors.RESET}"
+                            )
 
                         # Highlight isolated implementations
                         if isolated_implementations:
@@ -2006,33 +2237,48 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
 
                 # Show dual metrics
                 if ri.total_source_files > 0:
-                    print(f"  • {Colors.GREEN}Future ongoing: {ri.future_ongoing_rebuild_percentage:.1f}% source recompilation{Colors.RESET}")
-                    print(f"    ({ri.future_ongoing_rebuild_count}/{ri.total_source_files} .c/.cpp files)")
-
-                # SUPPLEMENTARY: Header metrics
-                print(f"  • {Colors.GREEN}~{abs(rebuild_impact):.0f}% fewer downstream header rebuilds{Colors.RESET}")
+                    print(
+                        f"  • {Colors.GREEN}Future ongoing: {ri.future_ongoing_rebuild_count} of {ri.total_source_files} .c/.cpp files{Colors.RESET} per change ({ri.future_ongoing_rebuild_percentage:.1f}%)"
+                    )
+                    if ri.baseline_ongoing_rebuild_count > 0 and ri.baseline_ongoing_rebuild_count != ri.future_ongoing_rebuild_count:
+                        files_saved = ri.baseline_ongoing_rebuild_count - ri.future_ongoing_rebuild_count
+                        if files_saved > 0:
+                            file_word = "file" if files_saved == 1 else "files"
+                            print(
+                                f"    {Colors.GREEN}({files_saved} {file_word} saved vs. baseline: {ri.baseline_ongoing_rebuild_count} → {ri.future_ongoing_rebuild_count}){Colors.RESET}"
+                            )
 
                 if ri.ripple_reduction:
                     total_reduction = sum(r[1] for r in ri.ripple_reduction)
                     print(f"  • {len(ri.ripple_reduction)} foundation headers improved (total coupling reduction: {total_reduction})")
 
                 # ROI Analysis for coupling reduction
+                # Three rebuild metrics:
+                # - baseline_ongoing: Files that rebuild per commit in OLD architecture
+                # - this_commit: Files that rebuild for THIS refactoring commit (one-time cost)
+                # - future_ongoing: Files that rebuild per commit in NEW architecture
+                # Ongoing savings = baseline_ongoing - future_ongoing (NOT this_commit - future_ongoing)
                 if ri.total_source_files > 0:
                     print(f"\n{Colors.BRIGHT}{'─'*80}{Colors.RESET}")
                     print(f"{Colors.CYAN}ROI CALCULATION:{Colors.RESET}\n")
 
                     print(f"  {Colors.BRIGHT}One-Time Cost (Today):{Colors.RESET}")
-                    print(f"    • Refactoring commit: {ri.this_commit_rebuild_percentage:.1f}% source rebuilds")
-                    print(f"    • Affected files: {ri.this_commit_rebuild_count}/{ri.total_source_files} .c/.cpp files")
+                    print(
+                        f"    • Refactoring commit: {ri.this_commit_rebuild_count} of {ri.total_source_files} .c/.cpp files must rebuild ({ri.this_commit_rebuild_percentage:.1f}%)"
+                    )
                     estimated_time_min = int(ri.this_commit_rebuild_percentage / 100 * 10)  # ~10 min for full rebuild
                     print(f"    • Estimated time: ~{estimated_time_min} minutes for {ri.total_source_files}-file project")
                     print()
 
                     print(f"  {Colors.BRIGHT}Ongoing Savings (Every Future Commit):{Colors.RESET}")
-                    savings_pct = ri.this_commit_rebuild_percentage - ri.future_ongoing_rebuild_percentage
-                    print(f"    • Implementation changes: {savings_pct:.1f}% fewer rebuilds")
-                    print(f"    • Future cost: {ri.future_ongoing_rebuild_percentage:.1f}% per volatile implementation change")
-                    print(f"    • Affected files: {ri.future_ongoing_rebuild_count}/{ri.total_source_files} .c/.cpp files")
+                    files_saved = ri.baseline_ongoing_rebuild_count - ri.future_ongoing_rebuild_count
+                    savings_pct = ri.baseline_ongoing_rebuild_percentage - ri.future_ongoing_rebuild_percentage
+                    if files_saved > 0:
+                        file_word = "file" if files_saved == 1 else "files"
+                        print(f"    • Implementation changes: {files_saved} {file_word} saved ({savings_pct:.1f}% fewer files rebuild)")
+                    print(
+                        f"    • Future cost: {ri.future_ongoing_rebuild_count} of {ri.total_source_files} .c/.cpp files per change ({ri.future_ongoing_rebuild_percentage:.1f}%)"
+                    )
 
                     # Estimate time savings
                     avg_saving_min = max(0, int(savings_pct / 100 * 2))  # ~2 min saved per incremental build
@@ -2163,8 +2409,13 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
     if delta.architectural_insights:
         insights = delta.architectural_insights
 
-        print(f"{Colors.BRIGHT}{'='*80}{Colors.RESET}")
-        print(f"{Colors.BRIGHT}🔍 ARCHITECTURAL IMPACT ANALYSIS{Colors.RESET}")
+        # Regenerate recommendations with delta-awareness for change attribution
+        insights.recommendations = generate_recommendations(
+            insights.coupling_stats, insights.cycle_complexity, insights.stability_changes, insights.ripple_impact, current.cycles, current, delta
+        )
+
+        print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
+        print(f"{Colors.BRIGHT}{Colors.CYAN}🔍 ARCHITECTURAL IMPACT ANALYSIS{Colors.RESET}")
         print(f"{Colors.BRIGHT}{'='*80}{Colors.RESET}\n")
 
         # Check for cycle changes - block positive interpretations if cycles added
@@ -2183,29 +2434,40 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
             print(f"{Colors.YELLOW}⚠  Cycles prevent proper architectural analysis and must be resolved FIRST.{Colors.RESET}\n")
 
         # STEP 2: SUMMARY SCORECARD (Red/Yellow/Green indicators upfront)
-        print(f"{Colors.BRIGHT}📊 Architectural Health Scorecard{Colors.RESET}")
-        print(f"{Colors.BRIGHT}{'─'*80}{Colors.RESET}")
+        print(f"{Colors.BRIGHT}{Colors.CYAN}📊 Architectural Health Scorecard{Colors.RESET}")
+        print(f"{Colors.CYAN}{'─'*80}{Colors.RESET}")
 
         # Cycles indicator
         if has_cycle_regression:
             cycle_indicator = f"{Colors.RED}🔴 CRITICAL{Colors.RESET}"
+            cycle_detail_color = Colors.RED
         elif len(current.cycles) > 0:
             cycle_indicator = f"{Colors.YELLOW}🟡 NEEDS ATTENTION{Colors.RESET}"
+            cycle_detail_color = Colors.YELLOW
         else:
             cycle_indicator = f"{Colors.GREEN}🟢 HEALTHY{Colors.RESET}"
-        print(f"  Cycles:              {cycle_indicator}  ({len(current.cycles)} cycles, {cycle_change:+d} from baseline)")
+            cycle_detail_color = Colors.GREEN
+        cycle_count_colored = f"{cycle_detail_color}{len(current.cycles)}{Colors.RESET}"
+        cycle_change_colored = f"{cycle_detail_color}{cycle_change:+d}{Colors.RESET}" if cycle_change != 0 else f"{Colors.DIM}{cycle_change:+d}{Colors.RESET}"
+        print(f"  {Colors.BRIGHT}Cycles:{Colors.RESET}              {cycle_indicator}  ({cycle_count_colored} cycles, {cycle_change_colored} from baseline)")
 
         # Coupling indicator
         cs = insights.coupling_stats
         if cs.mean_delta_pct > 10:
             coupling_indicator = f"{Colors.RED}🔴 DEGRADING{Colors.RESET}"
+            coupling_detail_color = Colors.RED
         elif cs.mean_delta_pct > 0:
             coupling_indicator = f"{Colors.YELLOW}🟡 INCREASING{Colors.RESET}"
+            coupling_detail_color = Colors.YELLOW
         elif cs.mean_delta_pct < -10:
             coupling_indicator = f"{Colors.GREEN}🟢 IMPROVING{Colors.RESET}"
+            coupling_detail_color = Colors.GREEN
         else:
             coupling_indicator = f"{Colors.GREEN}🟢 STABLE{Colors.RESET}"
-        print(f"  Coupling:            {coupling_indicator}  (μ {cs.mean_delta_pct:+.0f}%, range: {cs.min_current:.0f}-{cs.max_current:.0f})")
+            coupling_detail_color = Colors.GREEN
+        mean_pct_colored = f"{coupling_detail_color}{cs.mean_delta_pct:+.0f}%{Colors.RESET}"
+        range_colored = f"{Colors.CYAN}{cs.min_current:.0f}-{cs.max_current:.0f}{Colors.RESET}"
+        print(f"  {Colors.BRIGHT}Coupling:{Colors.RESET}            {coupling_indicator}  (μ {mean_pct_colored}, range: {range_colored})")
 
         # Stability indicator
         sc = insights.stability_changes
@@ -2217,23 +2479,40 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
             stability_indicator = f"{Colors.GREEN}🟢 STABILIZING{Colors.RESET}"
         else:
             stability_indicator = f"{Colors.GREEN}🟢 STABLE{Colors.RESET}"
-        stability_summary = f"({len(sc.became_unstable)} worse, {len(sc.became_stable)} better, {len(sc.extreme_instability)} extreme)"
-        print(f"  Stability:           {stability_indicator}  {stability_summary}")
+        worse_colored = (
+            f"{Colors.RED}{len(sc.became_unstable)}{Colors.RESET}" if len(sc.became_unstable) > 0 else f"{Colors.DIM}{len(sc.became_unstable)}{Colors.RESET}"
+        )
+        better_colored = (
+            f"{Colors.GREEN}{len(sc.became_stable)}{Colors.RESET}" if len(sc.became_stable) > 0 else f"{Colors.DIM}{len(sc.became_stable)}{Colors.RESET}"
+        )
+        extreme_colored = (
+            f"{Colors.YELLOW}{len(sc.extreme_instability)}{Colors.RESET}"
+            if len(sc.extreme_instability) > 0
+            else f"{Colors.DIM}{len(sc.extreme_instability)}{Colors.RESET}"
+        )
+        stability_summary = f"({worse_colored} worse, {better_colored} better, {extreme_colored} extreme)"
+        print(f"  {Colors.BRIGHT}Stability:{Colors.RESET}           {stability_indicator}  {stability_summary}")
 
         # Layer depth indicator
         if insights.layer_depth_delta > 2:
             layer_indicator = f"{Colors.RED}🔴 DEEPENING{Colors.RESET}"
+            layer_detail_color = Colors.RED
         elif insights.layer_depth_delta > 0:
             layer_indicator = f"{Colors.YELLOW}🟡 DEEPER{Colors.RESET}"
+            layer_detail_color = Colors.YELLOW
         elif insights.layer_depth_delta < -2:
             layer_indicator = f"{Colors.GREEN}🟢 FLATTENING{Colors.RESET}"
+            layer_detail_color = Colors.GREEN
         elif insights.layer_depth_delta < 0:
             layer_indicator = f"{Colors.GREEN}🟢 SHALLOWER{Colors.RESET}"
+            layer_detail_color = Colors.GREEN
         else:
             layer_indicator = f"{Colors.GREEN}🟢 UNCHANGED{Colors.RESET}"
-        print(f"  Layer Depth:         {layer_indicator}  ({insights.layer_depth_delta:+d} levels)")
+            layer_detail_color = Colors.DIM
+        layer_delta_colored = f"{layer_detail_color}{insights.layer_depth_delta:+d}{Colors.RESET}"
+        print(f"  {Colors.BRIGHT}Layer Depth:{Colors.RESET}         {layer_indicator}  ({layer_delta_colored} levels)")
 
-        print(f"{Colors.BRIGHT}{'─'*80}{Colors.RESET}\n")
+        print(f"{Colors.CYAN}{'─'*80}{Colors.RESET}\n")
 
         # STEP 3: ACTIONABILITY ORDER - Cycles → Stability → Coupling → Layers
 
@@ -2376,19 +2655,76 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
         print(f"{Colors.BRIGHT}{section_num}. Build Impact Assessment{Colors.RESET}")
         print(f"   {Colors.DIM}(Future ongoing impact - every subsequent commit to these headers){Colors.RESET}\n")
 
-        # Heuristic (always shown)
+        # Precise impact analysis
         current_headers_count = len(current.sorted_headers) if current.sorted_headers else 1
-        heuristic_pct = ri.heuristic_score / current_headers_count * 100
-        print(f"  {Colors.BRIGHT}Heuristic:{Colors.RESET} ~{heuristic_pct:.0f}% ongoing downstream rebuild cost")
-        print(f"  Confidence: ±{ri.heuristic_confidence:.0f}% (estimates future cascading impact per commit)")
-        print(f"  Interpretation: Future changes to modified headers will affect ~{ri.affected_file_estimate} files")
 
-        # Precise (only if computed)
         if ri.precise_score is not None:
             precise_pct = ri.precise_score / current_headers_count * 100
-            print(f"\n  {Colors.BRIGHT}Precise:{Colors.RESET} {precise_pct:.0f}% ongoing downstream rebuild cost")
-            print(f"  Confidence: {ri.precise_confidence:.0f}% (exact transitive impact per future commit)")
-            print(f"  Exact downstream headers affected per change: {ri.precise_score}")
+
+            # Show file count comparison if we have baseline and source file data
+            if ri.total_source_files > 0 and ri.baseline_ongoing_rebuild_count > 0:
+                # We have baseline - lead with improvement/regression prominently
+                if ri.ongoing_rebuild_delta_percentage < -5.0:
+                    # Improvement - lead with green success indicator
+                    files_saved = ri.baseline_ongoing_rebuild_count - ri.future_ongoing_rebuild_count
+                    print(
+                        f"\n  {Colors.GREEN}{Colors.BRIGHT}✓ {abs(ri.ongoing_rebuild_delta_percentage):.1f}% FEWER FILES REBUILD{Colors.RESET} {Colors.GREEN}— {files_saved} files saved per future commit{Colors.RESET}"
+                    )
+                    print(
+                        f"  {Colors.BRIGHT}Before:{Colors.RESET} {ri.baseline_ongoing_rebuild_count} files ({ri.baseline_ongoing_rebuild_percentage:.1f}%)  {Colors.GREEN}→{Colors.RESET}  {Colors.BRIGHT}After:{Colors.RESET} {ri.future_ongoing_rebuild_count} files ({ri.future_ongoing_rebuild_percentage:.1f}%)"
+                    )
+                    print(
+                        f"  {Colors.DIM}Each future commit will trigger {files_saved} fewer files to rebuild (of {ri.total_source_files} total .c/.cpp files){Colors.RESET}"
+                    )
+                elif ri.ongoing_rebuild_delta_percentage > 5.0:
+                    # Regression - lead with red warning indicator
+                    files_added = ri.future_ongoing_rebuild_count - ri.baseline_ongoing_rebuild_count
+                    print(
+                        f"\n  {Colors.RED}{Colors.BRIGHT}⚠ {abs(ri.ongoing_rebuild_delta_percentage):.1f}% MORE FILES REBUILD{Colors.RESET} {Colors.RED}— {files_added} extra files per future commit{Colors.RESET}"
+                    )
+                    print(
+                        f"  {Colors.BRIGHT}Before:{Colors.RESET} {ri.baseline_ongoing_rebuild_count} files ({ri.baseline_ongoing_rebuild_percentage:.1f}%)  {Colors.RED}→{Colors.RESET}  {Colors.BRIGHT}After:{Colors.RESET} {Colors.RED}{ri.future_ongoing_rebuild_count} files ({ri.future_ongoing_rebuild_percentage:.1f}%){Colors.RESET}"
+                    )
+                    print(
+                        f"  {Colors.DIM}Each future commit will trigger {files_added} additional files to rebuild (of {ri.total_source_files} total .c/.cpp files){Colors.RESET}"
+                    )
+                else:
+                    # Minimal change - show file counts prominently with clear improvement/regression
+                    files_delta = ri.baseline_ongoing_rebuild_count - ri.future_ongoing_rebuild_count
+
+                    print(
+                        f"\n  {Colors.BRIGHT}Build Impact:{Colors.RESET} {Colors.BRIGHT}{ri.future_ongoing_rebuild_count} of {ri.total_source_files} .c/.cpp files{Colors.RESET} must rebuild ({ri.future_ongoing_rebuild_percentage:.1f}%)"
+                    )
+
+                    if files_delta > 0:
+                        # Improvement - files saved
+                        file_word = "file" if files_delta == 1 else "files"
+                        print(
+                            f"  {Colors.GREEN}Improvement:{Colors.RESET} {files_delta} {file_word} saved from rebuild vs. baseline ({ri.baseline_ongoing_rebuild_count} → {ri.future_ongoing_rebuild_count} files)"
+                        )
+                    elif files_delta < 0:
+                        # Regression - more files rebuild
+                        file_word = "file" if abs(files_delta) == 1 else "files"
+                        print(
+                            f"  {Colors.YELLOW}Regression:{Colors.RESET} {abs(files_delta)} more {file_word} must rebuild vs. baseline ({ri.baseline_ongoing_rebuild_count} → {ri.future_ongoing_rebuild_count} files)"
+                        )
+                    else:
+                        # No change
+                        print(f"  No change from baseline ({ri.baseline_ongoing_rebuild_count} → {ri.future_ongoing_rebuild_count} files, impact stable)")
+
+                    print(f"  {Colors.DIM}- These {ri.future_ongoing_rebuild_count} files include (directly or transitively) modified headers{Colors.RESET}")
+            elif ri.total_source_files > 0:
+                # No baseline - just show current state with file counts prominently
+                print(
+                    f"\n  {Colors.BRIGHT}Precise:{Colors.RESET} {Colors.BRIGHT}{ri.future_ongoing_rebuild_count} of {ri.total_source_files} files{Colors.RESET} rebuild per future change ({ri.future_ongoing_rebuild_percentage:.1f}%)"
+                )
+                print(f"  Each commit to these headers triggers rebuilds for these files")
+            else:
+                # Fallback to header-based metric
+                print(f"\n  {Colors.BRIGHT}Precise:{Colors.RESET} {precise_pct:.0f}% of downstream headers affected per future change")
+                print(f"  Exact downstream headers affected: {ri.precise_score}")
+
+            print(f"  Confidence: {ri.precise_confidence:.0f}% (exact transitive impact)")
 
         # Contextual clarification
         print(f"\n  {Colors.CYAN}💡 Context:{Colors.RESET}")
@@ -2402,7 +2738,7 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
         # High-impact headers (verbose mode with future-focused language)
         if verbose and ri.high_impact_headers:
             print(f"\n  {Colors.BRIGHT}Future Hotspots (High-Impact Headers):{Colors.RESET}")
-            print(f"  {Colors.DIM}These headers will trigger widespread rebuilds when modified in future commits:{Colors.RESET}")
+            print(f"  {Colors.DIM}These headers will trigger widespread rebuilds of dependent headers and .c/.cpp files in future commits:{Colors.RESET}")
             for header, fan_in, coupling_delta in ri.high_impact_headers[:5]:
                 rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else header
                 print(f"    • {rel_path}")
@@ -2410,7 +2746,7 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
                 print(f"      {Colors.YELLOW}→ Every change will cascade to {fan_in}+ downstream headers{Colors.RESET}")
         print()
 
-        # STEP 4: UNIFIED KEY FINDINGS (consolidated interpretation)
+        # STEP 4: UNIFIED KEY FINDINGS (consolidated interpretation with new vs pre-existing split)
         print(f"{Colors.BRIGHT}{'─'*80}{Colors.RESET}")
         print(f"{Colors.BRIGHT}🔑 Key Findings{Colors.RESET}")
         print(f"{Colors.BRIGHT}{'─'*80}{Colors.RESET}\n")
@@ -2423,48 +2759,102 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
         else:
             print(f"{Colors.GREEN}✓ POSITIVE ARCHITECTURAL IMPROVEMENTS{Colors.RESET}\n")
 
-        # Generate key findings with severity icons
-        key_findings: List[Tuple[str, str]] = []  # (severity_icon, finding)
+        # Generate key findings split into categories
+        introduced_findings: List[Tuple[str, str]] = []  # (severity_icon, finding)
+        escalated_findings: List[Tuple[str, str]] = []  # (severity_icon, finding)
+        pre_existing_findings: List[Tuple[str, str]] = []  # (severity_icon, finding)
 
+        # INTRODUCED BY THIS CHANGE
         if has_cycle_regression:
-            key_findings.append(("🔴", f"CRITICAL: {cycle_change} new circular dependencies block architectural progress"))
+            introduced_findings.append(("🔴", f"CRITICAL: {cycle_change} new circular dependencies block architectural progress"))
 
         if cs.mean_delta_pct > 10:
-            key_findings.append(("🔴", f"Coupling mean increased {cs.mean_delta_pct:.0f}% - systemic architectural degradation"))
+            introduced_findings.append(("🔴", f"Coupling mean increased {cs.mean_delta_pct:.0f}% - systemic architectural degradation"))
         elif cs.mean_delta_pct > 0:
-            key_findings.append(("🟡", f"Coupling mean increased {cs.mean_delta_pct:.0f}% - monitor for continued growth"))
+            introduced_findings.append(("🟡", f"Coupling mean increased {cs.mean_delta_pct:.0f}% - monitor for continued growth"))
         elif cs.mean_delta_pct < -10:
-            key_findings.append(("🟢", f"Coupling mean decreased {abs(cs.mean_delta_pct):.0f}% - significant architectural improvement"))
+            introduced_findings.append(("🟢", f"Coupling mean decreased {abs(cs.mean_delta_pct):.0f}% - significant architectural improvement"))
 
-        if cs.outliers_2sigma:
-            key_findings.append(("🟡", f"{len(cs.outliers_2sigma)} headers are extreme coupling outliers (>2σ) - hotspots requiring attention"))
+        # New coupling outliers (not pre-existing)
+        new_outliers = [h for h, c in cs.outliers_2sigma if (h, c) not in delta.pre_existing_coupling_outliers]
+        if new_outliers:
+            introduced_findings.append(("🟡", f"{len(new_outliers)} new extreme coupling outliers (>2σ) introduced by this change"))
 
-        if len(sc.became_unstable) > 0:
-            key_findings.append(("🟡", f"{len(sc.became_unstable)} headers crossed into unstable territory (stability >0.5)"))
+        # New unstable headers (not pre-existing)
+        new_unstable = {h for h in sc.became_unstable if h not in delta.pre_existing_unstable_headers}
+        if len(new_unstable) > 0:
+            introduced_findings.append(("🟡", f"{len(new_unstable)} headers crossed into unstable territory (stability >0.5)"))
 
         if len(sc.extreme_instability) > 0:
-            key_findings.append(
-                (
-                    "🔴" if len(sc.extreme_instability) > 5 else "🟡",
-                    f"{len(sc.extreme_instability)} headers have extreme instability (>0.8) - volatile architectural hotspots",
+            new_extreme = [h for h, s in sc.extreme_instability if h not in delta.pre_existing_unstable_headers]
+            if len(new_extreme) > 0:
+                introduced_findings.append(
+                    (
+                        "🔴" if len(new_extreme) > 5 else "🟡",
+                        f"{len(new_extreme)} headers have new extreme instability (>0.8) - volatile architectural hotspots",
+                    )
                 )
-            )
 
         if insights.layer_depth_delta > 2:
-            key_findings.append(("🟡", f"Layer depth increased by {insights.layer_depth_delta} levels - deeper dependency chains may slow builds"))
+            introduced_findings.append(("🟡", f"Layer depth increased by {insights.layer_depth_delta} levels - deeper dependency chains may slow builds"))
         elif insights.layer_depth_delta < -2:
-            key_findings.append(("🟢", f"Layer depth decreased by {abs(insights.layer_depth_delta)} levels - flatter architecture improves parallelism"))
+            introduced_findings.append(("🟢", f"Layer depth decreased by {abs(insights.layer_depth_delta)} levels - flatter architecture improves parallelism"))
 
         if insights.layer_movement and len(insights.layer_movement.headers_skipped_layers) > 0:
-            key_findings.append(("🟡", f"{len(insights.layer_movement.headers_skipped_layers)} headers skipped multiple layers - significant restructuring"))
+            introduced_findings.append(
+                ("🟡", f"{len(insights.layer_movement.headers_skipped_layers)} headers skipped multiple layers - significant restructuring")
+            )
 
         if ri.high_impact_headers:
             top_count = min(3, len(ri.high_impact_headers))
-            key_findings.append(("🟡", f"{top_count} high fan-in headers modified - future changes will cascade more widely"))
+            introduced_findings.append(("🟡", f"{top_count} high fan-in headers modified - future changes will cascade more widely"))
 
-        # Print key findings
-        for icon, finding in key_findings:
-            print(f"  {icon} {finding}")
+        # ESCALATED PRE-EXISTING CYCLES (your modified headers in existing cycles)
+        if delta.escalated_cycle_headers:
+            escalated_findings.append(
+                (
+                    "🔴",
+                    f"Your modified headers ({', '.join(sorted([os.path.basename(h) for h in list(delta.escalated_cycle_headers)[:3]]))}{'...' if len(delta.escalated_cycle_headers) > 3 else ''}) "
+                    f"are in existing cycles - resolve cycle before further changes",
+                )
+            )
+
+        # PRE-EXISTING TECHNICAL DEBT (informational only)
+        if delta.pre_existing_coupling_outliers:
+            pre_existing_findings.append(
+                ("⚪", f"{len(delta.pre_existing_coupling_outliers)} coupling outliers (>2σ) existed in baseline (not caused by this change)")
+            )
+
+        if delta.pre_existing_unstable_headers:
+            pre_existing_findings.append(
+                ("⚪", f"{len(delta.pre_existing_unstable_headers)} unstable headers (>0.5) existed in baseline (not caused by this change)")
+            )
+
+        if delta.pre_existing_cycle_headers and not delta.escalated_cycle_headers:
+            pre_existing_findings.append(("⚪", f"{len(delta.pre_existing_cycle_headers)} headers in pre-existing cycles (not modified by this change)"))
+
+        # Print findings by category
+        if introduced_findings:
+            print(f"{Colors.BRIGHT}Introduced by This Change:{Colors.RESET}")
+            for icon, finding in introduced_findings:
+                print(f"  {icon} {finding}")
+            print()
+
+        if escalated_findings:
+            print(f"{Colors.BRIGHT}Your Modified Headers in Pre-existing Cycles:{Colors.RESET}")
+            for icon, finding in escalated_findings:
+                print(f"  {icon} {finding}")
+            print()
+
+        if pre_existing_findings:
+            print(f"{Colors.DIM}Pre-existing Technical Debt (Informational):{Colors.RESET}")
+            for icon, finding in pre_existing_findings:
+                print(f"  {Colors.DIM}{icon} {finding}{Colors.RESET}")
+            print()
+
+        # If no findings in any category
+        if not introduced_findings and not escalated_findings and not pre_existing_findings:
+            print(f"  {Colors.GREEN}✓ No significant architectural issues detected{Colors.RESET}\n")
 
         # Cross-references between metrics
         if cs.outliers_2sigma and ri.high_impact_headers:
@@ -2472,9 +2862,9 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
             high_impact_set = {h for h, _, _ in ri.high_impact_headers}
             overlap = outlier_headers & high_impact_set
             if overlap:
-                print(f"\n  {Colors.CYAN}🔗 {len(overlap)} headers are both coupling outliers AND high-impact - top priority for refactoring{Colors.RESET}")
+                print(f"  {Colors.CYAN}🔗 {len(overlap)} headers are both coupling outliers AND high-impact - top priority for refactoring{Colors.RESET}\n")
 
-        print(f"\n{Colors.BRIGHT}Recommendations:{Colors.RESET}")
+        print(f"{Colors.BRIGHT}Recommendations:{Colors.RESET}")
         for recommendation in insights.recommendations:
             print(f"  {recommendation}")
 
@@ -2761,12 +3151,7 @@ def _display_library_boundary_analysis(header_to_headers: DefaultDict[str, Set[s
 
 
 def run_differential_analysis(
-    current_build_dir: str,
-    baseline_build_dir: str,
-    project_root: str,
-    compute_precise_impact: bool = False,
-    verbose: bool = False,
-    include_system_headers: bool = False,
+    current_build_dir: str, baseline_build_dir: str, project_root: str, verbose: bool = False, include_system_headers: bool = False
 ) -> int:
     """Run differential DSM analysis comparing two builds.
 
@@ -2774,7 +3159,6 @@ def run_differential_analysis(
         current_build_dir: Path to current build directory
         baseline_build_dir: Path to baseline build directory
         project_root: Project root directory for relative path display
-        compute_precise_impact: Whether to compute precise ripple impact (slower)
         verbose: Show detailed statistical breakdowns
         include_system_headers: Include system headers in analysis
 
@@ -2847,7 +3231,7 @@ def run_differential_analysis(
     current_results = run_dsm_analysis(current_headers, current_scan.include_graph, compute_layers=True, show_progress=True)
 
     # Compute and display differences with architectural insights
-    delta = compare_dsm_results(baseline_results, current_results, compute_precise_impact=compute_precise_impact)
+    delta = compare_dsm_results(baseline_results, current_results)
     print_dsm_delta(delta, baseline_results, current_results, project_root, verbose=verbose)
 
     return EXIT_SUCCESS
@@ -2865,7 +3249,6 @@ def run_differential_analysis_with_baseline(
         current_results: Current DSM analysis results
         baseline_results: Baseline DSM analysis results (loaded from file)
         project_root: Project root directory for relative path display
-        compute_precise_impact: Whether to compute precise ripple impact (slower)
         verbose: Show detailed statistical breakdowns
 
     Returns:
@@ -2879,7 +3262,7 @@ def run_differential_analysis_with_baseline(
     print(f"{Colors.CYAN}Current:  {len(current_results.sorted_headers)} headers{Colors.RESET}\n")
 
     # Compute and display differences with architectural insights
-    delta = compare_dsm_results(baseline_results, current_results, compute_precise_impact=compute_precise_impact)
+    delta = compare_dsm_results(baseline_results, current_results)
     print_dsm_delta(delta, baseline_results, current_results, project_root, verbose=verbose)
 
     return EXIT_SUCCESS
@@ -2890,7 +3273,6 @@ def run_git_working_tree_analysis(
     project_root: str,
     git_from_ref: str = "HEAD",
     git_repo_path: Optional[str] = None,
-    compute_precise_impact: bool = True,
     verbose: bool = False,
     filter_pattern: Optional[str] = None,
     exclude_patterns: Optional[List[str]] = None,
@@ -3070,7 +3452,7 @@ def run_git_working_tree_analysis(
 
     # Step 8: Compare baseline vs current (unified workflow)
     print(f"\n{Colors.BRIGHT}Computing impact delta (baseline → current)...{Colors.RESET}")
-    delta = compare_dsm_results(baseline_results, current_results, compute_precise_impact=compute_precise_impact)
+    delta = compare_dsm_results(baseline_results, current_results)
     print_success("Computed architectural impact delta", prefix=False)
 
     # Step 9: Display unified impact report (reuses sophisticated baseline reporting)
@@ -3104,8 +3486,8 @@ def identify_improvement_candidates(results: DSMAnalysisResults, project_root: s
     if not couplings:
         return candidates
 
-    mean_coupling = statistics.mean(couplings)
-    stddev_coupling = statistics.stdev(couplings) if len(couplings) > 1 else 0
+    mean_coupling = float(np.mean(couplings))
+    stddev_coupling = float(np.std(couplings, ddof=1)) if len(couplings) > 1 else 0
     outlier_threshold = mean_coupling + 2.5 * stddev_coupling if stddev_coupling > 0 else mean_coupling * 2
 
     # Calculate betweenness centrality for hub detection
@@ -3232,7 +3614,7 @@ def estimate_improvement_roi(
     elif "coupling_outlier" in candidate.anti_pattern:
         # Reduce coupling: bring to mean
         couplings = [m.coupling for m in results.metrics.values()]
-        mean_coupling = statistics.mean(couplings) if couplings else 0
+        mean_coupling = float(np.mean(couplings)) if couplings else 0
         fan_out_reduction = max(0, int((metric.coupling - mean_coupling) * 0.6))
         effort = "medium"
     elif "hub_node" in candidate.anti_pattern:
@@ -3409,7 +3791,7 @@ def display_improvement_suggestions(
     moderate = [c for c in candidates if c.severity == "moderate"]
 
     total_estimated_reduction = sum(c.estimated_rebuild_reduction for c in candidates)
-    avg_break_even = statistics.mean([c.break_even_commits for c in candidates if c.break_even_commits < 900])
+    avg_break_even = float(np.mean([c.break_even_commits for c in candidates if c.break_even_commits < 900]))
 
     print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
     print(f"{Colors.BRIGHT}PROACTIVE ARCHITECTURAL IMPROVEMENT ANALYSIS{Colors.RESET}")
@@ -3462,12 +3844,12 @@ def display_improvement_suggestions(
     print(f"  🟢 Quick Wins (ROI ≥60, break-even ≤5 commits): {len(quick_wins)}")
     print(f"  🔴 Critical (cycles or ROI ≥40): {len(critical)}")
     print(f"  🟡 Moderate (ROI <40): {len(moderate)}")
-    print(f"  Estimated Total Rebuild Reduction: {total_estimated_reduction:.1f}%")
-    print(f"  Average Break-Even Point: {avg_break_even:.0f} commits")
+    print(f"  Estimated Total .c/.cpp Rebuild Reduction: {total_estimated_reduction:.1f}%")
+    print(f"  Average Break-Even Point: {avg_break_even:.0f} commits (when rebuild savings exceed refactoring cost)")
 
     # Architectural debt score (inverse of quality)
     couplings = [m.coupling for m in results.metrics.values()]
-    mean_coupling = statistics.mean(couplings) if couplings else 0
+    mean_coupling = float(np.mean(couplings)) if couplings else 0
     cycle_penalty = len(results.cycles) * 10
     debt_score = min(100, mean_coupling + cycle_penalty)
 
@@ -3497,10 +3879,10 @@ def display_improvement_suggestions(
         print(f"   ROI Score: {candidate.roi_score:.1f}/100")
         print(
             f"   Estimated Impact: {candidate.estimated_coupling_reduction} coupling reduction, "
-            f"{candidate.estimated_rebuild_reduction:.1f}% rebuild reduction"
+            f"{candidate.estimated_rebuild_reduction:.1f}% fewer .c/.cpp files rebuild"
         )
         print(f"   Effort: {candidate.effort_estimate.capitalize()}")
-        print(f"   Break-Even: {candidate.break_even_commits:.0f} commits")
+        print(f"   Break-Even: {candidate.break_even_commits:.0f} commits (until .c/.cpp rebuild savings cover refactoring cost)")
 
         if verbose:
             print(f"\n   {Colors.CYAN}Issues Detected:{Colors.RESET}")
@@ -3589,6 +3971,17 @@ def run_proactive_improvement_analysis(
     print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
     print(f"{Colors.BRIGHT}PROACTIVE ARCHITECTURAL IMPROVEMENT ANALYSIS{Colors.RESET}")
     print(f"{Colors.BRIGHT}{'='*80}{Colors.RESET}\n")
+
+    # Important disclaimer about single-state analysis
+    print(f"{Colors.YELLOW}{'━'*80}{Colors.RESET}")
+    print(f"{Colors.YELLOW}⚠  IMPORTANT: SINGLE-STATE ANALYSIS (NO CHANGE ATTRIBUTION){Colors.RESET}")
+    print(f"{Colors.YELLOW}{'━'*80}{Colors.RESET}")
+    print(f"{Colors.YELLOW}This analysis examines the current codebase state without baseline comparison.{Colors.RESET}")
+    print(f"{Colors.YELLOW}All findings reflect existing technical debt - NOT specifically caused by recent changes.{Colors.RESET}")
+    print(f"{Colors.YELLOW}For change attribution (new vs pre-existing issues), use:{Colors.RESET}")
+    print(f"  {Colors.CYAN}• --load-baseline <file>{Colors.RESET} to compare against a saved baseline")
+    print(f"  {Colors.CYAN}• --git-impact{Colors.RESET} to analyze changes in your working tree")
+    print(f"{Colors.YELLOW}{'━'*80}{Colors.RESET}\n")
 
     # Build dependency graph
     try:

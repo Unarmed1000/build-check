@@ -160,6 +160,10 @@ Examples:
     # Run all scenarios with standard output
     python demo/demo_git_impact.py
     
+    # Run specific scenarios only
+    python demo/demo_git_impact.py -s 1 -s 3 -s 5
+    python demo/demo_git_impact.py --scenario 10
+    
     # Run with verbose output for debugging
     python demo/demo_git_impact.py --verbose
 
@@ -171,6 +175,15 @@ trade-offs, etc.) that can be detected through dependency analysis.
     )
 
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output from buildCheckDSM.py")
+    parser.add_argument(
+        "-s",
+        "--scenario",
+        type=int,
+        action="append",
+        dest="scenarios",
+        metavar="ID",
+        help="Run specific scenario(s) by ID. Can be specified multiple times. If not provided, runs all scenarios.",
+    )
 
     return parser.parse_args()
 
@@ -187,6 +200,18 @@ def main():
         Exit code: 0 for success, 1 if any scenarios failed
     """
     args = parse_args()
+
+    # Determine which scenarios to run
+    if args.scenarios:
+        # Validate scenario IDs
+        invalid_scenarios = [sid for sid in args.scenarios if sid not in ALL_SCENARIOS]
+        if invalid_scenarios:
+            print(f"{Colors.RED}Error: Invalid scenario ID(s): {', '.join(map(str, invalid_scenarios))}{Colors.RESET}")
+            print(f"Valid scenario IDs: {', '.join(map(str, sorted(ALL_SCENARIOS.keys())))}")
+            return 1
+        scenarios_to_run = sorted(args.scenarios)
+    else:
+        scenarios_to_run = sorted(ALL_SCENARIOS.keys())
 
     # Find buildCheckDSM.py (should be in parent directory)
     script_dir = Path(__file__).parent.parent
@@ -205,7 +230,10 @@ def main():
     print("with baseline at HEAD and changes in the working tree, then runs")
     print("buildCheckDSM.py --git-impact to analyze the architectural impact.")
     print()
-    print(f"Running {len(ALL_SCENARIOS)} scenarios...")
+    if args.scenarios:
+        print(f"Running {len(scenarios_to_run)} selected scenario(s): {', '.join(map(str, scenarios_to_run))}")
+    else:
+        print(f"Running all {len(scenarios_to_run)} scenarios...")
     print()
     print(f"{Colors.CYAN}{'=' * 80}{Colors.RESET}")
     print()
@@ -214,8 +242,8 @@ def main():
     passed = []
     failed = []
 
-    # Run all scenarios, continuing on errors
-    for scenario_id in ALL_SCENARIOS.keys():
+    # Run selected scenarios, continuing on errors
+    for scenario_id in scenarios_to_run:
         success = run_git_scenario(scenario_id, str(buildcheck_dsm), verbose=args.verbose)
         if success:
             passed.append(scenario_id)
@@ -227,7 +255,7 @@ def main():
     print(f"{Colors.CYAN}{Colors.BRIGHT}Summary{Colors.RESET}")
     print(f"{Colors.CYAN}{'=' * 80}{Colors.RESET}")
     print()
-    print(f"Total scenarios: {len(ALL_SCENARIOS)}")
+    print(f"Total scenarios run: {len(scenarios_to_run)}")
     print(f"{Colors.GREEN}Passed: {len(passed)}{Colors.RESET}")
     if failed:
         print(f"{Colors.RED}Failed: {len(failed)}{Colors.RESET}")

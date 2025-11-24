@@ -42,7 +42,7 @@ def test_scenario_metrics_equivalence(scenario_id: int) -> None:
 
     baseline, _, _, _ = baseline_creator()
     current, _, _, _ = creator()
-    delta = compare_dsm_results(baseline, current, compute_precise_impact=True)
+    delta = compare_dsm_results(baseline, current)
 
     # Verify basic cycle counting
     expected_cycles_delta = scenario_def.expected_outcome.cycles_delta

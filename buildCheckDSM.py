@@ -168,29 +168,25 @@ EXAMPLES:
     # STATISTICAL & RIPPLE IMPACT ANALYSIS:
     # Baseline comparison includes comprehensive architectural insights
 
-    # Heuristic impact analysis (instant, always shown)
+    # Full transitive closure analysis with architectural insights
     ./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz
 
-    # Precise impact analysis (slower, full transitive closure, 10-30s for large codebases)
-    ./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz --precise-impact
-
     # Detailed statistical breakdown with verbose mode
-    ./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz --precise-impact --verbose
+    ./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz --verbose
 
     # Filter to specific module with architectural insights
-    ./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz --filter "Graphics/*" --precise-impact
+    ./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz --filter "Graphics/*"
 
     # Statistical insights include:
     #   - Coupling distribution (μ, σ, P95, P99) with interpretation
     #   - Cycle complexity analysis with critical breaking edges
     #   - Layer depth evolution and stability changes
-    #   - Ripple impact: heuristic (instant) + precise (optional)
+    #   - Precise ripple impact with full transitive closure
     #   - Severity-scored recommendations (🔴 Critical, 🟡 Moderate, 🟢 Positive)
 
     # Note: Baselines save unfiltered raw data for flexibility.
     # Filters applied at comparison time. System headers excluded by default.
-    # Differential analysis provides heuristic ripple impact by default (instant),
-    # use --precise-impact for full transitive analysis (slower but exact).
+    # Differential analysis uses precise transitive closure for accurate impact assessment.
 
     # GIT WORKING TREE ANALYSIS: Analyze uncommitted changes impact
     # Check architectural impact of current working tree changes (vs HEAD)
@@ -204,10 +200,7 @@ EXAMPLES:
     # Focus git impact on specific module
     ./buildCheckDSM.py ../build/release/ --git-impact --filter "FslBase/*"
 
-    # Quick check with heuristic mode (instant)
-    ./buildCheckDSM.py ../build/release/ --git-impact --heuristic-only
-
-    # Precise analysis with detailed output (slower but comprehensive)
+    # Precise analysis with detailed output
     ./buildCheckDSM.py ../build/release/ --git-impact --verbose
 
     # Shows: changed headers/sources, rebuild percentage, architectural risks,
@@ -585,14 +578,6 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
     )
 
     parser.add_argument(
-        "--heuristic-only",
-        action="store_true",
-        help="Use fast heuristic estimation instead of precise transitive closure analysis "
-        "(default: precise analysis). Heuristic mode is instant but less accurate (±5%% confidence). "
-        "Use for quick iterations; skip for critical architectural decisions.",
-    )
-
-    parser.add_argument(
         "--git-impact",
         action="store_true",
         help="Analyze architectural and rebuild impact of uncommitted changes in working tree "
@@ -668,7 +653,6 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
                 project_root=project_root,
                 git_from_ref=args.git_from,
                 git_repo_path=args.git_repo,
-                compute_precise_impact=not args.heuristic_only,
                 verbose=args.verbose,
                 filter_pattern=args.filter,
                 exclude_patterns=args.exclude if hasattr(args, "exclude") else None,
@@ -682,7 +666,6 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
                 build_dir,
                 args.compare_with,
                 project_root,
-                compute_precise_impact=not args.heuristic_only,
                 verbose=args.verbose,
                 include_system_headers=args.include_system_headers if hasattr(args, "include_system_headers") else False,
             )
@@ -783,9 +766,7 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
                     print(verbose_baseline)
 
             # Run differential analysis with architectural insights
-            return run_differential_analysis_with_baseline(
-                results, baseline_results, project_root, compute_precise_impact=not args.heuristic_only, verbose=args.verbose
-            )
+            return run_differential_analysis_with_baseline(results, baseline_results, project_root, verbose=args.verbose)
 
         return EXIT_SUCCESS
 

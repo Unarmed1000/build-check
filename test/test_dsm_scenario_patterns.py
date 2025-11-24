@@ -48,7 +48,7 @@ def test_dsm_scenario_architectural_patterns(scenario_id: int) -> None:
     current, _, _, _ = creator()
 
     # Compare and extract metrics
-    delta = compare_dsm_results(baseline, current, compute_precise_impact=True)
+    delta = compare_dsm_results(baseline, current)
     metrics = ArchitecturalMetrics(delta, baseline, current)
 
     # Check metrics match expected outcomes

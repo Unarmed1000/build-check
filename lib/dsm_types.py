@@ -113,6 +113,10 @@ class DSMDelta:
         layer_changes: Headers that moved layers (header -> (old_layer, new_layer))
         new_cycle_participants: Headers newly involved in cycles
         resolved_cycle_participants: Headers no longer in cycles
+        pre_existing_cycle_headers: Headers that were in cycles in baseline and remain in cycles
+        escalated_cycle_headers: Pre-existing cycle headers that were modified in this change
+        pre_existing_unstable_headers: Headers that were unstable in baseline and remain unstable
+        pre_existing_coupling_outliers: Coupling outliers (>2σ) that existed in baseline
     """
 
     headers_added: Set[str]
@@ -125,6 +129,10 @@ class DSMDelta:
     new_cycle_participants: Set[str]
     resolved_cycle_participants: Set[str]
     architectural_insights: Optional["ArchitecturalInsights"] = None
+    pre_existing_cycle_headers: Set[str] = field(default_factory=set)
+    escalated_cycle_headers: Set[str] = field(default_factory=set)
+    pre_existing_unstable_headers: Set[str] = field(default_factory=set)
+    pre_existing_coupling_outliers: List[Tuple[str, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -220,16 +228,13 @@ class StabilityChange:
 
 @dataclass
 class RippleImpactAnalysis:
-    """Build impact assessment with heuristic and optional precise analysis.
+    """Build impact assessment with precise transitive closure analysis.
 
     Attributes:
-        heuristic_score: Fast approximation (sum of fan_in × coupling_delta)
-        heuristic_confidence: Confidence level for heuristic (±percentage)
-        precise_score: Optional precise transitive closure count
-        precise_confidence: Confidence level for precise (percentage)
+        precise_score: Precise transitive closure count
+        precise_confidence: Confidence level for precise analysis (percentage)
         high_impact_headers: Headers with largest ripple effect
         ripple_reduction: Headers whose changes reduce future ripples
-        affected_file_estimate: Estimated number of files affected by changes
         total_downstream_impact: Option 2A - Sum of all fan-ins (can exceed 100%)
         unique_downstream_count: Option 2B - Count of unique downstream headers (0-100%)
         this_commit_rebuild_count: Number of .c/.cpp files requiring rebuild (this commit only, transitive)
@@ -243,13 +248,10 @@ class RippleImpactAnalysis:
         future_savings: Optional prediction of future rebuild reduction
     """
 
-    heuristic_score: float
-    heuristic_confidence: float
     precise_score: Optional[int]
     precise_confidence: Optional[float]
     high_impact_headers: List[Tuple[str, int, int]]  # (header, fan_in, coupling_delta)
     ripple_reduction: List[Tuple[str, int]]  # (header, reduction_estimate)
-    affected_file_estimate: int
     total_downstream_impact: int  # Option 2A: Sum of fan-ins (average blast radius)
     unique_downstream_count: int  # Option 2B: Unique downstream headers (precise %)
     this_commit_rebuild_count: int = 0  # Number of .c/.cpp files needing rebuild (this commit only)

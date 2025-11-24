@@ -94,8 +94,8 @@ class TestCycleInsights:
 class TestRippleImpact:
     """Test compute_ripple_impact function."""
 
-    def test_ripple_impact_heuristic(self) -> None:
-        """Test heuristic ripple impact computation."""
+    def test_ripple_impact_precise(self) -> None:
+        """Test precise ripple impact computation."""
         baseline_graph: "nx.DiGraph[str]" = nx.DiGraph()
         current_graph: "nx.DiGraph[str]" = nx.DiGraph()
         current_graph.add_edges_from([("a.h", "b.h"), ("b.h", "c.h")])
@@ -115,11 +115,10 @@ class TestRippleImpact:
         # Build reverse dependencies from current graph
         reverse_deps = {"b.h": {"a.h"}, "c.h": {"b.h"}}
 
-        impact = compute_ripple_impact(baseline_graph, current_graph, baseline_metrics, current_metrics, changed_headers, reverse_deps, compute_precise=False)
+        impact = compute_ripple_impact(baseline_graph, current_graph, baseline_metrics, current_metrics, changed_headers, reverse_deps, compute_precise=True)
 
-        assert impact.heuristic_score > 0
-        assert impact.heuristic_confidence == 5.0
-        assert impact.precise_score is None
+        assert impact.precise_score is not None
+        assert impact.precise_confidence == 95.0
         assert len(impact.high_impact_headers) > 0
         assert impact.total_downstream_impact >= 0
         assert impact.unique_downstream_count >= 0
@@ -207,7 +206,7 @@ class TestArchitecturalInsights:
             header_to_headers=defaultdict(set),
         )
 
-        insights = compute_architectural_insights(baseline_metrics, current_metrics, baseline, current, compute_precise_impact=False)
+        insights = compute_architectural_insights(baseline_metrics, current_metrics, baseline, current)
 
         assert insights is not None
         assert isinstance(insights.coupling_stats, CouplingStatistics)

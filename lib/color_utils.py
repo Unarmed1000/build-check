@@ -34,7 +34,9 @@ logger = logging.getLogger(__name__)
 try:
     from colorama import Fore, Style, Back, init
 
-    init(autoreset=False)
+    # Force colors even when stdout is not a TTY (e.g., piped through subprocess)
+    # This allows colors to work in subprocess.run() scenarios
+    init(autoreset=False, strip=False)
     COLORAMA_AVAILABLE = True
 except ImportError:
     COLORAMA_AVAILABLE = False

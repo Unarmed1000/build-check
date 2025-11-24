@@ -319,11 +319,8 @@ Run the environment check to verify all dependencies:
 # Save baseline for later comparison
 ./buildCheckDSM.py ../build/main/ --save-results baseline.dsm.json.gz
 
-# Compare against saved baseline (precise impact analysis by default)
+# Compare against saved baseline (precise impact analysis)
 ./buildCheckDSM.py ../build/feature/ --load-baseline baseline.dsm.json.gz
-
-# Use fast heuristic mode for quick iteration (instant, ±5% accuracy)
-./buildCheckDSM.py ../build/feature/ --compare-with ../build/main/ --heuristic-only
 
 # 🆕 Proactive improvement analysis (NEW in v1.2.0)
 ./buildCheckDSM.py ../build/release/ --suggest-improvements
@@ -335,29 +332,13 @@ Run the environment check to verify all dependencies:
 ./buildCheckDSM.py ../build/release/ --suggest-improvements --verbose --top 20
 ```
 
-**⚡ Performance & Accuracy Trade-off:**
+**⚡ Performance:**
 
-**Default (Precise Analysis)**:
+**Precise Analysis (Always Used)**:
 - **Speed**: 10-30 seconds for large codebases (>5000 headers)
 - **Accuracy**: 95% confidence (full transitive closure)
-- **Use for**: Critical architectural decisions, final reviews, documentation
 - **Method**: Complete NetworkX graph traversal of all dependencies
-
-**With `--heuristic-only` Flag**:
-- **Speed**: Instant (< 1 second)
-- **Accuracy**: ±5% confidence (heuristic estimation)
-- **Use for**: Quick iterations, CI/CD checks, exploratory analysis
-- **Method**: Fan-in × coupling delta approximation
-
-**Decision Guide - When to use `--heuristic-only`:**
-- ✅ Rapid feedback during active development
-- ✅ CI/CD pipelines where speed matters
-- ✅ Exploratory "what-if" architectural experiments
-- ✅ Quick checks before committing changes
-- ❌ Final architectural review documentation
-- ❌ Critical refactoring decisions
-- ❌ Precise rebuild cost estimation for planning
-- ❌ When you need exact source file impact counts
+- **Use for**: All architectural decisions, reviews, and planning
 ```
 
 **Key Metrics**:
@@ -375,7 +356,7 @@ Run the environment check to verify all dependencies:
 - **Stability Changes**: Headers that became stable/unstable
 - **Cycle Complexity**: New/resolved cycles, cycle size distribution
 - **Layer Movements**: Headers that changed architectural depth
-- **Ripple Impact**: Predicted source files affected by changes (precise analysis by default, use `--heuristic-only` for fast mode)
+- **Ripple Impact**: Predicted source files affected by changes (precise transitive closure analysis)
 - **Architectural Recommendations**: Prioritized suggestions for improvements
 
 **🆕 Proactive Improvement Analysis** (with `--suggest-improvements` - NEW in v1.2.0):
