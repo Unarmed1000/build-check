@@ -116,11 +116,11 @@ from lib.ninja_utils import extract_rebuild_info
 from lib.color_utils import Colors, print_warning, print_success
 from lib.constants import COMPILE_COMMANDS_JSON
 from lib.file_utils import exclude_headers_by_patterns, filter_system_headers
-from lib.clang_utils import CLANG_SCAN_DEPS_COMMANDS, VALID_SOURCE_EXTENSIONS, VALID_HEADER_EXTENSIONS, run_clang_scan_deps, create_filtered_compile_commands
+from lib.clang_utils import VALID_SOURCE_EXTENSIONS, VALID_HEADER_EXTENSIONS, run_clang_scan_deps, create_filtered_compile_commands
+from lib.tool_detection import find_clang_scan_deps, find_ninja
 
 # Constants
 CLANG_SCAN_DEPS_TIMEOUT: int = 600  # 10 minutes
-# CLANG_SCAN_DEPS_VERSIONS moved to lib.clang_utils
 COMPILE_DB_FILENAME: str = COMPILE_COMMANDS_JSON
 FILTERED_COMPILE_DB_FILENAME: str = "compile_commands_filtered.json"
 # SOURCE_FILE_EXTENSIONS, HEADER_FILE_EXTENSIONS moved to lib.clang_utils
@@ -180,25 +180,11 @@ def validate_system_requirements() -> SystemRequirements:
     Returns:
         SystemRequirements with validation results for each requirement
     """
-    ninja_available = False
-    clang_scan_deps_available = False
-    networkx_available = False
+    # Check ninja using tool_detection
+    ninja_available = find_ninja().is_found()
 
-    # Check ninja
-    try:
-        subprocess.run(["ninja", "--version"], capture_output=True, check=True, timeout=5)
-        ninja_available = True
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    # Check clang-scan-deps (any version)
-    for cmd in CLANG_SCAN_DEPS_COMMANDS:
-        try:
-            subprocess.run([cmd, "--version"], capture_output=True, check=True, timeout=5)
-            clang_scan_deps_available = True
-            break
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-            continue
+    # Check clang-scan-deps using tool_detection
+    clang_scan_deps_available = find_clang_scan_deps().is_found()
 
     # Check networkx
     try:

@@ -1,5 +1,7 @@
 # buildCheckSummary.py
 
+**Version:** 1.0.0
+
 A production-ready tool for analyzing ninja build explanations and providing comprehensive rebuild summaries.
 
 ## Features
@@ -12,6 +14,14 @@ A production-ready tool for analyzing ninja build explanations and providing com
 - **Broken Pipe Handling**: Works correctly when piping to tools like `head` or `grep`
 - **Verbose Mode**: Optional detailed progress information
 - **No External Dependencies**: Only requires Python 3.6+ (colorama is optional)
+
+## Requirements
+
+- **Python 3.7+** (required)
+- **ninja build system** (required)
+- **colorama>=0.4.6** (optional, for colored output)
+
+**Note:** This tool does NOT require NumPy, NetworkX, or clang-scan-deps. It only uses Ninja's built-in explain functionality.
 
 ## Installation
 
@@ -249,6 +259,10 @@ pip install colorama
 # or
 ./buildCheckSummary.py ./build --no-color
 ```
+
+### ccache-related issues
+
+While this tool doesn't use clang-scan-deps directly, if you encounter any build system issues with ccache, see the detailed troubleshooting section in [README_buildCheckDSM.md](README_buildCheckDSM.md#troubleshooting) for comprehensive ccache compatibility information.
 
 ## License
 

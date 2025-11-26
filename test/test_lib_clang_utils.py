@@ -3,7 +3,6 @@
 
 import pytest
 from typing import Any, Dict, List, Tuple, Generator
-import tempfile
 from pathlib import Path
 
 from lib.clang_utils import find_clang_scan_deps, is_valid_source_file, is_valid_header_file, is_system_header
@@ -14,6 +13,9 @@ class TestFindClangScanDeps:
 
     def test_find_clang_scan_deps(self, monkeypatch: Any) -> None:
         """Test finding clang-scan-deps."""
+        from lib.tool_detection import ToolInfo, clear_cache
+
+        clear_cache()
 
         # Mock which command to always return a path
         def mock_which(cmd: str) -> str | None:
@@ -23,11 +25,14 @@ class TestFindClangScanDeps:
 
         result = find_clang_scan_deps()
 
-        # Should find something or return None gracefully
-        assert result is None or isinstance(result, str)
+        # Should return a ToolInfo object
+        assert isinstance(result, ToolInfo)
 
     def test_find_clang_scan_deps_not_found(self, monkeypatch: Any) -> None:
         """Test when clang-scan-deps is not found."""
+        from lib.tool_detection import ToolInfo, clear_cache
+
+        clear_cache()
 
         def mock_which(cmd: str) -> str | None:
             return None
@@ -36,8 +41,9 @@ class TestFindClangScanDeps:
 
         result = find_clang_scan_deps()
 
-        # Result can be None or a found path depending on system
-        assert result is None or isinstance(result, str)
+        # Should return a ToolInfo object that is not found
+        assert isinstance(result, ToolInfo)
+        assert not result.is_found()
 
 
 class TestValidSourceFile:
@@ -204,64 +210,268 @@ class TestSystemHeader:
         assert is_system_header("/usr/local/c++/custom/header.h") is True
 
 
-class TestCreateFilteredCompileCommands:
-    """Tests for create_filtered_compile_commands function."""
+class TestSanitizeCompileCommand:
+    """Tests for sanitize_compile_command function."""
 
-    def test_create_filtered_compile_commands(self, temp_dir: Any) -> None:
-        """Test creating filtered compile_commands.json."""
-        # Create a mock compile_commands.json
-        compile_commands = temp_dir / "compile_commands.json"
-        compile_commands.write_text(
-            """[
-            {
-                "directory": "/build",
-                "command": "g++ -c test.cpp",
-                "file": "test.cpp"
-            },
-            {
-                "directory": "/build",
-                "command": "g++ -c other.cpp",
-                "file": "other.cpp"
-            }
-        ]"""
+    def test_remove_ccache_wrapper(self) -> None:
+        """Test removing ccache wrapper from command."""
+        from lib.clang_utils import sanitize_compile_command
+
+        cmd = "ccache g++ -c test.cpp -o test.o"
+        result = sanitize_compile_command(cmd)
+        assert "ccache" not in result
+        assert "g++" in result
+        assert "test.cpp" in result
+
+    def test_remove_ccache_env_vars(self) -> None:
+        """Test removing CCACHE environment variables from command."""
+        from lib.clang_utils import sanitize_compile_command
+
+        cmd = "CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_ctime,include_file_mtime g++ -c test.cpp -o test.o"
+        result = sanitize_compile_command(cmd)
+        assert "CCACHE_SLOPPINESS" not in result
+        assert "g++" in result
+        assert "test.cpp" in result
+
+    def test_remove_multiple_ccache_vars(self) -> None:
+        """Test removing multiple ccache-related environment variables."""
+        from lib.clang_utils import sanitize_compile_command
+
+        cmd = "CCACHE_SLOPPINESS=foo CCACHE_BASEDIR=/path CC_WRAPPER=ccache g++ -c test.cpp"
+        result = sanitize_compile_command(cmd)
+        assert "CCACHE_" not in result
+        assert "CC_WRAPPER" not in result
+        assert "g++" in result
+
+    def test_remove_linker_flags(self) -> None:
+        """Test removing linker flags that cause issues."""
+        from lib.clang_utils import sanitize_compile_command
+
+        cmd = "g++ -c test.cpp -Wl,--as-needed -o test.o"
+        result = sanitize_compile_command(cmd)
+        assert "-Wl," not in result
+        assert "test.cpp" in result
+
+    def test_remove_xlinker_flags(self) -> None:
+        """Test removing -Xlinker flags and their arguments."""
+        from lib.clang_utils import sanitize_compile_command
+
+        cmd = "g++ -c test.cpp -Xlinker --verbose -o test.o"
+        result = sanitize_compile_command(cmd)
+        assert "-Xlinker" not in result
+        assert "--verbose" not in result or "test.cpp" in result
+
+    def test_remove_response_files(self) -> None:
+        """Test removing response file (@file) references."""
+        from lib.clang_utils import sanitize_compile_command
+
+        cmd = "g++ @compile_flags.txt -c test.cpp -o test.o"
+        result = sanitize_compile_command(cmd)
+        assert "@compile_flags.txt" not in result
+        assert "test.cpp" in result
+
+    def test_preserve_normal_flags(self) -> None:
+        """Test that normal compilation flags are preserved."""
+        from lib.clang_utils import sanitize_compile_command
+
+        cmd = "g++ -c test.cpp -std=c++17 -Wall -O2 -I/usr/include -o test.o"
+        result = sanitize_compile_command(cmd)
+        assert "-std=c++17" in result
+        assert "-Wall" in result
+        assert "-O2" in result
+        assert "-I/usr/include" in result
+
+    def test_complex_ccache_command(self) -> None:
+        """Test sanitizing complex command with ccache wrapper and environment variables."""
+        from lib.clang_utils import sanitize_compile_command
+
+        # This mimics the error case from the user's log
+        cmd = "ccache CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_ctime,include_file_mtime /usr/bin/clang++ -c test.cpp -o test.o"
+        result = sanitize_compile_command(cmd)
+        assert "ccache" not in result
+        assert "CCACHE_SLOPPINESS" not in result
+        assert "sloppiness" not in result
+        assert "clang++" in result
+        assert "test.cpp" in result
+
+    def test_unparseable_command(self) -> None:
+        """Test handling of unparseable command."""
+        from lib.clang_utils import sanitize_compile_command
+
+        # Malformed command with unmatched quotes
+        cmd = 'g++ -c test.cpp -DSTRING="unclosed'
+        result = sanitize_compile_command(cmd)
+        # Should return original command if parsing fails
+        assert result == cmd
+
+    def test_empty_command(self) -> None:
+        """Test empty command handling."""
+        from lib.clang_utils import sanitize_compile_command
+
+        cmd = ""
+        result = sanitize_compile_command(cmd)
+        assert result == cmd
+
+    def test_macos_clang_with_ccache(self) -> None:
+        """Test macOS clang command with ccache (as seen in user's error)."""
+        from lib.clang_utils import sanitize_compile_command
+
+        cmd = "CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_ctime,include_file_mtime /usr/bin/clang++ -c /path/to/source.cpp -o output.o"
+        result = sanitize_compile_command(cmd)
+        assert "CCACHE_SLOPPINESS" not in result
+        assert "sloppiness=" not in result
+        assert "/usr/bin/clang++" in result
+
+
+class TestCreateFilteredCompileCommands:
+    """Integration tests for create_filtered_compile_commands function."""
+
+    def test_create_filtered_compile_commands_basic(self, tmp_path: Path) -> None:
+        """Test creating filtered compile_commands.json with basic commands."""
+        from lib.clang_utils import create_filtered_compile_commands
+        import json
+
+        # Create source files
+        (tmp_path / "test.cpp").write_text("int main() { return 0; }")
+        (tmp_path / "other.cpp").write_text("void foo() {}")
+
+        # Create a proper ninja build file that can generate compile_commands
+        build_ninja = tmp_path / "build.ninja"
+        build_ninja.write_text(
+            """# Ninja build file
+rule cxx
+  command = g++ -c $in -o $out
+
+build test.o: cxx test.cpp
+build other.o: cxx other.cpp
+build libtest.a: phony test.o other.o
+"""
         )
 
-        # This should work or fail gracefully
-        try:
-            from lib.clang_utils import create_filtered_compile_commands
+        result = create_filtered_compile_commands(str(tmp_path))
+        assert result is not None
+        assert result.endswith("compile_commands_filtered.json")
 
-            result = create_filtered_compile_commands(str(temp_dir))
-            assert result is not None
-        except Exception:
-            # If it fails, it should be due to missing dependencies, not bad logic
-            pass
+        # Verify filtered content
+        with open(result, "r") as f:
+            filtered = json.load(f)
 
-    def test_missing_compile_commands(self, temp_dir: Any) -> None:
+        assert len(filtered) >= 2  # At least the two compile commands
+        assert all(" -c " in entry["command"] for entry in filtered)
+
+    def test_create_filtered_compile_commands_with_ccache(self, tmp_path: Path) -> None:
+        """Test filtering commands with ccache wrapper and environment variables."""
+        from lib.clang_utils import create_filtered_compile_commands
+        import json
+
+        # Create source files
+        (tmp_path / "test.cpp").write_text("int main() { return 0; }")
+        (tmp_path / "other.cpp").write_text("void foo() {}")
+
+        # Create ninja build file with ccache commands
+        build_ninja = tmp_path / "build.ninja"
+        build_ninja.write_text(
+            """# Ninja build file with ccache
+rule cxx_ccache
+  command = ccache CCACHE_SLOPPINESS=pch_defines,time_macros g++ -c $in -o $out
+
+build test.o: cxx_ccache test.cpp
+build other.o: cxx_ccache other.cpp
+"""
+        )
+
+        result = create_filtered_compile_commands(str(tmp_path))
+
+        # Verify ccache was removed
+        with open(result, "r") as f:
+            filtered = json.load(f)
+
+        assert len(filtered) >= 2
+        for entry in filtered:
+            assert "ccache" not in entry["command"]
+            assert "CCACHE_" not in entry["command"]
+            assert "sloppiness" not in entry["command"]
+            assert " -c " in entry["command"]
+
+    def test_create_filtered_compile_commands_with_linker_flags(self, tmp_path: Path) -> None:
+        """Test filtering commands with linker flags."""
+        from lib.clang_utils import create_filtered_compile_commands
+        import json
+
+        # Create source file
+        (tmp_path / "test.cpp").write_text("int main() { return 0; }")
+
+        # Create ninja file with linker flags
+        build_ninja = tmp_path / "build.ninja"
+        build_ninja.write_text(
+            """# Ninja build file with linker flags
+rule cxx_link
+  command = g++ -c $in -Wl,--as-needed -Xlinker --verbose -o $out
+
+build test.o: cxx_link test.cpp
+"""
+        )
+
+        result = create_filtered_compile_commands(str(tmp_path))
+
+        with open(result, "r") as f:
+            filtered = json.load(f)
+
+        assert len(filtered) >= 1
+        cmd = filtered[0]["command"]
+        assert "-Wl," not in cmd
+        assert "-Xlinker" not in cmd
+
+    def test_create_filtered_compile_commands_preserves_valid_flags(self, tmp_path: Path) -> None:
+        """Test that valid compilation flags are preserved."""
+        from lib.clang_utils import create_filtered_compile_commands
+        import json
+
+        # Create source file
+        (tmp_path / "test.cpp").write_text("int main() { return 0; }")
+
+        # Create ninja file with various compilation flags
+        build_ninja = tmp_path / "build.ninja"
+        build_ninja.write_text(
+            """# Ninja build file with various flags
+rule cxx_flags
+  command = g++ -c $in -std=c++17 -Wall -O2 -I/usr/include -DNDEBUG -o $out
+
+build test.o: cxx_flags test.cpp
+"""
+        )
+
+        result = create_filtered_compile_commands(str(tmp_path))
+
+        with open(result, "r") as f:
+            filtered = json.load(f)
+
+        cmd = filtered[0]["command"]
+        assert "-std=c++17" in cmd
+        assert "-Wall" in cmd
+        assert "-O2" in cmd
+        assert "-I/usr/include" in cmd
+        assert "-DNDEBUG" in cmd
+
+    def test_missing_compile_commands(self, tmp_path: Path) -> None:
         """Test when compile_commands.json doesn't exist."""
         from lib.clang_utils import create_filtered_compile_commands
 
-        try:
-            result = create_filtered_compile_commands(str(temp_dir))
-            # Should return None or raise exception gracefully
-        except Exception as e:
-            # Expected to fail with missing file
-            assert "compile_commands.json" in str(e) or True
+        # Should raise an error when compile_commands.json is missing
+        with pytest.raises((FileNotFoundError, RuntimeError, ValueError)):
+            create_filtered_compile_commands(str(tmp_path))
 
 
 class TestExtractIncludePaths:
     """Tests for extract_include_paths function."""
 
-    def test_extract_include_paths(self, temp_dir: Any) -> None:
+    def test_extract_include_paths(self, tmp_path: Path) -> None:
         """Test extracting include paths from compile_commands.json."""
-        compile_commands = temp_dir / "compile_commands.json"
+        import json
+
+        compile_commands = tmp_path / "compile_commands.json"
         compile_commands.write_text(
-            """[
-            {
-                "directory": "/build",
-                "command": "g++ -I/path/include -I/other/include -c test.cpp",
-                "file": "test.cpp"
-            }
-        ]"""
+            json.dumps([{"directory": str(tmp_path), "command": "g++ -I/path/include -I/other/include -c test.cpp", "file": "test.cpp"}])
         )
 
         from lib.clang_utils import extract_include_paths
@@ -269,18 +479,21 @@ class TestExtractIncludePaths:
         paths = extract_include_paths(str(compile_commands))
 
         assert isinstance(paths, set)
+        assert "/path/include" in paths
+        assert "/other/include" in paths
 
-    def test_extract_include_paths_invalid_json(self, temp_dir: Any) -> None:
+    def test_extract_include_paths_invalid_json(self, tmp_path: Path) -> None:
         """Test with invalid JSON."""
-        compile_commands = temp_dir / "compile_commands.json"
+        compile_commands = tmp_path / "compile_commands.json"
         compile_commands.write_text("invalid json")
 
         from lib.clang_utils import extract_include_paths
 
         paths = extract_include_paths(str(compile_commands))
 
-        # Should handle gracefully
+        # Should handle gracefully and return empty set
         assert isinstance(paths, set)
+        assert len(paths) == 0
 
 
 class TestParseClangScanDepsOutput:
@@ -365,13 +578,6 @@ class TestComputeTransitiveDeps:
 
         # Should handle cycles without infinite loop
         assert isinstance(deps, set)
-
-
-@pytest.fixture
-def temp_dir() -> Any:
-    """Create a temporary directory for testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield Path(tmpdir)
 
 
 class TestBuildIncludeGraph:
@@ -474,9 +680,11 @@ int main() { return 0; }
 
         monkeypatch.setattr("subprocess.run", mock_run)
 
-        # Mock find_clang_scan_deps to return a valid command
-        def mock_find_clang() -> str:
-            return "clang-scan-deps-19"
+        # Mock find_clang_scan_deps to return a valid ToolInfo
+        from lib.tool_detection import ToolInfo
+
+        def mock_find_clang() -> ToolInfo:
+            return ToolInfo(command="clang-scan-deps-19", full_command="clang-scan-deps-19", version="19.0.0")
 
         monkeypatch.setattr("lib.clang_utils.find_clang_scan_deps", mock_find_clang)
 
@@ -583,8 +791,10 @@ int main() { return 0; }
 
         monkeypatch.setattr("subprocess.run", mock_run)
 
-        def mock_find_clang() -> str:
-            return "clang-scan-deps-19"
+        from lib.tool_detection import ToolInfo
+
+        def mock_find_clang() -> ToolInfo:
+            return ToolInfo(command="clang-scan-deps-19", full_command="clang-scan-deps-19", version="19.0.0")
 
         monkeypatch.setattr("lib.clang_utils.find_clang_scan_deps", mock_find_clang)
 
@@ -660,27 +870,33 @@ class TestFindClangScanDepsErrorHandling:
     def test_timeout_handling(self, monkeypatch: Any) -> None:
         """Test handling of subprocess timeout."""
         import subprocess
+        from lib.tool_detection import clear_cache
+
+        clear_cache()
 
         def mock_run(*args: Any, **kwargs: Any) -> Any:
             raise subprocess.TimeoutExpired("clang-scan-deps", 5)
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("subprocess.run", mock_run)
 
         result = find_clang_scan_deps()
-        assert result is None
+        assert not result.is_found()
 
     @pytest.mark.unit
     def test_called_process_error(self, monkeypatch: Any) -> None:
         """Test handling of CalledProcessError."""
         import subprocess
+        from lib.tool_detection import clear_cache
+
+        clear_cache()
 
         def mock_run(*args: Any, **kwargs: Any) -> Any:
             raise subprocess.CalledProcessError(1, "clang-scan-deps")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("subprocess.run", mock_run)
 
         result = find_clang_scan_deps()
-        assert result is None
+        assert not result.is_found()
 
 
 class TestValidSourceFileEdgeCases:

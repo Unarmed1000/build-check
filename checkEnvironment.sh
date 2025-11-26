@@ -64,45 +64,22 @@ fi
 
 # Check ninja (optional but useful)
 echo -n "✓ Checking ninja... "
-NINJA_FOUND=false
-# Try different ways to find ninja
-if command -v ninja >/dev/null 2>&1; then
-    echo -e "${GREEN}OK${NC}"
-    NINJA_FOUND=true
-elif command -v ninja-build >/dev/null 2>&1; then
-    echo -e "${GREEN}OK (ninja-build)${NC}"
-    NINJA_FOUND=true
-elif [ -x /usr/bin/ninja ]; then
-    echo -e "${GREEN}OK (/usr/bin/ninja)${NC}"
-    NINJA_FOUND=true
-elif [ -x /usr/local/bin/ninja ]; then
-    echo -e "${GREEN}OK (/usr/local/bin/ninja)${NC}"
-    NINJA_FOUND=true
-fi
-
-if [ "$NINJA_FOUND" = false ]; then
+NINJA_CMD=$(python3 -m lib.tool_detection --find-ninja 2>/dev/null)
+if [ -n "$NINJA_CMD" ]; then
+    echo -e "${GREEN}OK ($NINJA_CMD)${NC}"
+else
     echo -e "${YELLOW}MISSING (optional, needed for ninja build analysis)${NC}"
     OPTIONAL_MISSING+=("ninja")
 fi
 
 # Check clang-scan-deps (optional)
 echo -n "✓ Checking clang-scan-deps... "
-if command -v clang-scan-deps >/dev/null 2>&1; then
-    echo -e "${GREEN}OK${NC}"
+CLANG_SCAN_DEPS_CMD=$(python3 -m lib.tool_detection --find-clang-scan-deps 2>/dev/null)
+if [ -n "$CLANG_SCAN_DEPS_CMD" ]; then
+    echo -e "${GREEN}OK ($CLANG_SCAN_DEPS_CMD)${NC}"
 else
-    # Try to find any version
-    FOUND=false
-    for version in 19 18 17 16 15 14 13 12; do
-        if command -v clang-scan-deps-$version >/dev/null 2>&1; then
-            echo -e "${GREEN}OK (clang-scan-deps-$version)${NC}"
-            FOUND=true
-            break
-        fi
-    done
-    if [ "$FOUND" = false ]; then
-        echo -e "${YELLOW}MISSING (optional, for C++ dependency scanning)${NC}"
-        OPTIONAL_MISSING+=("clang-scan-deps")
-    fi
+    echo -e "${YELLOW}MISSING (optional, for C++ dependency scanning)${NC}"
+    OPTIONAL_MISSING+=("clang-scan-deps")
 fi
 
 echo ""

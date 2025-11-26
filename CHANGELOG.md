@@ -7,174 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- **Statistical analysis improvements**: Migrated from Python `statistics` module to NumPy for all statistical calculations
-  - Added NumPy dependency (`numpy>=1.24.0`) to `requirements.txt`
-  - Replaced manual percentile calculations with `numpy.percentile()` for proper linear interpolation
-  - Replaced `statistics.mean()` with `numpy.mean()` for consistency
-  - Replaced `statistics.stdev()` with `numpy.std(ddof=1)` for correct sample standard deviation
-  - Replaced `statistics.median()` with `numpy.median()` for consistency
-  - Improved accuracy for coupling distribution analysis (μ, σ, P95, P99)
-  - More accurate percentiles, especially important for small sample sizes
-  - Better performance with vectorized operations on large datasets
-
 ### Added
-- **buildCheckDSM.py v1.2.0**: Proactive improvement analysis (`--suggest-improvements`)
-  - Single-run refactoring recommendations without requiring a baseline
-  - Anti-pattern detection: god objects, cycles, coupling outliers, unstable interfaces, hub nodes
-  - ROI calculation with composite scoring (cycle elimination 40%, rebuild reduction 30%, coupling 20%, effort 10%)
-  - Break-even analysis: estimated commits until refactoring pays off
-  - Severity-based prioritization: 🟢 Quick Wins (ROI ≥60, ≤5 commits), 🔴 Critical (cycles/ROI ≥40), 🟡 Moderate (ROI <40)
-  - Precise transitive closure for accurate rebuild impact estimation
-  - Team impact estimation (hours saved per year, payback time calculations)
-  - Actionable refactoring steps with effort estimates (low/medium/high)
-  - Architectural debt scoring (0-100 scale)
-- New dataclass `ImprovementCandidate` in `lib/dsm_types.py`
-- New functions in `lib/dsm_analysis.py`:
-  - `identify_improvement_candidates()` - Anti-pattern detection
-  - `estimate_improvement_roi()` - ROI simulation with precise transitive analysis
-  - `compute_transitive_dependents()` - Transitive closure helper
-  - `estimate_affected_sources()` - Source file impact calculation
-  - `rank_improvements_by_impact()` - Priority ranking
-  - `display_improvement_suggestions()` - Formatted output display
-  - `run_proactive_improvement_analysis()` - Main entry point
-- Comprehensive documentation updates:
-  - README_buildCheckDSM.md: Full proactive analysis documentation
-  - EXAMPLES.md: Proactive analysis workflow examples
-  - README.md: Feature overview and integration
-  - Updated USE CASES in buildCheckDSM.py docstring
-- Demo script `verify_numpy_statistics.py` demonstrating improved percentile accuracy
+- **Comprehensive main README.md**: Complete rewrite with professional documentation
+  - Added two Mermaid flowchart diagrams (GitHub-compatible):
+    * Tool Selection Guide: Interactive decision tree helping users choose the right tool
+    * Typical Workflow: Visual representation of how tools work together
+  - Core tools overview table comparing all 9 tools with clear use cases
+  - Expanded Quick Start section with 5 detailed examples and real output samples
+  - Deep dive sections for 5 most important tools (buildCheckDSM, buildCheckSummary, buildCheckRippleEffect, buildCheckDependencyHell, buildCheckOptimize)
+  - Installation guide with prerequisites (Python 3.7+, Ninja, Clang 18/19)
+  - Comprehensive troubleshooting section (ccache, large projects, performance)
+  - Testing section highlighting 749+ test coverage
+  - Project structure visualization and learning resources
+  - Use case scenarios for different development workflows
 
-### Changed (Breaking)
-- **Statistical analysis improvements**: Migrated from Python `statistics` module to NumPy for all statistical calculations
-  - Added NumPy dependency (`numpy>=1.24.0`) to `requirements.txt`
-  - Replaced manual percentile calculations with `numpy.percentile()` for proper linear interpolation
-  - Replaced `statistics.mean()` with `numpy.mean()` for consistency
-  - Replaced `statistics.stdev()` with `numpy.std(ddof=1)` for correct sample standard deviation
-  - Replaced `statistics.median()` with `numpy.median()` for consistency
-  - Improved accuracy for coupling distribution analysis (μ, σ, P95, P99)
-  - More accurate percentiles, especially important for small sample sizes
-  - Better performance with vectorized operations on large datasets
-- **[BREAKING]** `buildCheckDSM.py`: Precise transitive closure analysis is now the default for differential analysis
-  - Removed `--precise-impact` flag (was opt-in)
-  - Added `--heuristic-only` flag for fast mode (opt-out)
-  - Default behavior now provides 95% confidence with full transitive closure
-  - Use `--heuristic-only` for instant results (±5% confidence) during quick iterations
-- Updated `lib/dsm_analysis.py`: Changed `compute_precise` parameter default from `False` to `True`
-- Updated all documentation to reflect new default behavior and decision guide
-- Version bumped to 1.2.0 for buildCheckDSM.py
+### Changed
+- **README_buildCheckDSM.md**: Updated dependencies section
+  - Added `numpy>=1.24.0` requirement (critical for statistical analysis)
+  - Added `scipy>=1.14.1` requirement (for advanced statistics)
+  - Standardized all dependency versions with `>=` notation
+  - Updated `networkx>=2.8.8` and `colorama>=0.4.6`
 
-### Added (previous)
-- Decision guide in README.md for when to use `--heuristic-only` flag
-- Performance vs accuracy trade-off documentation in all relevant docs
+- **README_buildCheckSummary.md**: Enhanced with version and requirements
+  - Added version number (1.0.0) at document top
+  - Added comprehensive Requirements section
+  - **Important clarification**: NumPy, NetworkX, and clang-scan-deps are NOT required
+  - Added ccache troubleshooting reference linking to DSM README
+  - Standardized dependency format (Python 3.7+, ninja, optional colorama>=0.4.6)
 
-## [1.0.0] - 2025-01-XX
+- **README_buildCheckIncludeChains.md**: Standardized documentation
+  - Added version number (1.0.0) at document top
+  - Added formal Requirements section with version numbers
+  - Clarified that NumPy, NetworkX, and clang-scan-deps are NOT required
+  - Standardized dependency format matching other READMEs
+  - Added helpful note explaining tool's minimal dependencies
 
-Initial release of BuildCheck - a comprehensive suite of production-ready tools for analyzing C/C++ build dependencies, identifying rebuild bottlenecks, and optimizing compilation times.
-
-### Tools (9)
-1. **buildCheckSummary** - Quick rebuild analysis with ninja explain
-2. **buildCheckImpact** - Changed header impact analysis
-3. **buildCheckIncludeChains** - Cooccurrence pattern analysis
-4. **buildCheckIncludeGraph** - Gateway header analysis with clang-scan-deps
-5. **buildCheckRippleEffect** - Git commit impact analysis
-6. **buildCheckDependencyHell** - Comprehensive multi-metric dependency analysis
-7. **buildCheckDSM** - Dependency Structure Matrix visualization with architectural insights
-8. **buildCheckLibraryGraph** - Library-level dependency analysis
-9. **buildCheckOptimize** - Actionable optimization recommendations
-
-### Library Modules (20)
-**Production Modules (15):**
-- **clang_utils.py** - Clang-scan-deps integration with caching
-- **ninja_utils.py** - Ninja build system utilities
-- **git_utils.py** - Git repository integration
-- **graph_utils.py** - NetworkX graph operations with centrality metrics
-- **dependency_utils.py** - Dependency analysis algorithms
-- **dsm_analysis.py** - DSM matrix operations with architectural insights and proactive improvement analysis
-- **dsm_serialization.py** - DSM import/export with baseline save/load
-- **dsm_types.py** - DSM data structures including ArchitecturalInsights and ImprovementCandidate
-- **library_parser.py** - Build.ninja library parsing
-- **export_utils.py** - Export to CSV/GraphML/DOT/GEXF/JSON with centrality metrics
-- **file_utils.py** - File system utilities with filtering and clustering
-- **color_utils.py** - Colored terminal output with graceful fallback
-- **constants.py** - Shared constants and thresholds
-- **package_verification.py** - Dependency version checking
-- **cache_utils.py** - Caching utilities with timestamp validation
-
-**Testing/Scenario Modules (5):**
-- **scenario_creators.py** - Test scenario generation for DSM testing
-- **scenario_definitions.py** - Architectural scenario definitions
-- **scenario_git_utils.py** - Git scenario utilities for testing
-- **scenario_test_utils.py** - Testing utilities for scenario validation
-- **__init__.py** - Package initialization
-
-### Features
-- Multi-core parallel processing using all CPU cores
-- Intelligent caching with timestamp validation
-- Progress indicators for long-running operations
-- Color-coded output for easy interpretation
-- Multiple output formats (text, JSON, CSV, GraphML)
-- Comprehensive metrics (transitive deps, build impact, rebuild cost)
-- Severity classification (CRITICAL/HIGH/MODERATE)
-- Circular dependency detection
-- Layered architecture analysis
-- Gateway header identification
-- Optimization recommendations with priority scoring
-- Enhanced error messages with actionable suggestions
-- **Architectural insights for DSM differential analysis**
-  - Coupling statistics with distribution analysis (mean, median, percentiles, outliers)
-  - Stability change tracking (headers becoming stable/unstable)
-  - Cycle complexity analysis with betweenness centrality
-  - Layer movement statistics and depth changes
-  - Ripple impact prediction with precise source-level analysis
-  - Architecture quality scoring (0-100 scale)
-  - Automated recommendations with severity classification
-- **PageRank centrality** - Measures architectural importance
-- **Betweenness centrality** - Identifies architectural bottlenecks and hub nodes
-- **Baseline save/load functionality** - Flexible DSM comparison workflows
-- **Precise impact mode** (`--precise-impact`) - Exact transitive analysis for rebuild predictions
-
-### Testing
-- Comprehensive test suite with pytest (38+ test files, 9,500+ LOC)
-- 495 passing tests with 85.44% code coverage
-- Unit tests for all library modules
-- Integration tests for main tools
-- Security tests for path traversal prevention
-- Mock fixtures for reproducible testing
-- Type checking with mypy
-- Automated quality validation script
+- **README_buildCheckLibraryGraph.md**: Standardized documentation
+  - Added version number (1.0.0) at document top
+  - Standardized Requirements section with version numbers
+  - Updated `networkx>=2.8.8` and `colorama>=0.4.6`
+  - Clarified that NumPy and clang-scan-deps are NOT required
+  - Added helpful note about tool's minimal dependencies
 
 ### Documentation
-- README.md - Project overview and quick start (890 lines)
-- demo/EXAMPLES.md - Comprehensive usage examples (619 lines)
-- CONTRIBUTING.md - Contributor guidelines (457 lines)
-- CHANGELOG.md - Version tracking
-- TEST_SUITE_SUMMARY.md - Test suite documentation
-- Tool-specific READMEs for complex tools (DSM, IncludeChains, LibraryGraph, Summary)
-- lib/README.md - Library module documentation (347 lines)
+- **Cross-document consistency**: All tool-specific READMEs now follow consistent format
+  - Standardized Requirements sections across all documentation
+  - Version numbers added to all tool-specific READMEs
+  - Clear notes about which tools require NumPy/NetworkX/clang-scan-deps vs which don't
+  - Dependency versions now match requirements.txt
+  - Improved cross-references between related tools
+- **User experience improvements**:
+  - Visual decision flowcharts for tool selection
+  - "What Does BuildCheck Do?" section with clear value propositions
+  - Real example outputs showing what users will see
+  - Copy-paste ready command examples
+  - Comprehensive troubleshooting sections
 
-### Security
-- Path traversal protection with realpath validation
-- Command injection prevention using subprocess list arguments
-- Input validation for all user-provided parameters
-- Dedicated security test suite (244 LOC)
-- Timeout protection on all external commands
-
-### Requirements
-- Python 3.8+ (required)
-- ninja build system (required)
-- networkx>=2.8.8 (required)
-- GitPython>=3.1.40 (required)
-- packaging>=24.0 (required)
-- colorama>=0.4.6 (optional, for colored output)
-- clang-scan-deps (optional, for source-level dependency analysis)
-
----
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to this project.
-
-## License
-
-BSD 3-Clause License - See [LICENSE](LICENSE) for details.

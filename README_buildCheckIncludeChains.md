@@ -1,5 +1,7 @@
 # buildCheckIncludeChains.py
 
+**Version:** 1.0.0
+
 ## Overview
 
 A production-ready tool for analyzing header cooccurrence patterns in C/C++ projects to understand include chains and transitive dependencies.
@@ -50,6 +52,14 @@ A production-ready tool for analyzing header cooccurrence patterns in C/C++ proj
 - Python 3.7+
 - ninja build system
 - Optional: colorama (for colored output)
+
+## Requirements
+
+- **Python 3.7+** (required)
+- **ninja build system** (required)
+- **colorama>=0.4.6** (optional, for colored output)
+
+**Note:** This tool does NOT require NumPy, NetworkX, or clang-scan-deps. It uses Ninja's built-in dependency information.
 
 ```bash
 # Install colorama (optional, for colors)

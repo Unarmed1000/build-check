@@ -120,6 +120,7 @@ COMPILE_COMMANDS_JSON = "compile_commands.json"  # Standard compilation database
 
 CACHE_DIR = ".buildcheck_cache"  # Cache directory name in build directory
 CLANG_SCAN_DEPS_CACHE_FILE = "clang_scan_deps_output.pickle"  # Cached clang-scan-deps output
+NINJA_COMMANDS_CACHE_FILE = "ninja_commands_cache.pkl"  # Cached ninja -t commands output
 MAX_CACHE_AGE_HOURS = 168  # Maximum cache age in hours (7 days)
 
 # =============================================================================

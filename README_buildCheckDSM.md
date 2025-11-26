@@ -717,8 +717,10 @@ Look for:
 ## Requirements
 
 - **Python 3.7+**
-- **networkx**: `pip install networkx`
-- **colorama**: `pip install colorama` (optional, for colored output)
+- **networkx>=2.8.8**: `pip install networkx`
+- **numpy>=1.24.0**: `pip install numpy` (required for statistical analysis)
+- **scipy>=1.14.1**: `pip install scipy` (required for statistical analysis)
+- **colorama>=0.4.6**: `pip install colorama` (optional, for colored output)
 - **clang-scan-deps**: Install clang-19, clang-18, or later
   ```bash
   # Ubuntu/Debian
@@ -782,6 +784,18 @@ Your codebase has circular dependencies. Use `--cycles-only` to identify and bre
 ```bash
 ./buildCheckDSM.py ../build/release/ --cycles-only
 ```
+
+### "error: no such file or directory: 'sloppiness=...'" (ccache)
+If you see errors about ccache environment variables:
+```
+error: no such file or directory: 'sloppiness=pch_defines,time_macros,include_file_ctime,include_file_mtime'
+```
+
+This is automatically handled by the tool, but if you still see issues:
+1. Clear the cache: `rm -rf ../build/.buildcheck_cache/`
+2. Re-run the analysis
+
+The tool automatically sanitizes compile commands to remove ccache wrappers and environment variables that clang-scan-deps doesn't understand.
 
 ### "Matrix too large to display"
 Use `--top` to show fewer headers or `--filter` to narrow scope:

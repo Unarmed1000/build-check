@@ -244,28 +244,35 @@ class TestCheckNinjaAvailable:
 
     def test_ninja_available(self, monkeypatch: Any) -> None:
         """Test when ninja is available."""
+        from lib.tool_detection import clear_cache
+
+        clear_cache()
 
         class MockResult:
             def __init__(self) -> None:
                 self.returncode = 0
-                self.stdout = b"ninja version 1.10.0"
-                self.stderr = b""
+                self.stdout = "ninja version 1.10.0"
+                self.stderr = ""
 
         def mock_run(*args: Any, **kwargs: Any) -> MockResult:
             return MockResult()
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("subprocess.run", mock_run)
 
         # Should not raise
-        check_ninja_available()
+        result = check_ninja_available()
+        assert result is True
 
     def test_ninja_not_available(self, monkeypatch: Any) -> None:
         """Test when ninja is not available."""
+        from lib.tool_detection import clear_cache
+
+        clear_cache()
 
         def mock_run(*args: Any, **kwargs: Any) -> Any:
             raise FileNotFoundError("ninja not found")
 
-        monkeypatch.setattr(subprocess, "run", mock_run)
+        monkeypatch.setattr("subprocess.run", mock_run)
 
         # Should return False when ninja is not available
         result = check_ninja_available()
@@ -676,10 +683,11 @@ build app: CXX_EXECUTABLE_LINKER main.o
 """
         )
 
-        generated = parse_ninja_generated_files(str(build_ninja))
+        generated, output_info = parse_ninja_generated_files(str(build_ninja))
         assert "generated.cpp" in generated
         assert "main.o" not in generated
         assert "app" not in generated
+        assert "generated.cpp" in output_info
 
     def test_parse_ninja_with_generator_flag(self, tmp_path: Path) -> None:
         """Test parsing build.ninja with generator flag."""
@@ -699,10 +707,12 @@ build main.o: CXX_COMPILER main.cpp
 """
         )
 
-        generated = parse_ninja_generated_files(str(build_ninja))
+        generated, output_info = parse_ninja_generated_files(str(build_ninja))
         assert "proto.cpp" in generated
         assert "proto.h" in generated
         assert "main.o" not in generated
+        assert "proto.cpp" in output_info
+        assert "proto.h" in output_info
 
     def test_parse_ninja_with_phony_targets(self, tmp_path: Path) -> None:
         """Test that phony targets are included as generated."""
@@ -718,7 +728,7 @@ build app: CXX_EXECUTABLE_LINKER main.o
 """
         )
 
-        generated = parse_ninja_generated_files(str(build_ninja))
+        generated, output_info = parse_ninja_generated_files(str(build_ninja))
         assert "all" in generated
 
     def test_parse_ninja_empty_file(self, tmp_path: Path) -> None:
@@ -726,15 +736,17 @@ build app: CXX_EXECUTABLE_LINKER main.o
         build_ninja = tmp_path / "build.ninja"
         build_ninja.write_text("")
 
-        generated = parse_ninja_generated_files(str(build_ninja))
+        generated, output_info = parse_ninja_generated_files(str(build_ninja))
         assert len(generated) == 0
+        assert len(output_info) == 0
 
     def test_parse_ninja_nonexistent_file(self, tmp_path: Path) -> None:
         """Test parsing nonexistent build.ninja."""
         build_ninja = tmp_path / "nonexistent.ninja"
 
-        generated = parse_ninja_generated_files(str(build_ninja))
+        generated, output_info = parse_ninja_generated_files(str(build_ninja))
         assert len(generated) == 0
+        assert len(output_info) == 0
 
 
 class TestComputeFileHash:
@@ -777,7 +789,11 @@ class TestGeneratedFilesCache:
 
     def test_save_and_load_cache(self, tmp_path: Path) -> None:
         """Test saving and loading cache."""
-        cache_data = {"file1.cpp": "hash1", "file2.cpp": "hash2"}
+        cache_data = {
+            "build_ninja_mtime": 1234567890.0,
+            "files": {"file1.cpp": "hash1", "file2.cpp": "hash2"},
+            "dependencies": {"file1.cpp": ["input1.proto"], "file2.cpp": ["input2.xml"]},
+        }
 
         cache_path = str(tmp_path / ".buildcheck_generated_cache.json")
         save_generated_files_cache(cache_path, cache_data)
@@ -786,18 +802,18 @@ class TestGeneratedFilesCache:
         assert loaded == cache_data
 
     def test_load_nonexistent_cache(self, tmp_path: Path) -> None:
-        """Test loading nonexistent cache returns empty dict."""
+        """Test loading nonexistent cache returns empty dict with structure."""
         cache_path = str(tmp_path / ".buildcheck_generated_cache.json")
         loaded = load_generated_files_cache(cache_path)
-        assert loaded == {}
+        assert loaded == {"build_ninja_mtime": 0.0, "files": {}, "dependencies": {}}
 
     def test_load_corrupted_cache(self, tmp_path: Path) -> None:
-        """Test loading corrupted cache returns empty dict."""
+        """Test loading corrupted cache returns empty dict with structure."""
         cache_file = tmp_path / ".buildcheck_generated_cache.json"
         cache_file.write_text("invalid json {{{")
 
         loaded = load_generated_files_cache(str(cache_file))
-        assert loaded == {}
+        assert loaded == {"build_ninja_mtime": 0.0, "files": {}, "dependencies": {}}
 
 
 class TestCheckGeneratedFilesChanged:
@@ -812,9 +828,9 @@ class TestCheckGeneratedFilesChanged:
         src_dir.mkdir()
         (src_dir / "exists.cpp").write_text("int main() {}")
 
-        # Empty cache
-        cache: Dict[str, str] = {}
-        missing, changed = check_generated_files_changed(str(tmp_path), generated_files, cache)
+        # Empty cache with new structure
+        cache = {"build_ninja_mtime": 0.0, "files": {}, "dependencies": {}}
+        missing, changed, reasons = check_generated_files_changed(str(tmp_path), generated_files, cache)
 
         assert len(missing) == 1
         assert "missing.cpp" in missing[0]
@@ -828,9 +844,9 @@ class TestCheckGeneratedFilesChanged:
         gen_file = src_dir / "generated.cpp"
         gen_file.write_text("// Version 1")
 
-        # Save initial cache
+        # Save initial cache with new structure
         generated_files = {"src/generated.cpp"}
-        cache = {str(gen_file): compute_file_hash(str(gen_file))}
+        cache = {"build_ninja_mtime": 0.0, "files": {str(gen_file): compute_file_hash(str(gen_file))}, "dependencies": {}}
         cache_path = str(tmp_path / ".buildcheck_generated_cache.json")
         save_generated_files_cache(cache_path, cache)
 
@@ -839,7 +855,7 @@ class TestCheckGeneratedFilesChanged:
 
         # Load cache before checking
         cache = load_generated_files_cache(cache_path)
-        missing, changed = check_generated_files_changed(str(tmp_path), generated_files, cache)
+        missing, changed, reasons = check_generated_files_changed(str(tmp_path), generated_files, cache)
 
         assert len(missing) == 0
         assert len(changed) == 1
@@ -855,13 +871,13 @@ class TestCheckGeneratedFilesChanged:
         # Save cache
         generated_files = {"src/generated.cpp"}
         cache_path = str(tmp_path / ".buildcheck_generated_cache.json")
-        cache: Dict[str, str] = {}
+        cache = {"build_ninja_mtime": 0.0, "files": {}, "dependencies": {}}
         files_to_update = [str(gen_file)]
         update_generated_files_cache(cache, files_to_update, cache_path)
 
         # Load cache before checking
         cache = load_generated_files_cache(cache_path)
-        missing, changed = check_generated_files_changed(str(tmp_path), generated_files, cache)
+        missing, changed, reasons = check_generated_files_changed(str(tmp_path), generated_files, cache)
 
         assert len(missing) == 0
         assert len(changed) == 0
@@ -870,8 +886,8 @@ class TestCheckGeneratedFilesChanged:
         """Test that non-source files are ignored."""
         generated_files = {"build.stamp", "config.txt", "data.bin"}
 
-        cache: Dict[str, str] = {}
-        missing, changed = check_generated_files_changed(str(tmp_path), generated_files, cache)
+        cache = {"build_ninja_mtime": 0.0, "files": {}, "dependencies": {}}
+        missing, changed, reasons = check_generated_files_changed(str(tmp_path), generated_files, cache)
 
         # Should ignore all these files
         assert len(missing) == 0
@@ -892,27 +908,28 @@ class TestUpdateGeneratedFilesCache:
         file2.write_text("// File 2")
 
         files_to_update = [str(file1), str(file2)]
-        cache: Dict[str, str] = {}
+        cache = {"build_ninja_mtime": 0.0, "files": {}, "dependencies": {}}
         cache_path = str(tmp_path / ".buildcheck_generated_cache.json")
         update_generated_files_cache(cache, files_to_update, cache_path)
 
         loaded_cache = load_generated_files_cache(cache_path)
 
-        assert str(file1) in loaded_cache
-        assert str(file2) in loaded_cache
-        assert loaded_cache[str(file1)] == compute_file_hash(str(file1))
-        assert loaded_cache[str(file2)] == compute_file_hash(str(file2))
+        # Check files are in the "files" nested dict
+        assert str(file1) in loaded_cache["files"]
+        assert str(file2) in loaded_cache["files"]
+        assert loaded_cache["files"][str(file1)] == compute_file_hash(str(file1))
+        assert loaded_cache["files"][str(file2)] == compute_file_hash(str(file2))
 
     def test_update_cache_skip_nonexistent(self, tmp_path: Path) -> None:
         """Test that nonexistent files are skipped."""
         missing_file = str(tmp_path / "src" / "missing.cpp")
         files_to_update = [missing_file]
-        cache: Dict[str, str] = {}
+        cache = {"build_ninja_mtime": 0.0, "files": {}, "dependencies": {}}
         cache_path = str(tmp_path / ".buildcheck_generated_cache.json")
         update_generated_files_cache(cache, files_to_update, cache_path)
 
         loaded_cache = load_generated_files_cache(cache_path)
-        assert len(loaded_cache) == 0
+        assert len(loaded_cache["files"]) == 0
 
 
 class TestCleanStaleCacheEntries:
@@ -927,16 +944,16 @@ class TestCleanStaleCacheEntries:
         file1 = src_dir / "gen1.cpp"
         file1.write_text("content")
 
-        cache = {str(file1): "hash1", str(src_dir / "deleted.cpp"): "hash2"}  # This file doesn't exist
+        cache = {"build_ninja_mtime": 0.0, "files": {str(file1): "hash1", str(src_dir / "deleted.cpp"): "hash2"}, "dependencies": {}}
 
         generated_files = {"src/gen1.cpp", "src/deleted.cpp"}
 
         cleaned = clean_stale_cache_entries(cache, generated_files, str(tmp_path))
 
         # Only gen1.cpp should remain (exists and is in generated_files)
-        assert len(cleaned) == 1
-        assert str(file1) in cleaned
-        assert str(src_dir / "deleted.cpp") not in cleaned
+        assert len(cleaned["files"]) == 1
+        assert str(file1) in cleaned["files"]
+        assert str(src_dir / "deleted.cpp") not in cleaned["files"]
 
     def test_remove_no_longer_generated(self, tmp_path: Path) -> None:
         """Test removing cache entries for files no longer in generated_files list."""
@@ -948,16 +965,16 @@ class TestCleanStaleCacheEntries:
         file1.write_text("content1")
         file2.write_text("content2")
 
-        cache = {str(file1): "hash1", str(file2): "hash2"}
+        cache = {"build_ninja_mtime": 0.0, "files": {str(file1): "hash1", str(file2): "hash2"}, "dependencies": {}}
 
         # Only file1 is still in generated_files
         generated_files = {"src/gen1.cpp"}
 
         cleaned = clean_stale_cache_entries(cache, generated_files, str(tmp_path))
 
-        assert len(cleaned) == 1
-        assert str(file1) in cleaned
-        assert str(file2) not in cleaned
+        assert len(cleaned["files"]) == 1
+        assert str(file1) in cleaned["files"]
+        assert str(file2) not in cleaned["files"]
 
 
 class TestRunFullNinjaBuildErrorHandling:
@@ -1182,16 +1199,16 @@ class TestCleanStaleCacheEntriesAdditional:
         file1.write_text("content1")
         file2.write_text("content2")
 
-        cache = {str(file1): "hash1", str(file2): "hash2"}
+        cache = {"build_ninja_mtime": 0.0, "files": {str(file1): "hash1", str(file2): "hash2"}, "dependencies": {}}
 
         # Only file1 is still in generated_files
         generated_files = {"src/gen1.cpp"}
 
         cleaned = clean_stale_cache_entries(cache, generated_files, str(tmp_path))
 
-        assert len(cleaned) == 1
-        assert str(file1) in cleaned
-        assert str(file2) not in cleaned
+        assert len(cleaned["files"]) == 1
+        assert str(file1) in cleaned["files"]
+        assert str(file2) not in cleaned["files"]
 
     def test_keep_all_valid_entries(self, tmp_path: Path) -> None:
         """Test that all valid entries are kept."""
@@ -1203,36 +1220,36 @@ class TestCleanStaleCacheEntriesAdditional:
         file1.write_text("content1")
         file2.write_text("content2")
 
-        cache = {str(file1): "hash1", str(file2): "hash2"}
+        cache = {"build_ninja_mtime": 0.0, "files": {str(file1): "hash1", str(file2): "hash2"}, "dependencies": {}}
 
         generated_files = {"src/gen1.cpp", "src/gen2.cpp"}
 
         cleaned = clean_stale_cache_entries(cache, generated_files, str(tmp_path))
 
         # Both should remain
-        assert len(cleaned) == 2
-        assert str(file1) in cleaned
-        assert str(file2) in cleaned
+        assert len(cleaned["files"]) == 2
+        assert str(file1) in cleaned["files"]
+        assert str(file2) in cleaned["files"]
 
     def test_ignore_non_source_files(self, tmp_path: Path) -> None:
         """Test that non-source files in cache are removed."""
-        cache = {str(tmp_path / "file.txt"): "hash1", str(tmp_path / "data.bin"): "hash2"}
+        cache = {"build_ninja_mtime": 0.0, "files": {str(tmp_path / "file.txt"): "hash1", str(tmp_path / "data.bin"): "hash2"}, "dependencies": {}}
 
         generated_files = {"file.txt", "data.bin"}
 
         cleaned = clean_stale_cache_entries(cache, generated_files, str(tmp_path))
 
         # Non-source files should be removed
-        assert len(cleaned) == 0
+        assert len(cleaned["files"]) == 0
 
     def test_empty_cache(self, tmp_path: Path) -> None:
         """Test cleaning an empty cache."""
-        cache: Dict[str, str] = {}
+        cache = {"build_ninja_mtime": 0.0, "files": {}, "dependencies": {}}
         generated_files = {"src/gen1.cpp"}
 
         cleaned = clean_stale_cache_entries(cache, generated_files, str(tmp_path))
 
-        assert len(cleaned) == 0
+        assert len(cleaned["files"]) == 0
 
     def test_empty_generated_files(self, tmp_path: Path) -> None:
         """Test cleaning when no files are generated anymore."""
@@ -1241,10 +1258,10 @@ class TestCleanStaleCacheEntriesAdditional:
         file1 = src_dir / "gen1.cpp"
         file1.write_text("content")
 
-        cache = {str(file1): "hash1"}
+        cache = {"build_ninja_mtime": 0.0, "files": {str(file1): "hash1"}, "dependencies": {}}
         generated_files: Set[str] = set()
 
         cleaned = clean_stale_cache_entries(cache, generated_files, str(tmp_path))
 
         # All entries should be removed
-        assert len(cleaned) == 0
+        assert len(cleaned["files"]) == 0

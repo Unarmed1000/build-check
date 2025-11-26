@@ -40,15 +40,17 @@ try:
 except ImportError:
     nx = None  # type: ignore
 
-from lib.constants import COMPILE_COMMANDS_JSON, CLANG_SCAN_DEPS_CACHE_FILE, MAX_CACHE_AGE_HOURS
+from lib.constants import COMPILE_COMMANDS_JSON, CLANG_SCAN_DEPS_CACHE_FILE, NINJA_COMMANDS_CACHE_FILE, MAX_CACHE_AGE_HOURS
 from lib.color_utils import print_success, print_info, print_highlight
 from lib.cache_utils import ensure_cache_dir, get_cache_path, load_cache, save_cache, cleanup_old_caches
 from lib.package_verification import PACKAGE_REQUIREMENTS
+from lib.tool_detection import CLANG_SCAN_DEPS_COMMANDS, find_clang_scan_deps, find_ninja
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["find_clang_scan_deps", "is_valid_source_file", "is_valid_header_file", "build_include_graph", "IncludeGraphScanResult"]
+
 # Constants
-CLANG_SCAN_DEPS_COMMANDS = ["clang-scan-deps-19", "clang-scan-deps-18", "clang-scan-deps"]
 VALID_SOURCE_EXTENSIONS = (".cpp", ".c", ".cc", ".cxx")
 VALID_HEADER_EXTENSIONS = (".h", ".hpp", ".hxx", ".hh")
 COMPILER_NAMES = ("g++", "gcc", "clang++", "clang", "/c++")
@@ -78,25 +80,6 @@ class IncludeGraphScanResult:
             Tuple of (source_to_deps, include_graph, all_headers, scan_time)
         """
         return (self.source_to_deps, self.include_graph, self.all_headers, self.scan_time)
-
-
-def find_clang_scan_deps() -> Optional[str]:
-    """Find an available clang-scan-deps executable.
-
-    Returns:
-        Path to clang-scan-deps executable, or None if not found
-    """
-    for cmd in CLANG_SCAN_DEPS_COMMANDS:
-        try:
-            result = subprocess.run([cmd, "--version"], capture_output=True, text=True, check=True, timeout=5)
-            version_parts = result.stdout.split()
-            version_info = version_parts[0] if version_parts else "unknown"
-            logger.debug("Found %s: %s", cmd, version_info)
-            return cmd
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired, IndexError):
-            continue
-
-    return None
 
 
 def is_valid_source_file(filepath: str) -> bool:
@@ -143,6 +126,78 @@ def is_system_header(filepath: str) -> bool:
             return True
 
     return False
+
+
+def sanitize_compile_command(command: str) -> str:
+    """Sanitize compile command to remove problematic arguments for clang-scan-deps.
+
+    Removes:
+    - ccache wrapper and environment variables
+    - linker-specific flags that clang-scan-deps doesn't understand
+    - Response files (@file) that may cause issues
+
+    Args:
+        command: Original compile command string
+
+    Returns:
+        Sanitized command string suitable for clang-scan-deps
+    """
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        # If we can't parse it, return as-is
+        logger.debug("Failed to parse command for sanitization: %s", command[:100])
+        return command
+
+    sanitized_parts = []
+    skip_next = False
+    compiler_found = False
+
+    # List of environment variable patterns that cause issues
+    problematic_env_patterns = ["CCACHE_", "CC_", "CXX_"]
+
+    # List of flags that should be removed entirely
+    problematic_flags = ["-Wl,", "-Xlinker", "--linker-option"]  # Linker flags
+
+    for i, part in enumerate(parts):
+        if skip_next:
+            skip_next = False
+            continue
+
+        # Skip environment variable assignments (KEY=VALUE format)
+        if "=" in part and not part.startswith("-"):
+            var_name = part.split("=", 1)[0]
+            if any(var_name.startswith(pattern) for pattern in problematic_env_patterns):
+                continue
+
+        # Skip ccache wrapper
+        if part == "ccache" or part.endswith("/ccache"):
+            continue
+
+        # Skip response files (they may contain ccache options)
+        if part.startswith("@"):
+            continue
+
+        # Skip problematic linker flags
+        if any(part.startswith(flag) for flag in problematic_flags):
+            continue
+
+        # Skip -Xlinker and its argument
+        if part == "-Xlinker" and i + 1 < len(parts):
+            skip_next = True
+            continue
+
+        # Track if we found the compiler
+        if not compiler_found and any(compiler in part for compiler in COMPILER_NAMES):
+            compiler_found = True
+
+        sanitized_parts.append(part)
+
+    # If no compiler was found in the sanitized command, log a warning
+    if not compiler_found and sanitized_parts:
+        logger.debug("Warning: No compiler found in sanitized command")
+
+    return shlex.join(sanitized_parts) if sanitized_parts else command
 
 
 def create_filtered_compile_commands(build_dir: str) -> str:
@@ -214,7 +269,12 @@ def create_filtered_compile_commands(build_dir: str) -> str:
         cmd = entry.get("command", "")
         file = entry.get("file", "")
         if is_valid_source_file(file) and " -c " in cmd:
-            valid_entries.append(entry)
+            # Sanitize the command to remove ccache and other problematic arguments
+            sanitized_cmd = sanitize_compile_command(cmd)
+            # Create a new entry with the sanitized command
+            sanitized_entry = entry.copy()
+            sanitized_entry["command"] = sanitized_cmd
+            valid_entries.append(sanitized_entry)
 
     if not valid_entries:
         raise ValueError("No valid C/C++ compilation entries found in compile_commands.json")
@@ -229,17 +289,173 @@ def create_filtered_compile_commands(build_dir: str) -> str:
     return filtered_db
 
 
-def extract_include_paths(compile_db_path: str) -> Set[str]:
-    """Extract include paths from compile_commands.json.
+def extract_include_paths_from_ninja(build_dir: str, timeout: int = 60) -> Optional[Set[str]]:
+    """Extract include paths from ninja -t commands with persistent caching.
+
+    This function caches the ninja commands output to avoid redundant parsing.
+    The cache is invalidated when build.ninja is modified or exceeds max age.
+
+    Args:
+        build_dir: Path to the build directory
+        timeout: Command timeout in seconds (default: 60)
+
+    Returns:
+        Set of absolute include path directories, or None if ninja fails
+    """
+    # Ensure cache directory exists
+    ensure_cache_dir(build_dir)
+
+    # Get cache path
+    cache_path = get_cache_path(build_dir, NINJA_COMMANDS_CACHE_FILE)
+
+    # Get build.ninja path for validation
+    build_ninja_path = os.path.join(build_dir, "build.ninja")
+    if not os.path.exists(build_ninja_path):
+        logger.warning("build.ninja not found in %s", build_dir)
+        return None
+
+    # For cache validation, we use build.ninja as the "filtered_db" since that's what matters
+    # The cache will be invalidated when build.ninja changes
+    cached_result = load_cache(cache_path, build_ninja_path, build_ninja_path, MAX_CACHE_AGE_HOURS)
+
+    if cached_result is not None:
+        logger.debug("Using cached ninja commands include paths")
+        # Cast from Any to the correct return type
+        return set(cached_result) if isinstance(cached_result, (set, list)) else cached_result
+
+    # Cache miss - run ninja -t commands
+    ninja_tool = find_ninja()
+    if not ninja_tool.is_found():
+        logger.warning("ninja not found - cannot extract include paths from ninja")
+        return None
+
+    assert ninja_tool.command is not None, "Tool command should not be None when found"
+
+    logger.info("Running %s -t commands to extract include paths...", ninja_tool.command)
+
+    start_time = time.time()
+    try:
+        result = subprocess.run([ninja_tool.command, "-t", "commands"], capture_output=True, text=True, cwd=build_dir, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        logger.error("ninja -t commands timed out after %s seconds", timeout)
+        return None
+    except FileNotFoundError:
+        logger.warning("ninja command not found")
+        return None
+    except Exception as e:
+        logger.error("Unexpected error running ninja -t commands: %s", e)
+        return None
+
+    elapsed = time.time() - start_time
+
+    if result.returncode != 0:
+        logger.warning("ninja -t commands failed with code %s", result.returncode)
+        if result.stderr:
+            logger.debug("Stderr: %s", result.stderr[:500])
+        return None
+
+    # Parse include paths from commands output
+    include_paths: Set[str] = set()
+
+    # Compile regex patterns for efficiency
+    # Match: -I<path>, -I <path>, -isystem <path>, -isystem<path>, -iquote <path>, -iquote<path>
+    # Also match MSVC: /I<path>, /I <path>, /external:I <path>, /external:I<path>
+    include_flag_pattern = re.compile(r"(?:^|\s)(-I|-isystem|-iquote|/I|/external:I)(\S+)?")
+
+    for line in result.stdout.splitlines():
+        # Each line is a complete command for a target
+        # We only care about compilation commands (containing -c or /c)
+        if " -c " not in line and " /c " not in line:
+            continue
+
+        try:
+            # Find all include flags in the command
+            matches = include_flag_pattern.finditer(line)
+            for match in matches:
+                flag = match.group(1)
+                path_after_flag = match.group(2)
+
+                if path_after_flag:
+                    # Flag and path are together: -I/path or /I/path
+                    include_path = path_after_flag
+                else:
+                    # Flag and path are separate: -I /path
+                    # Find the next token after the flag
+                    flag_pos = match.end(1)
+                    rest_of_line = line[flag_pos:].lstrip()
+                    # Extract the path (up to next space or quote)
+                    if rest_of_line:
+                        # Handle quoted paths
+                        if rest_of_line[0] in ('"', "'"):
+                            quote = rest_of_line[0]
+                            end_quote = rest_of_line.find(quote, 1)
+                            if end_quote != -1:
+                                include_path = rest_of_line[1:end_quote]
+                            else:
+                                continue
+                        else:
+                            # Unquoted path - take up to next space
+                            space_pos = rest_of_line.find(" ")
+                            if space_pos != -1:
+                                include_path = rest_of_line[:space_pos]
+                            else:
+                                include_path = rest_of_line
+                    else:
+                        continue
+
+                # Normalize and validate path
+                include_path = include_path.strip()
+                if not include_path:
+                    continue
+
+                # Convert to absolute path if relative
+                if not os.path.isabs(include_path):
+                    include_path = os.path.abspath(os.path.join(build_dir, include_path))
+
+                # Normalize path
+                include_path = os.path.normpath(include_path)
+                include_paths.add(include_path)
+
+        except Exception as e:
+            # Skip malformed lines
+            logger.debug("Failed to parse line: %s (error: %s)", line[:100], e)
+            continue
+
+    logger.info("Extracted %s include paths from ninja commands (%.2fs)", len(include_paths), elapsed)
+
+    # Save to cache
+    if save_cache(cache_path, include_paths, build_ninja_path, build_ninja_path):
+        logger.debug("Saved ninja commands include paths to cache")
+
+    return include_paths
+
+
+def extract_include_paths(compile_db_path: str, build_dir: Optional[str] = None) -> Set[str]:
+    """Extract include paths from ninja commands or compile_commands.json.
+
+    This function first attempts to extract include paths from ninja -t commands,
+    which provides fully expanded compiler invocations with all include paths.
+    If ninja is unavailable or fails, it falls back to parsing compile_commands.json.
 
     Args:
         compile_db_path: Path to compile_commands.json
+        build_dir: Optional path to build directory (for ninja extraction)
 
     Returns:
         Set of absolute include path directories
     """
     valid_include_roots: Set[str] = set()
 
+    # Try ninja-based extraction first if build_dir is provided
+    if build_dir:
+        ninja_paths = extract_include_paths_from_ninja(build_dir)
+        if ninja_paths is not None and ninja_paths:
+            logger.info("Using include paths from ninja commands (%s paths)", len(ninja_paths))
+            return ninja_paths
+        else:
+            logger.info("Falling back to compile_commands.json parsing")
+
+    # Fallback to JSON parsing
     try:
         with open(compile_db_path, "r", encoding="utf-8") as f:
             compile_db = json.load(f)
@@ -249,19 +465,29 @@ def extract_include_paths(compile_db_path: str) -> Set[str]:
 
     for entry in compile_db:
         cmd = entry.get("command", "")
-        # Extract -I paths
-        parts = shlex.split(cmd)
+        # Extract -I, -isystem, -iquote paths
+        try:
+            parts = shlex.split(cmd)
+        except ValueError as e:
+            logger.debug("Failed to parse command: %s", e)
+            continue
+
         for i, part in enumerate(parts):
-            if part == "-I" and i + 1 < len(parts):
+            # Handle -I /path format
+            if part in ("-I", "-isystem", "-iquote") and i + 1 < len(parts):
                 include_path = parts[i + 1]
                 if os.path.isabs(include_path):
                     valid_include_roots.add(include_path)
-            elif part.startswith("-I"):
-                include_path = part[2:]
-                if os.path.isabs(include_path):
-                    valid_include_roots.add(include_path)
+            # Handle -I/path format
+            elif part.startswith(("-I", "-isystem", "-iquote")):
+                for prefix in ("-I", "-isystem", "-iquote"):
+                    if part.startswith(prefix):
+                        include_path = part[len(prefix) :]
+                        if include_path and os.path.isabs(include_path):
+                            valid_include_roots.add(include_path)
+                        break
 
-    logger.debug("Found %s include directories", len(valid_include_roots))
+    logger.debug("Found %s include directories from JSON", len(valid_include_roots))
     return valid_include_roots
 
 
@@ -308,30 +534,33 @@ def run_clang_scan_deps(build_dir: str, filtered_db: str, timeout: int = 300) ->
         return output, elapsed
 
     # Cache miss - run clang-scan-deps
-    clang_cmd = find_clang_scan_deps()
-    if not clang_cmd:
+    clang_tool = find_clang_scan_deps()
+    if not clang_tool.is_found():
         raise RuntimeError("clang-scan-deps not found. Please install clang (e.g., 'sudo apt install clang-19')")
 
+    # Assertion for mypy: if is_found() is True, command is not None
+    assert clang_tool.command is not None, "Tool command should not be None when found"
+
     num_cores = mp.cpu_count()
-    logger.info("Running %s using %s cores...", clang_cmd, num_cores)
-    print_info(f"🔄 Cache miss - running {clang_cmd} (this may take a while)...")
+    logger.info("Running %s using %s cores...", clang_tool.command, num_cores)
+    print_info(f"🔄 Cache miss - running {clang_tool.command} (this may take a while)...")
 
     start_time = time.time()
     try:
         result = subprocess.run(
-            [clang_cmd, f"-compilation-database={filtered_db}", "-format=make", "-j", str(num_cores)],
+            [clang_tool.command, f"-compilation-database={filtered_db}", "-format=make", "-j", str(num_cores)],
             capture_output=True,
             text=True,
             cwd=build_dir,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"{clang_cmd} timed out after {timeout} seconds") from exc
+        raise RuntimeError(f"{clang_tool.command} timed out after {timeout} seconds") from exc
 
     elapsed = time.time() - start_time
 
     if result.returncode != 0:
-        error_msg = f"{clang_cmd} failed with code {result.returncode}"
+        error_msg = f"{clang_tool.command} failed with code {result.returncode}"
         if result.stderr:
             error_msg += f"\nError output: {result.stderr[:1000]}"
         raise RuntimeError(error_msg)
@@ -526,10 +755,13 @@ def build_include_graph(build_dir: str, verbose: bool = True) -> IncludeGraphSca
     """
     try:
         # Check if clang-scan-deps is available
-        clang_cmd = find_clang_scan_deps()
+        clang_tool = find_clang_scan_deps()
 
-        if not clang_cmd:
+        if not clang_tool.is_found():
             raise RuntimeError("clang-scan-deps not found. Please install clang (e.g., 'sudo apt install clang-19')")
+
+        # Assertion for mypy: if is_found() is True, command is not None
+        assert clang_tool.command is not None, "Tool command should not be None when found"
 
         try:
             filtered_db = create_filtered_compile_commands(build_dir)
@@ -540,7 +772,7 @@ def build_include_graph(build_dir: str, verbose: bool = True) -> IncludeGraphSca
             raise FileNotFoundError(f"Filtered compile commands not found: {filtered_db}")
 
         # Use cached clang-scan-deps execution
-        logger.info("Running %s using cached execution to build include graph...", clang_cmd)
+        logger.info("Running %s using cached execution to build include graph...", clang_tool.command)
         output, elapsed = run_clang_scan_deps(build_dir, filtered_db, timeout=300)
 
         # Parse makefile-style output to build include graph

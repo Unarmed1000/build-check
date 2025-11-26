@@ -2,500 +2,227 @@
 
 > **⚠️ EXPERIMENTAL PROJECT**  
 > This is an experimental research project created with extensive AI assistance (Claude/GitHub Copilot).  
-> While the tools have comprehensive test coverage (749 tests) and demonstrate useful capabilities,  
+> While the tools have comprehensive test coverage (749+ tests) and demonstrate useful capabilities,  
 > they should be considered experimental and used with appropriate caution in production environments.
 
-A comprehensive suite of tools for analyzing C/C++ build dependencies, identifying rebuild bottlenecks, and optimizing compilation times in large projects.
+[![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+[![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 
-## 📋 Overview
+A comprehensive suite of tools for analyzing C/C++ build dependencies, identifying rebuild bottlenecks, and optimizing compilation times in large projects using Ninja build system.
 
-BuildCheck provides nine complementary tools that help you understand and optimize your C/C++ build process. Each tool focuses on a specific aspect of dependency analysis, from quick rebuild impact checks to comprehensive dependency hell detection and architectural structure analysis.
+## 🎯 What Does BuildCheck Do?
 
-## 📦 Requirements
+BuildCheck helps you answer critical questions about your C/C++ build:
 
-### System Requirements
-- **Python 3.8+** (required)
-- **ninja** build system (for most tools)
-- **clang-scan-deps** (optional, for source-level dependency analysis)
+- 💡 **"What will rebuild if I change this header?"** → See exact impact before committing
+- 🔍 **"Why is my build so slow?"** → Identify dependency bottlenecks and high-cost headers
+- 🏗️ **"Is my architecture healthy?"** → Detect cycles, god objects, and coupling issues
+- 🚀 **"How can I optimize build times?"** → Get actionable refactoring recommendations with ROI estimates
+- 📊 **"What changed and why is it rebuilding?"** → Understand rebuild reasons and root causes
 
-### Python Packages
-Install all required packages with:
+## 🔧 Core Tools Overview
+
+BuildCheck provides 9 specialized tools that work together to give you complete visibility into your build system:
+
+| Tool | Purpose | When to Use |
+|------|---------|-------------|
+| **[buildCheckSummary](#buildchecksummary)** | What's rebuilding and why | Daily development, quick rebuild analysis |
+| **[buildCheckDSM](#buildcheckdsm)** | Architecture quality & DSM analysis | Architecture reviews, proactive refactoring |
+| **[buildCheckRippleEffect](#buildcheckrippleeffect)** | Git commit impact estimation | Before committing, CI/CD planning |
+| **[buildCheckDependencyHell](#buildcheckdependencyhell)** | Transitive dependency analysis | Find expensive headers to refactor |
+| **[buildCheckOptimize](#buildcheckoptimize)** | Comprehensive optimization recommendations | Planning major refactoring efforts |
+| **buildCheckImpact** | Quick header impact assessment | Fast impact checks without full analysis |
+| **buildCheckIncludeGraph** | Include graph with clang-scan-deps | Accurate gateway header analysis |
+| **buildCheckIncludeChains** | Co-occurrence pattern analysis | Understanding indirect coupling |
+| **buildCheckLibraryGraph** | Library-level dependency visualization | Module architecture validation |
+
+## 🗺️ Tool Selection Guide
+
+```mermaid
+flowchart TD
+    Start([What do you need?])
+    Start --> Q1{Quick or<br/>Deep Analysis?}
+    
+    Q1 -->|Quick Check| Q2{What info?}
+    Q1 -->|Deep Analysis| Q3{Focus Area?}
+    
+    Q2 -->|What changed?| Summary[buildCheckSummary<br/>Rebuild reasons & root causes]
+    Q2 -->|Header impact?| Impact[buildCheckImpact<br/>Quick impact assessment]
+    Q2 -->|Commit impact?| Ripple[buildCheckRippleEffect<br/>Git change analysis]
+    
+    Q3 -->|Architecture| DSM[buildCheckDSM<br/>DSM matrix, cycles, metrics]
+    Q3 -->|Dependencies| DepHell[buildCheckDependencyHell<br/>Transitive dep analysis]
+    Q3 -->|Optimization| Optimize[buildCheckOptimize<br/>Full recommendations]
+    Q3 -->|Libraries| LibGraph[buildCheckLibraryGraph<br/>Module dependencies]
+    
+    style Summary fill:#90EE90
+    style DSM fill:#FFB6C1
+    style Ripple fill:#87CEEB
+    style DepHell fill:#DDA0DD
+    style Optimize fill:#F0E68C
+```
+
+## 🔄 Typical Workflow
+
+```mermaid
+flowchart LR
+    A[Daily Development] -->|Quick Check| B[buildCheckSummary]
+    B -->|High rebuild count?| C[buildCheckImpact]
+    C -->|Identify problem headers| D[buildCheckDependencyHell]
+    
+    E[Architecture Review] --> F[buildCheckDSM]
+    F -->|Find issues| G[buildCheckDSM<br/>--suggest-improvements]
+    G -->|Validate plan| H[buildCheckOptimize]
+    
+    I[Before Commit] --> J[buildCheckRippleEffect]
+    J -->|High impact?| K{Review Changes}
+    K -->|Optimize| D
+    
+    style B fill:#90EE90
+    style F fill:#FFB6C1
+    style J fill:#87CEEB
+    style D fill:#DDA0DD
+    style H fill:#F0E68C
+```
+
+## 📦 Installation
+
+### Prerequisites
+
+- **Python 3.7+** (required)
+- **Ninja build system** (required) - `sudo apt install ninja-build` or `brew install ninja`
+- **Clang 18 or 19** (required for tools using clang-scan-deps)
+  ```bash
+  # Ubuntu/Debian
+  sudo apt install clang-19
+  
+  # macOS
+  brew install llvm
+  ```
+
+### Install BuildCheck
+
 ```bash
+# Clone the repository
+git clone https://github.com/Unarmed1000/build-check.git
+cd build-check
+
+# Install Python dependencies
 pip install -r requirements.txt
+
+# Make scripts executable
+chmod +x buildCheck*.py
 ```
 
-**Required packages:**
-- `packaging>=24.0` - Version checking utilities
-- `networkx>=2.8.8` - Graph analysis and cycle detection
-- `GitPython>=3.1.40` - Git operations (for buildCheckRippleEffect)
+### Dependencies
 
-**Optional packages:**
-- `colorama>=0.4.6` - Colored terminal output (graceful fallback if missing)
-
-### Verify Installation
-Run the environment check to verify all dependencies:
 ```bash
-./checkEnvironment.sh
+# Core dependencies (required)
+pip install networkx>=2.8.8 GitPython>=3.1.40 packaging>=24.0
+
+# Statistical analysis (required for buildCheckDSM)
+pip install numpy>=1.24.0 scipy>=1.14.1
+
+# Terminal colors (optional but recommended)
+pip install colorama>=0.4.6
 ```
 
-## 🛠️ Tools
+## 🚀 Quick Start
 
-### 1. buildCheckSummary.py - Quick Rebuild Analysis
+### 1. Basic Rebuild Analysis
 
-**Purpose**: Fast analysis of what will rebuild and why.
-
-**What it does**:
-- Runs `ninja -n -d explain` to show rebuild reasons
-- Categorizes rebuild causes
-- Identifies root cause files triggering cascading rebuilds
-- Provides summary statistics
-
-**Use when**:
-- You want a quick overview of rebuild reasons
-- Checking what changed since last build
-- Understanding ninja's rebuild decisions
-
-**Performance**: Very fast (< 1 second)
-
-**Requirements**:
-- Python 3.8+
-- ninja build system
-- colorama (optional)
-
-**Examples**:
 ```bash
-# Basic analysis
+# See what will rebuild and why
 ./buildCheckSummary.py ../build/release/
 
-# Detailed file list
+# Get detailed file list
 ./buildCheckSummary.py ../build/release/ --detailed
 
-# JSON output
-./buildCheckSummary.py ../build/release/ --format json
+# Export as JSON for CI/CD
+./buildCheckSummary.py ../build/release/ --format json --output report.json
 ```
 
----
+**Example Output:**
+```
+=== Rebuild Summary ===
+Rebuilt files: 47
 
-### 2. buildCheckImpact.py - Changed Header Impact Analysis
+Reasons:
+   35  → input source changed
+   12  → output missing
 
-**Purpose**: Shows which headers are causing rebuilds and their impact.
-
-**What it does**:
-- Detects changed headers from ninja explain output
-- Uses `ninja -t deps` to map header → target dependencies
-- Shows how many compilation targets each changed header affects
-- Can optionally show all high-impact headers
-
-**Use when**:
-- You've made changes and want to know what will rebuild
-- Identifying which specific headers have the widest impact
-- Quick baseline analysis without heavy dependencies
-
-**Performance**: Very fast (< 1 second)
-
-**Requirements**:
-- Python 3.8+
-- ninja build system
-- colorama (optional)
-
-**Examples**:
-```bash
-# Show changed headers and their impact
-./buildCheckImpact.py ../build/release/
-
-# Show all high-impact headers (not just changed)
-./buildCheckImpact.py ../build/release/ --all-headers
+Root Causes:
+  include/core/Types.hpp → triggered 18 rebuilds
+  include/utils/Logger.hpp → triggered 12 rebuilds
 ```
 
-**Key Metrics**:
-- **Impact Count**: Number of targets that depend on each header
+### 2. Architecture Quality Check
 
----
-
-### 3. buildCheckIncludeChains.py - Cooccurrence Pattern Analysis
-
-**Purpose**: Identifies which headers frequently appear together to find include chains.
-
-**What it does**:
-- Builds cooccurrence matrix showing which headers appear together
-- For each changed header, shows frequently co-included headers
-- Reveals coupling patterns and transitive include relationships
-- Helps identify "gateway" headers pulling in dependencies
-
-**Use when**:
-- "Why is this header being included everywhere?"
-- Finding which parent headers cause transitive includes
-- Understanding coupling between seemingly unrelated headers
-- Discovering refactoring opportunities
-
-**Performance**: Fast (1-2 seconds)
-
-**Requirements**:
-- Python 3.8+
-- ninja build system
-- colorama (optional)
-
-**Examples**:
 ```bash
-# Show cooccurrence patterns for changed headers
-./buildCheckIncludeChains.py ../build/release/
-
-# Only show headers appearing together 10+ times
-./buildCheckIncludeChains.py ../build/release/ --threshold 10
-```
-
-**Interpretation**:
-- High cooccurrence = likely dependency relationship (direct or transitive)
-- Use with buildCheckIncludeGraph.py to see actual include relationships
-
----
-
-### 4. buildCheckIncludeGraph.py - Gateway Header Analysis
-
-**Purpose**: Analyzes actual include graph using clang-scan-deps to find gateway headers.
-
-**What it does**:
-- Parses source files with clang-scan-deps for accurate dependencies
-- Identifies "gateway headers" that pull in excessive dependencies
-- Shows which specific .cpp files will rebuild for each changed header
-- Calculates "include cost" metrics
-- Provides gateway header rankings
-
-**Use when**:
-- "If I change this header, which .cpp files will rebuild?"
-- Finding headers with high "include cost"
-- Understanding why rebuilds are slow
-- Identifying refactoring opportunities to reduce header bloat
-
-**Performance**: Moderate (3-10 seconds, uses all CPU cores)
-
-**Requirements**:
-- Python 3.8+
-- clang-scan-deps (clang-18, clang-19, or clang-XX)
-- networkx: `pip install networkx`
-- compile_commands.json (auto-generated)
-
-**Examples**:
-```bash
-# Analyze changed headers (default)
-./buildCheckIncludeGraph.py ../build/release/
-
-# Show top 30 gateway headers regardless of changes
-./buildCheckIncludeGraph.py ../build/release/ --full
-
-# Analyze changed headers, show top 20 affected files
-./buildCheckIncludeGraph.py ../build/release/ --top 20
-```
-
-**Key Metrics**:
-- **Include Cost**: Average number of headers pulled in when this header is included
-- **Unique Deps**: Total distinct headers that cooccur with this header
-- **Usage Count**: Number of source files that include this header
-- **Gateway Header**: Header with high include cost
-
----
-
-### 5. buildCheckDependencyHell.py - Comprehensive Dependency Analysis
-
-**Purpose**: Multi-dimensional analysis of header dependency problems using graph theory.
-
-**What it does**:
-- Builds complete transitive dependency graph with NetworkX
-- Calculates multiple impact metrics per header:
-  - Transitive dependency count
-  - Build impact (deps × usage = total compilation cost)
-  - Rebuild cost (sources that rebuild if changed)
-  - Reverse impact (architectural bottlenecks)
-  - Hub headers (highly connected nodes)
-  - Maximum chain length (deepest include path)
-- Classifies headers by severity (CRITICAL/HIGH/MODERATE)
-- Provides multiple ranked lists for refactoring priorities
-
-**Use when**:
-- "Which headers should I refactor first to improve build times?"
-- Finding architectural bottlenecks (hub headers)
-- Identifying headers causing most compilation work
-- Prioritizing technical debt reduction
-- Comprehensive build optimization analysis
-
-**Performance**: Slower but comprehensive (5-10 seconds, uses all CPU cores)
-
-**Requirements**:
-- Python 3.8+
-- clang-scan-deps (clang-18, clang-19, or clang-XX)
-- networkx: `pip install networkx`
-- compile_commands.json (auto-generated)
-
-**Examples**:
-```bash
-# Full analysis with all metrics
-./buildCheckDependencyHell.py ../build/release/
-
-# Show top 50 worst offenders
-./buildCheckDependencyHell.py ../build/release/ --top 50
-
-# Analyze specific header
-./buildCheckDependencyHell.py ../build/release/ --header include/MyClass.hpp
-```
-
-**Key Metrics**:
-- **Transitive Deps**: Total headers pulled in (direct + indirect)
-- **Build Impact**: deps × usage = total header compilations
-- **Rebuild Cost**: usage × (1 + dependents) = rebuild expense
-- **Reverse Impact**: Number of headers depending on this one
-- **Hub Header**: Architectural bottleneck with high reverse impact
-- **Max Chain**: Longest include path through header
-
-**Severity Levels**:
-- **CRITICAL**: Combined score > 500 (urgent refactoring needed)
-- **HIGH**: Combined score 300-500 (should refactor soon)
-- **MODERATE**: Combined score < 300 (monitor)
-
----
-
-### 6. buildCheckDSM.py - Dependency Structure Matrix Analysis
-
-**Purpose**: Visualizes header dependencies as a matrix, revealing architectural structure at a glance. **NEW in v1.2.0**: Proactive improvement analysis identifies refactoring opportunities without requiring a baseline.
-
-**What it does**:
-- Builds Dependency Structure Matrix showing header-to-header dependencies
-- Detects circular dependencies using strongly connected components
-- Computes architectural layers via topological sorting
-- Calculates per-header metrics: fan-in, fan-out, stability, coupling, PageRank, betweenness
-- Identifies architectural hotspots and hub nodes
-- Provides compact matrix visualization with color coding
-- Exports full matrix to CSV for detailed offline analysis
-- **Compares DSM between two builds** (differential analysis with architectural insights)
-- **Analyzes ripple impact** of changes with precise source-level predictions
-- **Statistical analysis** of coupling trends, stability changes, and layer movements
-- **🆕 Proactive improvement analysis** (--suggest-improvements): Identifies high-impact refactorings WITHOUT baseline
-
-**Use when**:
-- "What's the overall dependency structure of my codebase?"
-- "Which headers are in circular dependencies?"
-- "Is my architecture properly layered?"
-- "What's the safest order to refactor headers?"
-- "Which headers have the highest coupling?"
-- "Are my module boundaries clean?"
-- **"What architectural impact will this change have?"** (use `--compare-with`)
-- **"Did my refactoring improve the architecture?"** (use `--compare-with`)
-- **🆕 "What should I refactor to improve my codebase?"** (use `--suggest-improvements`)
-- **🆕 "Which refactorings give the best ROI?"** (use `--suggest-improvements`)
-
-**Performance**: Moderate (3-10 seconds, uses all CPU cores)
-
-**Requirements**:
-- Python 3.8+
-- clang-scan-deps (clang-18, clang-19, or clang-XX)
-- networkx: `pip install networkx`
-- compile_commands.json (auto-generated)
-
-**Examples**:
-```bash
-# Basic DSM analysis
+# Analyze architecture with DSM matrix
 ./buildCheckDSM.py ../build/release/
 
-# Show only top 50 most coupled headers
-./buildCheckDSM.py ../build/release/ --top 50
+# Get proactive improvement suggestions
+./buildCheckDSM.py ../build/release/ --suggest-improvements
 
 # Focus on circular dependencies
 ./buildCheckDSM.py ../build/release/ --cycles-only
-
-# Show dependency layers
-./buildCheckDSM.py ../build/release/ --show-layers
-
-# Export full matrix to CSV
-./buildCheckDSM.py ../build/release/ --export matrix.csv
-
-# Filter to specific module
-./buildCheckDSM.py ../build/release/ --filter "FslBase/*"
-
-# Cluster by directory
-./buildCheckDSM.py ../build/release/ --cluster-by-directory
-
-# Compare two builds (differential analysis with precise impact - default)
-./buildCheckDSM.py ../build/feature/ --compare-with ../build/main/
-
-# Save baseline for later comparison
-./buildCheckDSM.py ../build/main/ --save-results baseline.dsm.json.gz
-
-# Compare against saved baseline (precise impact analysis)
-./buildCheckDSM.py ../build/feature/ --load-baseline baseline.dsm.json.gz
-
-# 🆕 Proactive improvement analysis (NEW in v1.2.0)
-./buildCheckDSM.py ../build/release/ --suggest-improvements
-
-# Focus improvement suggestions on specific module
-./buildCheckDSM.py ../build/release/ --suggest-improvements --filter "Core/*"
-
-# Detailed improvement analysis with verbose output
-./buildCheckDSM.py ../build/release/ --suggest-improvements --verbose --top 20
 ```
 
-**⚡ Performance:**
+**Example Output:**
+```
+=== Improvement Candidates (Ranked by ROI) ===
 
-**Precise Analysis (Always Used)**:
-- **Speed**: 10-30 seconds for large codebases (>5000 headers)
-- **Accuracy**: 95% confidence (full transitive closure)
-- **Method**: Complete NetworkX graph traversal of all dependencies
-- **Use for**: All architectural decisions, reviews, and planning
+🔴 CRITICAL (ROI: 85.2)
+  Header: include/core/GodObject.hpp
+  Issues: God Object (fan-out: 45), Cycle Participant, Coupling Outlier
+  Impact: Would reduce rebuild time by ~23% (156 → 120 files)
+  Effort: Medium (2-3 weeks)
+  Break-even: ~8 commits
 ```
 
-**Key Metrics**:
-- **Fan-out**: Number of headers this header includes
-- **Fan-in**: Number of headers that include this header
-- **Coupling**: Total dependencies (fan-in + fan-out)
-- **Stability**: Fan-out / (Fan-in + Fan-out) — resistance to change
-- **PageRank**: Architectural importance (influence in dependency graph)
-- **Betweenness**: Centrality score (bottleneck indicator)
-- **Sparsity**: Percentage of empty cells in matrix (higher = better)
-- **Module Cohesion**: Intra-module vs inter-module dependencies
+### 3. Git Commit Impact Analysis
 
-**Differential Analysis Reports** (with `--compare-with` or `--load-baseline`):
-- **Coupling Statistics**: Mean, median, percentiles, outliers before/after
-- **Stability Changes**: Headers that became stable/unstable
-- **Cycle Complexity**: New/resolved cycles, cycle size distribution
-- **Layer Movements**: Headers that changed architectural depth
-- **Ripple Impact**: Predicted source files affected by changes (precise transitive closure analysis)
-- **Architectural Recommendations**: Prioritized suggestions for improvements
-
-**🆕 Proactive Improvement Analysis** (with `--suggest-improvements` - NEW in v1.2.0):
-- **Anti-Pattern Detection**: God objects, cycles, outliers, unstable interfaces, hub nodes
-- **ROI Calculation**: Composite score (cycle elimination 40%, rebuild reduction 30%, coupling 20%, effort 10%)
-- **Break-Even Analysis**: Estimated commits until refactoring pays off
-- **Severity Classification**: 🟢 Quick Wins (ROI ≥60, ≤5 commits), 🔴 Critical (cycles/ROI ≥40), 🟡 Moderate (ROI <40)
-- **Actionable Steps**: Specific refactoring recommendations with effort estimates
-- **Team Impact**: Hours saved per year, payback time calculations
-- **No Baseline Required**: Analyzes current codebase state only
-
-**Matrix Visualization**:
-```
-        0  1  2  3  4  5
-●Header1                0  ─  X  ·  ·  ·  · 
- Header2                1  ·  ─  X  ·  ·  · 
-●Header3                2  X  X  ─  X  ·  · 
- Header4                3  X  ·  X  ─  X  · 
- Header5                4  X  X  X  X  ─  X 
-●Header6                5  X  X  ·  X  X  ─ 
-
-Legend: X = dependency, · = none, ● = in cycle
-```
-
----
-
-### 7. buildCheckLibraryGraph.py - Library Dependency Analysis
-
-**Purpose**: Analyzes library and executable dependencies at the build system level.
-
-**What it does**:
-- Parses build.ninja to extract static library (.a) dependencies
-- Builds library-to-library dependency graph
-- Shows which executables depend on which libraries
-- Calculates build impact (what rebuilds if you change a library)
-- Detects circular library dependencies
-- Identifies most impactful libraries for build optimization
-- Ranks libraries by fan-in, fan-out, and transitive dependencies
-- Exports to GraphViz DOT format for visualization
-
-**Use when**:
-- "If I change libFslBase, what needs to rebuild?"
-- "Which libraries are used by the most targets?"
-- "Are there circular dependencies between libraries?"
-- "Which library changes cause the biggest rebuild impact?"
-- "What's the module-level architecture?"
-- Planning library refactoring or splitting
-
-**Performance**: Very fast (< 1 second)
-
-**Requirements**:
-- Python 3.8+
-- build.ninja file
-- networkx (optional, for cycle detection): `pip install networkx`
-- colorama (optional, for colors)
-
-**Examples**:
 ```bash
-# Show library dependency graph
-./buildCheckLibraryGraph.py ../build/release/
+# Estimate impact of uncommitted changes
+./buildCheckRippleEffect.py ../build/release/
 
-# Show impact of changing a specific library
-./buildCheckLibraryGraph.py ../build/release/ --impacted-by libFslBase.a
+# Analyze specific commit
+./buildCheckRippleEffect.py ../build/release/ --commit abc123f
 
-# Find what depends on a library
-./buildCheckLibraryGraph.py ../build/release/ --find-dependents libFslGraphics.a
-
-# Show only libraries (exclude executables)
-./buildCheckLibraryGraph.py ../build/release/ --libs-only
-
-# Export to GraphViz DOT for visualization
-./buildCheckLibraryGraph.py ../build/release/ --export library_graph.dot
-
-# Check for circular library dependencies
-./buildCheckLibraryGraph.py ../build/release/ --cycles-only
+# Analyze commit range
+./buildCheckRippleEffect.py ../build/release/ --commit HEAD~5..HEAD
 ```
 
-**Key Metrics**:
-- **Fan-in**: Number of targets that directly depend on this library
-- **Fan-out**: Number of libraries this library directly depends on
-- **Transitive dependents**: Total targets affected by changes (build impact)
-- **Depth**: Longest dependency path from library to any leaf
-
-**Sample Output**:
+**Example Output:**
 ```
-Top Impactful Libraries:
-  1. libFslBase.a
-     Fan-in: 95 | Fan-out: 0 | Transitive dependents: 95 | Depth: 0
-     
-  2. libFslGraphics.a
-     Fan-in: 84 | Fan-out: 1 | Transitive dependents: 84 | Depth: 1
+=== Git Ripple Effect Analysis ===
 
-BUILD IMPACT ANALYSIS: libFslBase.a
-  If you modify libFslBase.a, the following need rebuild:
-  - 87 libraries
-  - 8 executables
-  Total Rebuild Impact: 95 targets (97.9% of build)
+Changed Headers (2):
+  • include/core/Types.hpp → affects 156 source files
+  • include/utils/Logger.hpp → affects 89 source files
+
+Summary:
+  Total affected sources: 245
+  Rebuild percentage: 12.3% (245/2000)
+  Impact: MODERATE (10-30% rebuild)
 ```
 
-**Visualization**:
+### 4. Find Dependency Bottlenecks
+
 ```bash
-# Generate GraphViz visualization
-./buildCheckLibraryGraph.py ../build/ --export graph.dot
-dot -Tpng graph.dot -o graph.png
+# Comprehensive transitive dependency analysis
+./buildCheckDependencyHell.py ../build/release/
+
+# Show top 20 problematic headers
+./buildCheckDependencyHell.py ../build/release/ --top 20
+
+# Focus on specific directory
+./buildCheckDependencyHell.py ../build/release/ --filter "include/core/*"
 ```
 
----
+### 5. Get Optimization Recommendations
 
-### 8. buildCheckOptimize.py - Build Optimization Analyzer
-
-**Purpose**: Provides comprehensive, actionable recommendations for optimizing build times.
-
-**What it does**:
-- Analyzes dependencies at library and header levels
-- Identifies bottlenecks and optimization opportunities
-- Scores each opportunity by impact, effort, and risk
-- Prioritizes improvements by return on investment
-- Provides specific, actionable recommendations
-- Detects unused libraries, missing build tools (ccache, PCH)
-- Suggests architectural improvements
-- Generates optimization reports
-
-**Use when**:
-- "How can I speed up my builds?"
-- "What are the biggest build time bottlenecks?"
-- Planning build system improvements
-- Evaluating refactoring opportunities
-- Setting up new development environments
-- Optimizing CI/CD build times
-
-**Performance**: Fast to moderate (2-10 seconds depending on analysis depth)
-
-**Requirements**:
-- Python 3.8+
-- build.ninja file
-- networkx (optional): `pip install networkx`
-- colorama (optional)
-
-**Examples**:
 ```bash
 # Full optimization analysis
 ./buildCheckOptimize.py ../build/release/
@@ -503,695 +230,316 @@ dot -Tpng graph.dot -o graph.png
 # Quick analysis (skip expensive operations)
 ./buildCheckOptimize.py ../build/release/ --quick
 
-# Focus on specific area
-./buildCheckOptimize.py ../build/release/ --focus libraries
-./buildCheckOptimize.py ../build/release/ --focus build-system
-
-# Show only top 5 opportunities
-./buildCheckOptimize.py ../build/release/ --top 5
-
-# Generate detailed report
+# Generate optimization report
 ./buildCheckOptimize.py ../build/release/ --report optimization_plan.txt
-
-# Show only high-impact optimizations
-./buildCheckOptimize.py ../build/release/ --min-impact 70
 ```
 
-**Key Metrics**:
-- **Priority Score**: Impact / (Effort × Risk) - higher is better
-- **Impact Score**: 0-100, estimated time saved
-- **Effort**: EASY, MEDIUM, or HARD to implement
-- **Risk**: LOW, MEDIUM, or HIGH risk of breaking things
+## 📚 Core Tools Deep Dive
 
-**Sample Output**:
-```
-BUILD OPTIMIZATION SUMMARY
+### buildCheckSummary
 
-Total opportunities identified: 36
+**Purpose:** Quickly analyze what files would rebuild and identify root causes.
 
-🎯 QUICK WINS (High Impact, Easy Implementation):
-  • Enable ccache for faster rebuilds (Priority: 90.0)
-  • Remove 43 unused libraries (Priority: 50.0)
-  • Enable precompiled headers (Priority: 40.0)
+**Key Features:**
+- Runs `ninja -n -d explain` to detect rebuild reasons
+- Categorizes reasons (input changed, output missing, command line changed, etc.)
+- Identifies root cause headers triggering cascading rebuilds
+- Multiple output formats (text, JSON)
+- No external dependencies beyond Ninja
 
-🔥 TOP 5 PRIORITIES (by priority score):
-  1. Enable ccache for faster rebuilds
-     Priority: 90.0 | Impact: 90 | Effort: E | Risk: L
-  2. Run detailed header analysis
-     Priority: 70.0 | Impact: 70 | Effort: E | Risk: L
-  3. Remove 43 unused libraries
-     Priority: 50.0 | Impact: 50 | Effort: E | Risk: L
+**Use Cases:**
+- Daily development: "What changed and why?"
+- Pre-commit checks: "Is this rebuild reasonable?"
+- CI/CD reporting: Export JSON for build dashboards
 
-DETAILED OPTIMIZATION #1: Enable ccache
-  Problem: ccache caches compilation results
-  Action Items:
-    1. Install: sudo apt install ccache
-    2. Configure CMake: cmake -DCMAKE_CXX_COMPILER_LAUNCHER=ccache ..
-    3. Expected benefit: 5-10x faster rebuilds
-```
-
-**Optimization Categories**:
-- **library**: Library-level refactoring (split, reduce dependencies)
-- **header**: Header-level improvements (forward declarations, PIMPL)
-- **cycle**: Breaking circular dependencies
-- **architecture**: Architectural patterns (layering, separation)
-- **build-system**: Build tools and configuration (ccache, PCH, unity builds)
+**Documentation:** [README_buildCheckSummary.md](README_buildCheckSummary.md)
 
 ---
 
-### 9. buildCheckRippleEffect.py - Git Commit Impact Analysis
+### buildCheckDSM
 
-**Purpose**: Shows what will recompile based on git changes.
+**Purpose:** Comprehensive architecture analysis using Dependency Structure Matrix (DSM) methodology.
 
-**What it does**:
-- Detects changed files from git commit (or commit range)
-- Uses clang-scan-deps to build complete dependency graph
-- For changed headers: finds all source files that transitively depend on them
-- For changed source files: marks them for recompilation
-- Calculates total rebuild impact with detailed breakdown
+**Key Features:**
+- **Matrix Visualization:** Visual DSM showing all header dependencies
+- **Cycle Detection:** Identifies circular dependencies with minimum feedback set
+- **Layered Architecture:** Computes dependency layers and validates architecture
+- **Coupling Metrics:** Fan-in, fan-out, stability, PageRank centrality
+- **Proactive Analysis:** `--suggest-improvements` recommends high-ROI refactorings
+- **Differential Analysis:** Compare architectures across builds/commits
+- **Statistical Analysis:** Coupling distribution, outlier detection (uses NumPy)
 
-**Use when**:
-- "If I commit this change, what will rebuild?"
-- Estimating CI/CD build time before pushing
-- Reviewing code changes with rebuild cost in mind
-- Identifying high-impact changes needing extra testing
+**Anti-Pattern Detection:**
+- God Objects (high fan-out)
+- Circular Dependencies
+- Coupling Outliers (statistical analysis)
+- Unstable Interfaces (low stability score)
+- Hub Nodes (architectural bottlenecks)
 
-**Performance**: Moderate (5-10 seconds, uses all CPU cores)
+**ROI Calculation:**
+- Estimates rebuild time savings
+- Calculates break-even point (commits until payback)
+- Prioritizes by severity: 🟢 Quick Wins, 🔴 Critical, 🟡 Moderate
 
-**Requirements**:
-- Python 3.8+
-- git repository
-- ninja build directory with compile_commands.json
-- clang-scan-deps (clang-18, clang-19, or clang-XX)
-- networkx: `pip install networkx`
-- GitPython: `pip install GitPython`
+**Use Cases:**
+- Architecture reviews and technical debt assessment
+- Proactive refactoring planning with cost/benefit analysis
+- Tracking architectural quality over time
+- Validating layered architecture compliance
 
-**Examples**:
-```bash
-# Analyze last commit's impact
-./buildCheckRippleEffect.py ../build/release/
-
-# Analyze specific commit
-./buildCheckRippleEffect.py ../build/release/ --commit abc123
-
-# Specify git repository location
-./buildCheckRippleEffect.py ../build/release/ --repo ~/projects/myproject
-
-# Analyze commit range (cumulative impact)
-./buildCheckRippleEffect.py ../build/release/ --commit HEAD~5..HEAD
-```
-
-**Output**:
-- List of changed files (headers and sources)
-- For each changed header: affected source files
-- Summary: files changed, sources affected, rebuild percentage
-- Color-coded severity based on rebuild impact
+**Documentation:** [README_buildCheckDSM.md](README_buildCheckDSM.md)
 
 ---
 
-## 🎯 Which Tool Should I Use?
+### buildCheckRippleEffect
 
-### Quick Checks (< 1 second)
-- **buildCheckSummary.py** - "What changed and why is ninja rebuilding?"
-- **buildCheckImpact.py** - "Which changed headers affect the most targets?"
+**Purpose:** Estimate rebuild impact of uncommitted changes or specific commits.
 
-### Pattern Analysis (1-2 seconds)
-- **buildCheckIncludeChains.py** - "Why do these headers always appear together?"
+**Key Features:**
+- Git integration: Analyzes working directory vs HEAD
+- Supports specific commits, commit ranges, branches
+- Uses clang-scan-deps for accurate dependency graph
+- Calculates transitive impact for changed headers
+- Impact severity classification (LOW/MODERATE/HIGH/CRITICAL)
 
-### Source-Level Analysis (3-10 seconds)
-- **buildCheckIncludeGraph.py** - "Which .cpp files rebuild if I change this header?"
-- **buildCheckDependencyHell.py** - "Which headers are the worst offenders?"
-- **buildCheckDSM.py** - "What's the architectural structure? Any cycles?"
-- **buildCheckRippleEffect.py** - "What will rebuild if I commit this change?"
+**Use Cases:**
+- Pre-commit validation: "How much will this rebuild?"
+- Code review: Assess change scope and test coverage needed
+- CI/CD planning: Estimate build time impact
+- Refactoring validation: Verify changes reduced dependencies
 
-### Workflow Recommendations
-
-**Daily Development**:
-1. `buildCheckSummary.py` - Quick check after pulling changes
-2. `buildCheckImpact.py` - See what your changes affect
-
-**Before Committing**:
-1. `buildCheckRippleEffect.py` - Estimate rebuild impact
-2. Review affected files and test accordingly
-
-**Architectural Review**:
-1. `buildCheckDSM.py` - View overall structure and identify cycles
-2. `buildCheckDependencyHell.py` - Find worst offenders
-3. `buildCheckIncludeGraph.py` - Understand gateway headers
-4. Plan refactoring based on DSM layers and coupling metrics
-
-**Refactoring / Optimization**:
-1. `buildCheckDSM.py` - Identify cycles and high-coupling headers
-2. `buildCheckDependencyHell.py` - Prioritize by impact scores
-3. `buildCheckIncludeGraph.py` - Find gateway headers
-4. `buildCheckIncludeChains.py` - Understand coupling patterns
-5. Refactor high-impact headers first, break cycles
-6. `buildCheckDSM.py --compare-with` - Verify improvements
-
-**Impact Analysis (Before/After)**:
-1. Build baseline: `git checkout main && build`
-2. Build feature: `git checkout feature && build`
-3. `buildCheckDSM.py ../build/feature/ --compare-with ../build/main/`
-4. Review architectural changes, cycles, coupling shifts
+**Documentation:** Built-in help: `./buildCheckRippleEffect.py --help`
 
 ---
 
-## 🚀 Installation
+### buildCheckDependencyHell
 
-### Prerequisites
+**Purpose:** Multi-dimensional analysis of transitive dependencies to find "expensive" headers.
 
-**Required** (all tools):
-```bash
-# Python 3.7 or higher
-python3 --version
+**Key Features:**
+- **Transitive Dependency Count:** How many headers does this pull in?
+- **Build Impact:** Total compilation cost (deps × usage)
+- **Rebuild Cost:** If changed, how many sources would rebuild?
+- **Reverse Impact:** How many headers depend on this one?
+- **Hub Detection:** Architectural bottlenecks
+- **Maximum Chain Length:** Deepest include path through this header
+- **Severity Classification:** CRITICAL/HIGH/MODERATE
 
-# Ninja build system
-ninja --version
-```
+**Metrics Provided:**
+- Direct vs transitive dependencies
+- Usage frequency across compilation units
+- Base type identification (no project dependencies)
+- Ranked lists by different impact dimensions
 
-**Optional** (for colored output):
-```bash
-pip install colorama
-```
+**Use Cases:**
+- "Which header should I refactor first?"
+- Identify architectural bottlenecks (hub headers)
+- Prioritize technical debt reduction
+- Validate refactoring effectiveness (re-run after changes)
 
-**Required** (for tools 4, 5, 6):
-```bash
-# NetworkX and scipy for graph analysis
-pip install networkx scipy
-
-# clang-scan-deps (part of LLVM/Clang)
-# Ubuntu/Debian:
-sudo apt install clang-19
-# or
-sudo apt install clang-18
-
-# Verify installation
-clang-scan-deps-19 --version
-# or
-clang-scan-deps-18 --version
-```
-
-### Setup
-
-1. Clone or download the BuildCheck tools
-2. Make scripts executable:
-```bash
-chmod +x buildCheck*.py
-```
-
-3. Ensure your project has `compile_commands.json`:
-```bash
-# Generated automatically by CMake with:
-cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-# Or manually from Ninja build directory:
-ninja -t compdb > compile_commands.json
-```
+**Documentation:** Built-in help: `./buildCheckDependencyHell.py --help`
 
 ---
 
-## 📊 Understanding the Output
+### buildCheckOptimize
 
-### Color Coding
+**Purpose:** Comprehensive optimization recommendations combining header-level and library-level analysis.
 
-All tools use consistent color coding (when colorama is available):
+**Key Features:**
+- Integrates insights from multiple analysis tools
+- Prioritizes recommendations by impact
+- Identifies header, library, and architectural bottlenecks
+- Suggests specific refactoring actions
+- Estimates effort and benefits
 
-- 🔴 **Red**: Critical issues or high-impact items
-- 🟡 **Yellow**: Warnings or moderate-impact items
-- 🟢 **Green**: Success or low-impact items
-- 🔵 **Cyan**: File paths and identifiers
-- ⚪ **White**: Headers and section titles
+**Analysis Areas:**
+- Header-level optimization (high-cost includes)
+- Library-level optimization (module structure)
+- Cycle elimination strategies
+- Coupling reduction opportunities
 
-### Common Metrics Across Tools
+**Use Cases:**
+- Planning major refactoring efforts
+- Creating technical debt roadmap
+- Estimating optimization ROI
+- Validating architecture decisions
 
-- **Dependency Count**: Number of headers a file depends on
-- **Usage Count**: Number of source files that include a header
-- **Impact Score**: Various formulas combining dependency and usage counts
-- **Rebuild Cost**: Estimated compilation cost (files × compilations)
+**Documentation:** Built-in help: `./buildCheckOptimize.py --help`
 
----
+## 📖 Additional Tools
 
-## 🏗️ Architecture
+### buildCheckImpact
 
-### Tool Dependencies
+Quick impact analysis using Ninja's dependency tracking. Fast baseline analysis without clang-scan-deps.
 
-```
-buildCheckSummary.py ──────┐
-                           ├──> ninja only
-buildCheckImpact.py ───────┤
-                           │
-buildCheckIncludeChains.py ┘
-
-buildCheckIncludeGraph.py ──┐
-                            ├──> ninja + clang-scan-deps + networkx
-buildCheckDependencyHell.py ┤
-                            │
-buildCheckDSM.py ───────────┤
-                            │
-buildCheckRippleEffect.py ──┴──> + git
-```
-
-### Data Flow
-
-1. **Ninja Layer** (buildCheckSummary, buildCheckImpact, buildCheckIncludeChains)
-   - Uses ninja's cached build graph
-   - Fast but limited to what ninja knows
-   - Good for quick checks
-
-2. **Source Analysis Layer** (buildCheckIncludeGraph, buildCheckDependencyHell)
-   - Parses actual source files with clang-scan-deps
-   - Accurate and comprehensive
-   - Slower but more detailed
-
-3. **Git Integration Layer** (buildCheckRippleEffect)
-   - Combines git changes with source analysis
-   - Shows commit-level impact
-   - Requires git repository
-
----
-
-## 🔧 Common Issues
-
-### "clang-scan-deps not found"
-
-Tools 4, 5, and 6 require clang-scan-deps. Install clang-18 or clang-19:
+**Usage:**
 ```bash
-sudo apt install clang-19
-```
-
-If you have multiple versions, the tools will automatically try:
-- `clang-scan-deps-19`
-- `clang-scan-deps-18`
-- `clang-scan-deps`
-
-### "compile_commands.json not found"
-
-Most tools now auto-generate `compile_commands.json` from your `build.ninja` file.
-
-If you need to generate it manually:
-```bash
-cd build/
-ninja -t compdb > compile_commands.json
-```
-
-Or configure CMake to generate it automatically:
-```bash
-cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..
-```
-
-### "No module named 'networkx'"
-
-Install networkx:
-```bash
-pip install networkx
-```
-
-### "No module named 'git'" or "No module named 'GitPython'"
-
-Install GitPython (required for buildCheckRippleEffect.py):
-```bash
-pip install GitPython
-```
-
-### Slow Performance
-
-For large projects:
-- Use quick tools first (buildCheckSummary, buildCheckImpact)
-- Run comprehensive tools (buildCheckDependencyHell) periodically
-- Results are often cached by clang-scan-deps
-
----
-
-## 🎯 How to Reduce Recompilation Time
-
-### Understanding the Problem
-
-Excessive recompilation happens when:
-- **Headers with broad impact** are frequently modified
-- **Deep include chains** cause cascading rebuilds
-- **Circular dependencies** force wider-than-necessary rebuilds
-- **Monolithic headers** bundle unrelated functionality
-- **Missing forward declarations** cause unnecessary includes
-
-### Strategic Workflow for Optimization
-
-#### Phase 1: Identify Root Causes (15 minutes)
-
-1. **Find the biggest problems** with comprehensive analysis:
-   ```bash
-   ./buildCheckDependencyHell.py ../build/ --top 30
-   ```
-   **Look for:**
-   - Headers with **CRITICAL** severity (score > 500)
-   - High **Build Impact** (deps × usage) — these multiply compilation work
-   - **Hub Headers** — architectural bottlenecks with many reverse dependencies
-
-2. **Get actionable priorities** with optimization analyzer:
-   ```bash
-   ./buildCheckOptimize.py ../build/ --top 10
-   ```
-   **Look for:**
-   - Quick wins (high impact, easy implementation)
-   - Specific recommendations with ROI scores
-
-3. **Check architectural health** with DSM analysis:
-   ```bash
-   ./buildCheckDSM.py ../build/ --cycles-only
-   ```
-   **Look for:**
-   - Circular dependency groups
-   - Headers with coupling > 50
-
-#### Phase 2: Target High-Impact Headers (Strategic Refactoring)
-
-**Strategy 1: Split Monolithic Headers**
-
-Headers with high usage but many dependencies are prime candidates:
-```bash
-# Find gateway headers
-./buildCheckIncludeGraph.py ../build/ --full
-```
-
-**When to split:**
-- Include Cost > 50 (pulls in too many headers)
-- High usage count (>100 files)
-- Multiple unrelated responsibilities
-
-**How to split:**
-```cpp
-// Before: Engine.hpp (pulls in 150+ headers)
-#include "Engine.hpp"
-
-// After: Split into focused headers
-#include "Engine_fwd.hpp"      // Forward declarations only
-#include "EngineCore.hpp"      // Core functionality
-#include "EngineTypes.hpp"     // Type definitions
-```
-
-**Expected improvement:** 3-5x reduction in rebuild targets
-
----
-
-**Strategy 2: Use Forward Declarations**
-
-Replace includes with forward declarations where possible:
-
-```cpp
-// ❌ Bad: Pulls in entire class definition
-#include "BigClass.hpp"
-
-// ✅ Good: Forward declaration (if pointer/reference only)
-class BigClass;
-```
-
-**When to use:**
-- Function parameters/returns use pointers or references
-- Member variables are pointers/references
-- Template specializations
-
-**Quick check:** Run this to find high-impact headers:
-```bash
-./buildCheckImpact.py ../build/ --all-headers
-```
-
-**Expected improvement:** 2-10x reduction in transitive includes
-
----
-
-**Strategy 3: Break Circular Dependencies**
-
-Circular dependencies prevent incremental rebuilds:
-
-```bash
-# Find all cycles
-./buildCheckDSM.py ../build/
-```
-
-**Common solutions:**
-1. **Extract interface:** Move shared interface to separate header
-2. **Use forward declarations:** Break direct include cycle
-3. **Dependency injection:** Pass dependencies rather than including
-4. **Move to .cpp:** Move implementations out of headers
-
-**Expected improvement:** Enables parallel builds, reduces cascading rebuilds
-
----
-
-**Strategy 4: Reduce Include Depth**
-
-Deep include chains amplify rebuild impact:
-
-```bash
-# Check for deep chains
-./buildCheckDependencyHell.py ../build/ --top 20
-```
-
-**Look for:** Headers with Max Chain > 10
-
-**How to reduce:**
-- Remove unnecessary transitive includes
-- Use forward declarations at intermediate levels
-- Flatten include hierarchies where possible
-
-**Expected improvement:** 20-40% reduction in rebuild scope
-
----
-
-**Strategy 5: Move Implementation to .cpp Files**
-
-Template-heavy headers force everything into headers:
-
-```cpp
-// ❌ Bad: Implementation in header
-template<typename T>
-class Container {
-    void complexMethod() {
-        // 200 lines of code
-    }
-};
-
-// ✅ Better: Use PIMPL or explicit instantiation
-template<typename T>
-class Container {
-    void complexMethod();  // Declare only
-};
-// Define in .cpp with explicit instantiation
-```
-
-**Expected improvement:** Reduces header compilation time by 50-80%
-
----
-
-#### Phase 3: Verify Improvements
-
-After refactoring, measure the impact:
-
-```bash
-# Check specific header improvement
-./buildCheckIncludeGraph.py ../build/ --header include/MyRefactoredHeader.hpp
-
-# Verify overall improvement
-./buildCheckDependencyHell.py ../build/ --top 30
-
-# Compare architectures (if you saved old build)
-./buildCheckDSM.py ../build/ --compare-with ../build-old/
-```
-
-**Track these metrics:**
-- Transitive dependency count (should decrease)
-- Build Impact score (should decrease significantly)
-- Include Cost (target < 30 for common headers)
-- Number of files rebuilt after header change
-
----
-
-### Quick Reference: Which Tool for What?
-
-| **Goal** | **Tool** | **What to Look For** |
-|----------|----------|---------------------|
-| Find worst headers | `buildCheckDependencyHell.py` | CRITICAL severity, high Build Impact |
-| Get prioritized action items | `buildCheckOptimize.py` | Quick wins, high priority scores |
-| Find headers to split | `buildCheckIncludeGraph.py --full` | High Include Cost (>50) |
-| Check for cycles | `buildCheckDSM.py` | Circular dependency groups |
-| Quick impact check | `buildCheckImpact.py` | High impact count on changed headers |
-| Daily rebuild analysis | `buildCheckSummary.py` | Root cause files, rebuild categories |
-| Library-level optimization | `buildCheckLibraryGraph.py` | High transitive dependents |
-| Before committing | `buildCheckRippleEffect.py` | Total rebuild impact |
-
----
-
-### Pro Tips
-
-1. **Start with low-hanging fruit:**
-   - Headers with high impact but few direct dependents
-   - Adding forward declarations (low risk, high reward)
-   - Removing unused includes
-
-2. **Focus on hot paths:**
-   - Headers you modify frequently
-   - Headers in critical development areas
-   - Base infrastructure headers (used everywhere)
-
-3. **Measure, don't guess:**
-   - Run tools before and after refactoring
-   - Track improvement metrics
-   - Use `--compare-with` to verify architectural changes
-
-4. **Build system optimizations (parallel track):**
-   ```bash
-   ./buildCheckOptimize.py ../build/ --focus build-system
-   ```
-   - Enable ccache (5-10x faster rebuilds)
-   - Use precompiled headers (PCH)
-   - Enable unity builds for stable code
-   - Use distributed builds (distcc/sccache)
-
-5. **Target multiplier headers first:**
-   - Headers with both high dependency count AND high usage
-   - These have exponential impact (deps × usage)
-   - Focus on Build Impact score from `buildCheckDependencyHell.py`
-
-6. **Incremental improvement:**
-   - Don't try to fix everything at once
-   - Pick top 5 headers, refactor, measure, repeat
-   - Make refactoring part of regular development
-
----
-
-## 📖 Examples
-
-### Example 1: Daily Development Workflow
-
-```bash
-# Morning: Check what changed overnight
-./buildCheckSummary.py ../build/release/
-
-# After making header changes
 ./buildCheckImpact.py ../build/release/
-
-# Before committing
-./buildCheckRippleEffect.py ../build/release/
+./buildCheckImpact.py ../build/release/ --all-headers
 ```
 
-### Example 2: Investigating Slow Rebuilds
+### buildCheckIncludeGraph
 
+Accurate include graph using clang-scan-deps. Identifies "gateway headers" that pull in excessive dependencies.
+
+**Usage:**
 ```bash
-# Start with optimization analyzer for comprehensive overview
-./buildCheckOptimize.py ../build/release/ --quick
+./buildCheckIncludeGraph.py ../build/release/
+./buildCheckIncludeGraph.py ../build/release/ --top-gateways 20
+```
 
-# Find worst offenders
-./buildCheckDependencyHell.py ../build/release/ --top 20
+**Documentation:** Built-in help
 
-# Check library-level dependencies
-./buildCheckLibraryGraph.py ../build/release/
+### buildCheckIncludeChains
 
-# See which libraries cause biggest rebuild impact
-./buildCheckLibraryGraph.py ../build/release/ --impacted-by libFslBase.a
+Analyzes co-occurrence patterns to understand indirect coupling and include chains.
 
-# Identify gateway headers
-./buildCheckIncludeGraph.py ../build/release/ --full
-
-# Understand coupling
+**Usage:**
+```bash
 ./buildCheckIncludeChains.py ../build/release/
 ```
 
-### Example 3: Refactoring a Header
+**Documentation:** [README_buildCheckIncludeChains.md](README_buildCheckIncludeChains.md)
 
+### buildCheckLibraryGraph
+
+Library-level dependency analysis from build.ninja. Coarser-grained view focusing on module structure.
+
+**Usage:**
 ```bash
-# Before: Check current impact
-./buildCheckIncludeGraph.py ../build/release/ --header include/MyClass.hpp
-
-# Make changes...
-
-# After: Verify improvement
-./buildCheckIncludeGraph.py ../build/release/ --header include/MyClass.hpp
+./buildCheckLibraryGraph.py ../build/release/
+./buildCheckLibraryGraph.py ../build/release/ --export library_graph.dot
 ```
 
-### Example 4: Complete Build Optimization Project
-
-```bash
-# Week 1: Identify problems
-./buildCheckDependencyHell.py ../build/ --top 30 > analysis_week1.txt
-./buildCheckOptimize.py ../build/ --report plan.txt
-
-# Week 2-4: Refactor top 10 worst headers
-# (Use strategies above)
-
-# Week 5: Measure improvement
-./buildCheckDependencyHell.py ../build/ --top 30 > analysis_week5.txt
-./buildCheckDSM.py ../build/ --compare-with ../build-backup/
-
-# Compare results
-diff analysis_week1.txt analysis_week5.txt
-```
-
----
+**Documentation:** [README_buildCheckLibraryGraph.md](README_buildCheckLibraryGraph.md)
 
 ## 🧪 Testing
 
-The BuildCheck suite includes comprehensive tests:
+BuildCheck has comprehensive test coverage:
 
+- **749+ unit and integration tests**
+- **Coverage:** Core functionality, edge cases, security (path traversal, injection prevention)
+- **Test categories:** Unit, integration, security, performance
+
+Run tests:
 ```bash
-cd test/
+cd test
 ./run_tests.sh
+
+# Or with pytest directly
+pytest -v
+
+# With coverage report
+pytest --cov=. --cov-report=html
 ```
 
-See `test/README.md` and `TEST_SUITE_SUMMARY.md` for details.
+See [TEST_SUITE_SUMMARY.md](TEST_SUITE_SUMMARY.md) for details.
 
----
+## 🛠️ Troubleshooting
 
-## 📄 License
+### ccache Compatibility
 
-BSD 3-Clause License
+If using ccache and encountering errors like `error: no such file or directory: 'sloppiness=...'`:
 
-Copyright (c) 2025, Mana Battery
-All rights reserved.
+BuildCheck automatically sanitizes ccache-related arguments from compile_commands.json. If issues persist:
 
-See individual script files for full license text.
+1. Ensure you're using Clang 18+
+2. Check that compile_commands.json is properly generated
+3. See detailed troubleshooting in [README_buildCheckDSM.md](README_buildCheckDSM.md#troubleshooting)
 
----
+### Large Projects
+
+For very large codebases (>10,000 files):
+
+- Use `--filter` to focus on specific directories
+- Consider `--quick` mode in buildCheckOptimize
+- Use `--top N` to limit output in various tools
+- Run analysis on module subsets
+
+### Performance Tips
+
+- **Parallel Analysis:** Most tools using clang-scan-deps run in parallel (use all CPU cores)
+- **Caching:** Results are cached where possible; delete `.buildcheck_cache/` to force refresh
+- **Incremental Analysis:** Use differential mode (`--compare-with`) to analyze only changes
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please ensure:
-- Code follows existing style and conventions
-- New features include tests
-- Documentation is updated
-- Scripts remain Python 3.8+ compatible
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
+
+- Development setup
+- Coding standards
+- Testing guidelines
+- Pull request process
+
+### Development Dependencies
+
+```bash
+pip install -r test/requirements-test.txt
+```
+
+This includes pytest, pytest-cov, pytest-mock, mypy, and black.
+
+## 📝 Examples and Documentation
+
+- **[EXAMPLES.md](EXAMPLES.md)** - Comprehensive usage examples and common workflows
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history and recent changes
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution guidelines
+- **Tool-specific READMEs** - Detailed documentation for each tool
+
+## 📊 Project Structure
+
+```
+build-check/
+├── buildCheck*.py          # Main tool scripts (9 tools)
+├── lib/                    # Shared library modules
+│   ├── clang_utils.py     # clang-scan-deps integration
+│   ├── ninja_utils.py     # Ninja build system utilities
+│   ├── git_utils.py       # Git integration
+│   ├── graph_utils.py     # NetworkX graph analysis
+│   ├── dsm_*.py          # DSM analysis modules
+│   └── ...
+├── test/                   # Comprehensive test suite (749+ tests)
+├── demo/                   # Demo scripts and examples
+├── README*.md             # Documentation
+└── requirements.txt       # Python dependencies
+```
+
+## 🎓 Learn More
+
+### Related Tools and Concepts
+
+- **Ninja Build System:** https://ninja-build.org/
+- **Clang Scan-deps:** https://clang.llvm.org/docs/ClangScanDeps.html
+- **DSM Methodology:** Design Structure Matrix for architecture analysis
+- **Build Performance:** https://www.incredibuild.com/blog/cpp-compilation-optimization
+
+### Use Case Scenarios
+
+1. **Daily Development:** Run `buildCheckSummary` after pulling changes to see rebuild impact
+2. **Code Review:** Use `buildCheckRippleEffect` to assess PR scope and testing needs
+3. **Sprint Planning:** Run `buildCheckDSM --suggest-improvements` to identify tech debt
+4. **Architecture Review:** Generate DSM reports quarterly to track architectural quality
+5. **CI/CD Optimization:** Use JSON outputs for dashboard integration and trend analysis
+
+## 📄 License
+
+This project is licensed under the **BSD 3-Clause License** - see the [LICENSE](LICENSE) file for details.
+
+Copyright (c) 2025, Rene Thrane  
+All rights reserved.
+
+## 🙏 Acknowledgments
+
+This project was created with extensive AI assistance (Claude/GitHub Copilot) as an experimental research project. While it demonstrates useful capabilities and has comprehensive test coverage, it should be used with appropriate caution in production environments.
+
+## 📞 Support and Feedback
+
+- **Issues:** [GitHub Issues](https://github.com/Unarmed1000/build-check/issues)
+- **Repository:** [github.com/Unarmed1000/build-check](https://github.com/Unarmed1000/build-check)
 
 ---
 
-## 📚 Additional Documentation
+**Happy Building! 🚀**
 
-- `README_buildCheckIncludeChains.md` - Detailed buildCheckIncludeChains.py documentation
-- `README_buildCheckSummary.md` - Detailed buildCheckSummary.py documentation
-- `TEST_SUITE_SUMMARY.md` - Test suite documentation
-- `test/README.md` - Testing guide
+*BuildCheck - Because understanding your build shouldn't be harder than writing the code.*
 
----
-
-## 🔍 FAQ
-
-**Q: Do these tools modify my source code?**  
-A: No, all tools are read-only analysis tools.
-
-**Q: Can I run these on any C/C++ project?**  
-A: Yes, as long as you use ninja as your build system and have compile_commands.json.
-
-**Q: Which tool is the most accurate?**  
-A: buildCheckDependencyHell.py and buildCheckIncludeGraph.py use clang-scan-deps for source-level analysis, making them the most accurate.
-
-**Q: Can I use these with CMake?**  
-A: Yes, CMake can generate ninja build files and compile_commands.json.
-
-**Q: Do these work on Windows?**  
-A: Yes, though they're primarily tested on Linux. Ensure Python, ninja, and optionally clang are in your PATH.
-
-**Q: How often should I run these tools?**  
-A: Quick tools (1-2) daily; comprehensive tools (4-6) weekly or when optimizing.
-
----
-
-## 📞 Support
-
-For issues, questions, or contributions, please refer to the project repository or contact the maintainers.

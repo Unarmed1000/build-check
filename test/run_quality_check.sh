@@ -92,45 +92,22 @@ fi
 
 # Check ninja
 echo -n "✓ Checking ninja... "
-NINJA_FOUND=false
-# Try different ways to find ninja
-if command -v ninja >/dev/null 2>&1; then
-    echo -e "${GREEN}OK${NC}"
-    NINJA_FOUND=true
-elif command -v ninja-build >/dev/null 2>&1; then
-    echo -e "${GREEN}OK (ninja-build)${NC}"
-    NINJA_FOUND=true
-elif [ -x /usr/bin/ninja ]; then
-    echo -e "${GREEN}OK (/usr/bin/ninja)${NC}"
-    NINJA_FOUND=true
-elif [ -x /usr/local/bin/ninja ]; then
-    echo -e "${GREEN}OK (/usr/local/bin/ninja)${NC}"
-    NINJA_FOUND=true
-fi
-
-if [ "$NINJA_FOUND" = false ]; then
+NINJA_CMD=$(python3 -m lib.tool_detection --find-ninja 2>/dev/null)
+if [ -n "$NINJA_CMD" ]; then
+    echo -e "${GREEN}OK ($NINJA_CMD)${NC}"
+else
     echo -e "${YELLOW}MISSING${NC}"
     QUALITY_ISSUES+=("ninja missing")
 fi
 
 # Check clang-scan-deps
 echo -n "✓ Checking clang-scan-deps... "
-if command -v clang-scan-deps >/dev/null 2>&1; then
-    echo -e "${GREEN}OK${NC}"
+CLANG_SCAN_DEPS_CMD=$(python3 -m lib.tool_detection --find-clang-scan-deps 2>/dev/null)
+if [ -n "$CLANG_SCAN_DEPS_CMD" ]; then
+    echo -e "${GREEN}OK ($CLANG_SCAN_DEPS_CMD)${NC}"
 else
-    # Try to find any version
-    FOUND=false
-    for version in 19 18 17 16 15; do
-        if command -v clang-scan-deps-$version >/dev/null 2>&1; then
-            echo -e "${GREEN}OK (clang-scan-deps-$version)${NC}"
-            FOUND=true
-            break
-        fi
-    done
-    if [ "$FOUND" = false ]; then
-        echo -e "${YELLOW}MISSING (optional for some tools)${NC}"
-        QUALITY_ISSUES+=("clang-scan-deps missing")
-    fi
+    echo -e "${YELLOW}MISSING (optional for some tools)${NC}"
+    QUALITY_ISSUES+=("clang-scan-deps missing")
 fi
 
 # Run type checking
@@ -140,15 +117,15 @@ set +e  # Temporarily disable exit on error
 MYPY_OUTPUT=$(bash "$SCRIPT_DIR/run_mypy.sh" 2>&1)
 MYPY_EXIT_CODE=$?
 set -e  # Re-enable exit on error
-MYPY_FAILED=false
 if [ $MYPY_EXIT_CODE -eq 0 ] && echo "$MYPY_OUTPUT" | grep -q "Success: no issues found"; then
     echo -e "   ${GREEN}✓ All type checks passed${NC}"
 elif [ $MYPY_EXIT_CODE -ne 0 ]; then
     echo -e "   ${RED}✗ Type checking failed${NC}"
     echo "$MYPY_OUTPUT"
-    QUALITY_SCORE=$((QUALITY_SCORE - 2))
-    QUALITY_ISSUES+=("mypy type checking errors")
-    MYPY_FAILED=true
+    echo ""
+    echo -e "${RED}✗ Quality check failed: mypy type checking errors detected${NC}"
+    echo "To see full details, run: ./test/run_mypy.sh"
+    exit 1
 else
     echo -e "   ${YELLOW}⚠ Type checking may have issues${NC}"
     echo "$MYPY_OUTPUT"
@@ -261,8 +238,8 @@ if [ $DOCS_MISSING -gt 0 ]; then
 fi
 
 # Calculate quality rating based on issues found
-# If mypy, pylint, or tests failed, set to lowest quality
-if [ "$MYPY_FAILED" = true ] || [ "$TESTS_FAILED" = true ] || [ "$PYLINT_FAILED" = true ]; then
+# If pylint or tests failed, set to lowest quality
+if [ "$TESTS_FAILED" = true ] || [ "$PYLINT_FAILED" = true ]; then
     QUALITY_SCORE=1
 else
     # Start with 5 stars, deduct for issues
@@ -314,11 +291,9 @@ echo "  • Performance optimizations"
 echo "  • Progress indicators"
 echo "  • Professional UX"
 echo "  • ${PASSED_COUNT} tests passing"
-if [ "$MYPY_FAILED" = false ]; then
-    echo "  • 100% type safety"
-fi
+echo "  • 100% type safety"
 echo ""
-if [ "$MYPY_FAILED" = false ] && [ "$TESTS_FAILED" = false ] && [ "$PYLINT_FAILED" = false ]; then
+if [ "$TESTS_FAILED" = false ] && [ "$PYLINT_FAILED" = false ]; then
     echo "Ready for production use! 🚀"
 else
     echo -e "${YELLOW}⚠ Fix issues above before production use${NC}"

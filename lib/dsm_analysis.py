@@ -1779,9 +1779,7 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
                     f"(saves {files_saved} of {ri.total_source_files} files per commit, {delta_pct:.1f}% reduction, details below){Colors.RESET}"
                 )
             else:
-                print(
-                    f"  {Colors.GREEN}✓ Future rebuild improvement: {abs(rebuild_impact):.0f}% fewer downstream header rebuilds (details below){Colors.RESET}"
-                )
+                print(f"  {Colors.GREEN}✓ Future rebuild improvement: {abs(rebuild_impact):.0f}% fewer headers affected (details below){Colors.RESET}")
         elif ri.ongoing_rebuild_delta_percentage > 5.0:
             # Significant regression in ongoing cost - categorize by magnitude (PRIORITIZE ONGOING OVER ONE-TIME)
             if ri.total_source_files > 0:
@@ -1925,9 +1923,7 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
                         print(
                             f"    {Colors.GREEN}({files_saved} {file_word} saved vs. baseline: {ri.baseline_ongoing_rebuild_count} → {ri.future_ongoing_rebuild_count}){Colors.RESET}"
                         )
-            print(
-                f"  • {Colors.GREEN}{Colors.BRIGHT}{fs.reduction_percentage}% fewer downstream header rebuilds{Colors.RESET} (which cascade to .c/.cpp files)"
-            )
+            print(f"  • {Colors.GREEN}{Colors.BRIGHT}{fs.reduction_percentage}% fewer headers affected{Colors.RESET} (which cascade to .c/.cpp files)")
 
             print(f"\n{Colors.BRIGHT}This Commit (One-Time Cost):{Colors.RESET}")
             if ri.total_source_files > 0:
@@ -2162,9 +2158,9 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
                             baseline_total_fanin += fan_in
                             rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else os.path.basename(header)
                             status_label = " (removed)" if status == "removed" else ""
-                            print(f"    • Change {rel_path:40s} → {Colors.RED}{fan_in} headers rebuild{Colors.RESET}{status_label}")
+                            print(f"    • Change {rel_path:40s} → {Colors.RED}{fan_in} dependent headers{Colors.RESET}{status_label}")
                         if baseline_total_fanin > 0:
-                            print(f"    {Colors.DIM}Total blast radius: {baseline_total_fanin} downstream rebuilds{Colors.RESET}")
+                            print(f"    {Colors.DIM}Total blast radius: {baseline_total_fanin} dependent headers{Colors.RESET}")
                         print()
 
                         print(f"  {Colors.BRIGHT}AFTER Refactoring:{Colors.RESET}")
@@ -2196,11 +2192,11 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
                                         # Check if this is an isolated implementation (low fan-in)
                                         if repl_fan_in <= 1:
                                             isolated_implementations.append(rel_path)
-                                            print(f"    • Change {rel_path:40s} → {Colors.GREEN}{repl_fan_in} headers rebuild{Colors.RESET} (isolated! 🎯)")
+                                            print(f"    • Change {rel_path:40s} → {Colors.GREEN}{repl_fan_in} dependent headers{Colors.RESET} (isolated! 🎯)")
                                         else:
                                             reduction_pct = int((baseline_fan_in - repl_fan_in) / baseline_fan_in * 100) if baseline_fan_in > 0 else 0
                                             print(
-                                                f"    • Change {rel_path:40s} → {Colors.GREEN}{repl_fan_in} headers rebuild{Colors.RESET} ({reduction_pct}% reduction)"
+                                                f"    • Change {rel_path:40s} → {Colors.GREEN}{repl_fan_in} dependent headers{Colors.RESET} ({reduction_pct}% reduction)"
                                             )
                                 else:
                                     # No clear replacement found
@@ -2212,16 +2208,16 @@ def print_dsm_delta(delta: DSMDelta, baseline: DSMAnalysisResults, current: DSMA
                                     current_total_fanin += fan_in
                                     rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else os.path.basename(header)
                                     reduction_pct = int((baseline_fan_in - fan_in) / baseline_fan_in * 100) if baseline_fan_in > 0 else 0
-                                    print(f"    • Change {rel_path:40s} → {Colors.GREEN}{fan_in} headers rebuild{Colors.RESET} ({reduction_pct}% reduction)")
+                                    print(f"    • Change {rel_path:40s} → {Colors.GREEN}{fan_in} dependent headers{Colors.RESET} ({reduction_pct}% reduction)")
 
                         if current_total_fanin >= 0:
-                            print(f"    {Colors.DIM}Total blast radius: ~{current_total_fanin} downstream rebuilds{Colors.RESET}")
+                            print(f"    {Colors.DIM}Total blast radius: ~{current_total_fanin} dependent headers{Colors.RESET}")
                         print()
 
                         if baseline_total_fanin > 0 and current_total_fanin < baseline_total_fanin:
                             reduction_pct = int((baseline_total_fanin - current_total_fanin) / baseline_total_fanin * 100)
                             print(
-                                f"  {Colors.BRIGHT}{Colors.GREEN}→ Future rebuild reduction: {reduction_pct}% fewer cascading header rebuilds (and their .c/.cpp files){Colors.RESET}"
+                                f"  {Colors.BRIGHT}{Colors.GREEN}→ Future rebuild reduction: {reduction_pct}% fewer cascading header dependencies (and their .c/.cpp files){Colors.RESET}"
                             )
 
                         # Highlight isolated implementations
