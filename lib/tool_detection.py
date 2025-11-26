@@ -141,15 +141,11 @@ def find_clang_scan_deps() -> ToolInfo:
         version_output = _try_command([cmd])
 
         if version_output:
-            # Validate command exists in PATH
-            if shutil.which(cmd):
-                version = _extract_version(version_output)
-                logger.debug("Found %s version %s", cmd, version)
-                tool_info = ToolInfo(command=cmd, full_command=cmd, version=version)
-                _tool_cache[cache_key] = tool_info
-                return tool_info
-            else:
-                logger.debug("%s responded but not in PATH", cmd)
+            version = _extract_version(version_output)
+            logger.debug("Found %s version %s", cmd, version)
+            tool_info = ToolInfo(command=cmd, full_command=cmd, version=version)
+            _tool_cache[cache_key] = tool_info
+            return tool_info
         else:
             logger.debug("%s not found", cmd)
 
@@ -177,15 +173,11 @@ def find_ninja() -> ToolInfo:
         version_output = _try_command([cmd])
 
         if version_output:
-            # Validate command exists in PATH
-            if shutil.which(cmd):
-                version = _extract_version(version_output)
-                logger.debug("Found %s version %s", cmd, version)
-                tool_info = ToolInfo(command=cmd, full_command=cmd, version=version)
-                _tool_cache[cache_key] = tool_info
-                return tool_info
-            else:
-                logger.debug("%s responded but not in PATH", cmd)
+            version = _extract_version(version_output)
+            logger.debug("Found %s version %s", cmd, version)
+            tool_info = ToolInfo(command=cmd, full_command=cmd, version=version)
+            _tool_cache[cache_key] = tool_info
+            return tool_info
         else:
             logger.debug("%s not found", cmd)
 

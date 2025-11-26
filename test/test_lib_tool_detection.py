@@ -150,13 +150,17 @@ class TestFindClangScanDeps:
     """Tests for find_clang_scan_deps function."""
 
     def test_find_clang_scan_deps_found_first(self, monkeypatch: Any) -> None:
-        """Test finding clang-scan-deps-19 first."""
+        """Test finding clang-scan-deps-19 when version 20 is not available."""
         clear_cache()
-        mock_result = MagicMock()
-        mock_result.stdout = "clang-scan-deps version 19.1.3\nLLVM version 19.1.3"
-        mock_run = Mock(return_value=mock_result)
+
+        def mock_run(cmd: List[str], **kwargs: Any) -> MagicMock:
+            result = MagicMock()
+            if "20" in cmd[0]:
+                raise FileNotFoundError()
+            result.stdout = "clang-scan-deps version 19.1.3\nLLVM version 19.1.3"
+            return result
+
         monkeypatch.setattr("subprocess.run", mock_run)
-        monkeypatch.setattr("shutil.which", lambda x: f"/usr/bin/{x}" if "19" in x else None)
 
         tool_info = find_clang_scan_deps()
         assert tool_info.is_found()
@@ -164,18 +168,17 @@ class TestFindClangScanDeps:
         assert tool_info.version == "clang-scan-deps version 19.1.3"
 
     def test_find_clang_scan_deps_fallback(self, monkeypatch: Any) -> None:
-        """Test falling back to clang-scan-deps-18 when 19 not found."""
+        """Test falling back to clang-scan-deps-18 when 20 and 19 not found."""
         clear_cache()
 
         def mock_run(cmd: List[str], **kwargs: Any) -> MagicMock:
             result = MagicMock()
-            if "19" in cmd[0]:
+            if "20" in cmd[0] or "19" in cmd[0]:
                 raise FileNotFoundError()
             result.stdout = "clang-scan-deps version 18.1.0"
             return result
 
         monkeypatch.setattr("subprocess.run", mock_run)
-        monkeypatch.setattr("shutil.which", lambda x: f"/usr/bin/{x}" if "18" in x else None)
 
         tool_info = find_clang_scan_deps()
         assert tool_info.is_found()
@@ -276,18 +279,18 @@ class TestFindNinja:
         assert not tool_info.is_found()
 
     def test_find_ninja_which_returns_none_despite_success(self, monkeypatch: Any) -> None:
-        """Test when ninja --version succeeds but shutil.which returns None."""
+        """Test that ninja is found when subprocess.run succeeds, regardless of shutil.which."""
         clear_cache()
         mock_result = MagicMock()
         mock_result.stdout = "1.11.1"
         monkeypatch.setattr("subprocess.run", Mock(return_value=mock_result))
-        # which returns None (ninja not in PATH according to shutil)
+        # which returns None (ninja not in PATH according to shutil) - but we no longer check this
         monkeypatch.setattr("shutil.which", lambda x: None)
 
         tool_info = find_ninja()
-        # Should not be found since which returned None
-        assert not tool_info.is_found()
-        assert tool_info.command is None
+        # Should be found since subprocess.run succeeded
+        assert tool_info.is_found()
+        assert tool_info.command == "ninja"
 
 
 class TestFindMypy:
@@ -494,19 +497,20 @@ class TestCommandValidation:
     """Tests for command validation using shutil.which."""
 
     def test_command_validated_with_which(self, monkeypatch: Any) -> None:
-        """Test that found commands are validated with shutil.which."""
+        """Test that commands are validated via subprocess.run, not shutil.which."""
         clear_cache()
         mock_result = MagicMock()
         mock_result.stdout = "1.11.1"
         monkeypatch.setattr("subprocess.run", Mock(return_value=mock_result))
 
-        # Mock which to return None (command not in PATH)
+        # Mock which to return None - should not affect detection anymore
         which_mock = Mock(return_value=None)
         monkeypatch.setattr("shutil.which", which_mock)
 
         tool_info = find_ninja()
-        assert not tool_info.is_found()
-        assert which_mock.called
+        # Tool should be found since subprocess.run succeeded
+        assert tool_info.is_found()
+        assert tool_info.command == "ninja"
 
     def test_multiword_command_validation(self, monkeypatch: Any) -> None:
         """Test validation of multi-word commands (python3 -m mypy)."""

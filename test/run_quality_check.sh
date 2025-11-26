@@ -101,8 +101,8 @@ done
 
 # Check external tools using loop
 declare -A EXTERNAL_TOOLS=(
-    ["ninja"]="--find-ninja:optional for some tools"
-    ["clang-scan-deps"]="--find-clang-scan-deps:optional for some tools"
+    ["ninja"]="--find-ninja:required for build system"
+    ["clang-scan-deps"]="--find-clang-scan-deps:required for dependency analysis"
 )
 
 for tool_name in "${!EXTERNAL_TOOLS[@]}"; do
