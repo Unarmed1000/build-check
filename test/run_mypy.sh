@@ -6,6 +6,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Change to project root so imports work correctly
+cd "$PROJECT_ROOT" || exit 1
+export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
+
 echo "Running mypy type checking with strict mode..."
 echo "================================"
 

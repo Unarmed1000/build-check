@@ -7,6 +7,10 @@ set -e
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Change to project root and add to PYTHONPATH so lib module can be imported
+cd "$SCRIPT_DIR" || exit 1
+export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
+
 echo "🔍 BuildCheck Environment Check"
 echo "================================"
 echo ""
@@ -53,7 +57,6 @@ echo ""
 
 # Run Python verification for all other packages
 if [ "$CRITICAL_MISSING" = false ]; then
-    cd "$SCRIPT_DIR"
     python3 -m lib.package_verification --check-all
     PYTHON_EXIT=$?
     

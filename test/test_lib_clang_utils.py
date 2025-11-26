@@ -34,10 +34,11 @@ class TestFindClangScanDeps:
 
         clear_cache()
 
-        def mock_which(cmd: str) -> str | None:
-            return None
+        # Mock subprocess.run to raise FileNotFoundError for all clang-scan-deps variants
+        def mock_run(cmd: list[str], **kwargs: Any) -> None:
+            raise FileNotFoundError()
 
-        monkeypatch.setattr("shutil.which", mock_which)
+        monkeypatch.setattr("subprocess.run", mock_run)
 
         result = find_clang_scan_deps()
 

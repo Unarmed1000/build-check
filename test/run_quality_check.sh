@@ -5,6 +5,10 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Change to project root and add to PYTHONPATH so lib module can be imported
+cd "$PROJECT_ROOT" || exit 1
+export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
+
 echo "🔍 BuildCheck Quality Check"
 echo "============================"
 echo ""
@@ -45,7 +49,8 @@ check_python_module() {
 check_external_tool() {
     local tool_name=$1
     local tool_flag=$2
-    local description=$3
+    local severity=$3
+    local description=$4
     
     echo -n "✓ Checking $tool_name... "
     local cmd error_msg output
@@ -61,15 +66,31 @@ check_external_tool() {
         local func_name="${tool_flag/--find-/find_}"
         error_msg=$(python3 -c "from lib.tool_detection import ${func_name}, clear_cache; clear_cache(); info = ${func_name}(); print(info.error_message if info.error_message else '')" 2>/dev/null)
         
-        if [ -n "$error_msg" ]; then
-            echo -e "${YELLOW}MISSING ($error_msg)${NC}"
-        elif [ -n "$description" ]; then
-            echo -e "${YELLOW}MISSING ($description)${NC}"
+        if [ "$severity" = "required" ]; then
+            echo -e "${RED}FAIL${NC}"
+            echo -e "${RED}ERROR: $tool_name is required but not found${NC}"
+            if [ -n "$error_msg" ]; then
+                echo -e "${RED}  Details: $error_msg${NC}"
+            fi
+            if [ -n "$description" ]; then
+                echo -e "${RED}  Reason: $description${NC}"
+            fi
+            echo -e "${RED}  Command tried: python3 -m lib.tool_detection $tool_flag${NC}"
+            echo -e "${RED}  Working directory: $(pwd)${NC}"
+            echo -e "${RED}  PYTHONPATH: ${PYTHONPATH:-not set}${NC}"
+            echo -e "${RED}  Exit code: $exit_code${NC}"
+            exit 1
         else
-            echo -e "${YELLOW}MISSING${NC}"
+            if [ -n "$error_msg" ]; then
+                echo -e "${YELLOW}MISSING ($error_msg)${NC}"
+            elif [ -n "$description" ]; then
+                echo -e "${YELLOW}MISSING ($description)${NC}"
+            else
+                echo -e "${YELLOW}MISSING${NC}"
+            fi
+            QUALITY_ISSUES+=("$tool_name missing")
+            return 1
         fi
-        QUALITY_ISSUES+=("$tool_name missing")
-        return 1
     fi
 }
 
@@ -101,13 +122,13 @@ done
 
 # Check external tools using loop
 declare -A EXTERNAL_TOOLS=(
-    ["ninja"]="--find-ninja:required for build system"
-    ["clang-scan-deps"]="--find-clang-scan-deps:required for dependency analysis"
+    ["ninja"]="--find-ninja:required:required for build system"
+    ["clang-scan-deps"]="--find-clang-scan-deps:required:required for dependency analysis"
 )
 
 for tool_name in "${!EXTERNAL_TOOLS[@]}"; do
-    IFS=':' read -r tool_flag description <<< "${EXTERNAL_TOOLS[$tool_name]}"
-    check_external_tool "$tool_name" "$tool_flag" "$description"
+    IFS=':' read -r tool_flag severity description <<< "${EXTERNAL_TOOLS[$tool_name]}"
+    check_external_tool "$tool_name" "$tool_flag" "$severity" "$description"
 done
 
 # Run type checking
