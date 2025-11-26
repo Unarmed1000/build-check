@@ -66,11 +66,13 @@ class ToolInfo:
         command: Simple command name for bash compatibility (e.g., "ninja", "python3", "mypy")
         full_command: Full invocation string (e.g., "python3 -m mypy", "ninja")
         version: Raw version string as reported by tool (e.g., "1.11.1", "mypy 1.8.0")
+        error_message: Optional error message if tool not found (e.g., "not in PATH", "version check failed")
     """
 
     command: Optional[str]
     full_command: Optional[str]
     version: Optional[str]
+    error_message: Optional[str] = None
 
     def is_found(self) -> bool:
         """Check if tool was found.
@@ -152,7 +154,8 @@ def find_clang_scan_deps() -> ToolInfo:
             logger.debug("%s not found", cmd)
 
     logger.debug("clang-scan-deps not found")
-    tool_info = ToolInfo(command=None, full_command=None, version=None)
+    tried_cmds = ", ".join(CLANG_SCAN_DEPS_COMMANDS)
+    tool_info = ToolInfo(command=None, full_command=None, version=None, error_message=f"not in PATH (tried: {tried_cmds})")
     _tool_cache[cache_key] = tool_info
     return tool_info
 
@@ -187,7 +190,8 @@ def find_ninja() -> ToolInfo:
             logger.debug("%s not found", cmd)
 
     logger.debug("ninja not found")
-    tool_info = ToolInfo(command=None, full_command=None, version=None)
+    tried_cmds = ", ".join(NINJA_COMMANDS)
+    tool_info = ToolInfo(command=None, full_command=None, version=None, error_message=f"not in PATH (tried: {tried_cmds})")
     _tool_cache[cache_key] = tool_info
     return tool_info
 
@@ -223,7 +227,8 @@ def find_mypy() -> ToolInfo:
             logger.debug("%s not found", cmd_str)
 
     logger.debug("mypy not found")
-    tool_info = ToolInfo(command=None, full_command=None, version=None)
+    tried_cmds = ", ".join([" ".join(cmd) for cmd in MYPY_COMMANDS])
+    tool_info = ToolInfo(command=None, full_command=None, version=None, error_message=f"not in PATH (tried: {tried_cmds})")
     _tool_cache[cache_key] = tool_info
     return tool_info
 
@@ -259,7 +264,8 @@ def find_pylint() -> ToolInfo:
             logger.debug("%s not found", cmd_str)
 
     logger.debug("pylint not found")
-    tool_info = ToolInfo(command=None, full_command=None, version=None)
+    tried_cmds = ", ".join([" ".join(cmd) for cmd in PYLINT_COMMANDS])
+    tool_info = ToolInfo(command=None, full_command=None, version=None, error_message=f"not in PATH (tried: {tried_cmds})")
     _tool_cache[cache_key] = tool_info
     return tool_info
 
@@ -295,7 +301,8 @@ def find_pytest() -> ToolInfo:
             logger.debug("%s not found", cmd_str)
 
     logger.debug("pytest not found")
-    tool_info = ToolInfo(command=None, full_command=None, version=None)
+    tried_cmds = ", ".join([" ".join(cmd) for cmd in PYTEST_COMMANDS])
+    tool_info = ToolInfo(command=None, full_command=None, version=None, error_message=f"not in PATH (tried: {tried_cmds})")
     _tool_cache[cache_key] = tool_info
     return tool_info
 
@@ -331,7 +338,8 @@ def find_pytest_cov() -> ToolInfo:
             logger.debug("%s not found", cmd_str)
 
     logger.debug("pytest-cov not found")
-    tool_info = ToolInfo(command=None, full_command=None, version=None)
+    tried_cmds = ", ".join([" ".join(cmd) for cmd in PYTEST_COV_COMMANDS])
+    tool_info = ToolInfo(command=None, full_command=None, version=None, error_message=f"not in PATH (tried: {tried_cmds})")
     _tool_cache[cache_key] = tool_info
     return tool_info
 

@@ -47,6 +47,21 @@ class TestToolInfo:
         assert tool_info.full_command == "python3 -m mypy"
         assert tool_info.version == "mypy 1.8.0"
 
+    def test_tool_info_with_error_message(self) -> None:
+        """Test ToolInfo stores error message when tool not found."""
+        tool_info = ToolInfo(command=None, full_command=None, version=None, error_message="not in PATH")
+        assert not tool_info.is_found()
+        assert tool_info.error_message == "not in PATH"
+
+    def test_tool_info_with_detailed_error_message(self) -> None:
+        """Test ToolInfo stores detailed error message with tried commands."""
+        error_msg = "not in PATH (tried: ninja, ninja-build)"
+        tool_info = ToolInfo(command=None, full_command=None, version=None, error_message=error_msg)
+        assert not tool_info.is_found()
+        assert tool_info.error_message is not None
+        assert "tried:" in tool_info.error_message
+        assert "ninja" in tool_info.error_message
+
 
 class TestConstants:
     """Tests for exported command constants."""
@@ -211,6 +226,68 @@ class TestFindNinja:
         tool_info = find_ninja()
         assert tool_info.is_found()
         assert tool_info.command == "ninja-build"
+
+    def test_find_ninja_not_found(self, monkeypatch: Any) -> None:
+        """Test when ninja is not available at all."""
+        clear_cache()
+        monkeypatch.setattr("subprocess.run", Mock(side_effect=FileNotFoundError()))
+        monkeypatch.setattr("shutil.which", lambda x: None)
+
+        tool_info = find_ninja()
+        assert not tool_info.is_found()
+        assert tool_info.command is None
+        assert tool_info.error_message is not None
+        assert "not in PATH" in tool_info.error_message
+        assert "ninja" in tool_info.error_message
+        assert "ninja-build" in tool_info.error_message
+
+    def test_find_ninja_usr_bin_path(self, monkeypatch: Any) -> None:
+        """Test finding ninja specifically in /usr/bin/ninja."""
+        clear_cache()
+        mock_result = MagicMock()
+        mock_result.stdout = "1.11.1"
+        monkeypatch.setattr("subprocess.run", Mock(return_value=mock_result))
+        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/ninja" if x == "ninja" else None)
+
+        tool_info = find_ninja()
+        assert tool_info.is_found()
+        assert tool_info.command == "ninja"
+        assert tool_info.version == "1.11.1"
+
+    def test_find_ninja_version_fails_but_which_succeeds(self, monkeypatch: Any) -> None:
+        """Test when ninja --version fails but which finds it."""
+        clear_cache()
+        # Version command fails
+        monkeypatch.setattr("subprocess.run", Mock(side_effect=subprocess.CalledProcessError(1, ["ninja", "--version"])))
+        # But which finds it
+        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/ninja" if x == "ninja" else None)
+
+        tool_info = find_ninja()
+        # Should not be found since --version failed
+        assert not tool_info.is_found()
+
+    def test_find_ninja_timeout(self, monkeypatch: Any) -> None:
+        """Test when ninja --version times out."""
+        clear_cache()
+        monkeypatch.setattr("subprocess.run", Mock(side_effect=subprocess.TimeoutExpired(["ninja", "--version"], 5)))
+        monkeypatch.setattr("shutil.which", lambda x: "/usr/bin/ninja" if x == "ninja" else None)
+
+        tool_info = find_ninja()
+        assert not tool_info.is_found()
+
+    def test_find_ninja_which_returns_none_despite_success(self, monkeypatch: Any) -> None:
+        """Test when ninja --version succeeds but shutil.which returns None."""
+        clear_cache()
+        mock_result = MagicMock()
+        mock_result.stdout = "1.11.1"
+        monkeypatch.setattr("subprocess.run", Mock(return_value=mock_result))
+        # which returns None (ninja not in PATH according to shutil)
+        monkeypatch.setattr("shutil.which", lambda x: None)
+
+        tool_info = find_ninja()
+        # Should not be found since which returned None
+        assert not tool_info.is_found()
+        assert tool_info.command is None
 
 
 class TestFindMypy:
