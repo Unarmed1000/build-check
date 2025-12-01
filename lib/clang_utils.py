@@ -1513,11 +1513,19 @@ def build_include_graph(build_dir: str, verbose: bool = True) -> IncludeGraphSca
             logger.warning("build.ninja not found, falling back to pattern-based generated file detection")
 
         # Compute project root from source file paths in compile_commands.json
-        # Include both source files and headers to get accurate project root
+        # Use only files directly mentioned in ninja (source_to_deps), not all discovered headers
         source_files = extract_source_files_from_compile_commands(filtered_db)
-        all_project_files = source_files + list(all_headers)
+
+        # Extract headers directly from source_to_deps (ninja-mentioned files only)
+        ninja_headers = set()
+        for deps in source_to_deps.values():
+            for dep in deps:
+                if is_valid_header_file(dep) and not is_system_header(dep):
+                    ninja_headers.add(dep)
+
+        all_project_files = source_files + list(ninja_headers)
         project_root = find_project_root_from_sources(all_project_files)
-        logger.debug("Detected project root: %s (from %d source files and %d headers)", project_root, len(source_files), len(all_headers))
+        logger.debug("Detected project root: %s (from %d source files and %d ninja headers)", project_root, len(source_files), len(ninja_headers))
 
         all_files: Set[str] = set(all_headers)
         all_files.update(source_to_deps.keys())  # Add source files
