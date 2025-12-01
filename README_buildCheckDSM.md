@@ -525,36 +525,106 @@ Overall Assessment: Architecture degraded slightly
 
 ## Metrics Explained
 
-### Fan-out
-Number of headers this header **includes** (outgoing dependencies). High fan-out indicates this header depends on many others.
+### Fan-out (Efferent Coupling)
+Number of headers this header **includes** (outgoing dependencies).
 
-### Fan-in
-Number of headers that **include** this header (incoming dependencies). High fan-in indicates this header is widely used.
+**Value Range:** 0 to N (where N = total headers in project)
 
-### Coupling
-Total dependencies: `Fan-in + Fan-out`. Higher coupling = more connections = harder to change.
+**Interpretation:**
+- **Low (0-5):** ✅ **GOOD for foundation headers** - Minimal dependencies, stable base
+- **Low (0-5):** ❌ **BAD for leaf headers** - May indicate isolated/unused code
+- **High (>30):** ❌ **BAD** - God object anti-pattern, knows too much, needs splitting
 
-### Stability
+### Fan-in (Afferent Coupling)
+Number of headers that **include** this header (incoming dependencies).
+
+**Value Range:** 0 to N (where N = total headers in project)
+
+**Interpretation:**
+- **High (>30):** ✅ **GOOD with low fan-out** - Foundation header, widely reused, stable architecture
+- **High (>30):** ⚠️ **PROBLEMATIC with high fan-out** - Middleman/coupling hub, change amplification
+- **Low (0-5):** ✓ **NEUTRAL** - Leaf component or application-specific code
+
+### Coupling (Total Degree)
+Total dependencies: `Fan-in + Fan-out`
+
+**Value Range:** 0 to 2N
+
+**Interpretation:**
+- **High coupling is NOT always bad** - Foundation headers naturally have high coupling from fan-in
+- **Context matters:**
+  - High coupling from **fan-in only** → ✅ Foundation header (good)
+  - High coupling from **fan-out only** → ❌ God object (bad)
+  - High coupling from **both** → ⚠️ Middleman/hub (problematic)
+
+**Note:** The "HIGH-COUPLING HEADERS" section automatically filters out foundation headers since they're architecturally healthy.
+
+### Stability (Abstractness)
 `Fan-out / (Fan-in + Fan-out)`
-- **0.0** = Very stable (many dependents, few dependencies) — hard to change, affects many
-- **1.0** = Very unstable (few dependents, many dependencies) — easy to change, affects few
-- **0.5** = Balanced
 
-### Sparsity
+**Value Range:** 0.0 to 1.0
+
+**Interpretation:**
+- **0.0-0.1:** ✅ **GOOD** - Very stable foundation (e.g., `BasicTypes.hpp`)
+  - Many dependents, few dependencies
+  - Rarely changes, widely reused
+  - Stable architectural base
+- **0.4-0.6:** ⚠️ **WATCH** - Medium stability (e.g., `BaseWindow.hpp`)
+  - Balanced dependencies
+  - Coupling bottleneck, change amplification risk
+- **0.9-1.0:** ❌ **BAD** - Very unstable (e.g., `Manager.hpp`)
+  - Few dependents, many dependencies
+  - God object, knows too much
+  - Volatile, needs splitting
+
+### Sparsity (Matrix Density)
 Percentage of empty cells in the matrix: `100% × (1 - actual_deps / possible_deps)`
-- **High sparsity (>95%)**: Low coupling, modular design
-- **Low sparsity (<90%)**: High coupling, tight integration
+
+**Value Range:** 0% to 100%
+
+**Interpretation:**
+- **High sparsity (>95%):** ✅ Low coupling, modular design
+- **Medium sparsity (90-95%):** ✓ Acceptable coupling
+- **Low sparsity (<90%):** ❌ High coupling, tight integration, needs refactoring
 
 ### Cohesion (Module-level)
 `100% × intra_module_deps / (intra_module_deps + inter_module_deps)`
-- **High cohesion (>80%)**: Good module boundaries
-- **Low cohesion (<60%)**: Module boundaries may need improvement
 
-### PageRank
-Measures architectural importance using Google's PageRank algorithm. Headers with high PageRank are influential in the dependency graph and changes to them have wide-reaching effects.
+**Value Range:** 0% to 100%
 
-### Betweenness Centrality
-Measures how often a header appears on shortest paths between other headers. High betweenness indicates architectural bottlenecks — headers that connect different parts of the system.
+**Interpretation:**
+- **High cohesion (>80%):** ✅ Good module boundaries, strong encapsulation
+- **Medium cohesion (60-80%):** ✓ Acceptable boundaries
+- **Low cohesion (<60%):** ❌ Weak boundaries, module structure needs improvement
+
+### PageRank (Architectural Influence)
+Measures architectural importance using Google's PageRank algorithm. Indicates the **influence** and **impact** of changes to this header.
+
+**Value Range:** 0.0 to 1.0 (normalized, sum across all headers ≈ 1.0)
+
+**Interpretation:**
+- **High PageRank (>0.01) on foundation headers:** ✅ **EXPECTED/GOOD**
+  - Example: `BasicTypes.hpp` with PageRank 0.1048
+  - High influence = many transitive dependents
+  - Changes have wide impact but header is stable (low fan-out)
+  - This is architectural importance, not a problem
+- **High PageRank (>0.01) on god objects:** ❌ **BAD**
+  - Example: `Manager.hpp` with high fan-out
+  - High influence + high volatility = risky combination
+  - Changes ripple through codebase
+- **High PageRank (>0.01) on middlemen:** ⚠️ **PROBLEMATIC**
+  - Coupling bottleneck, change amplification
+
+**Key Insight:** PageRank measures *influence*, not *quality*. High PageRank is only problematic when combined with high fan-out (instability).
+
+### Betweenness Centrality (Architectural Bottleneck)
+Measures how often a header appears on shortest paths between other headers.
+
+**Value Range:** 0.0 to 1.0 (normalized)
+
+**Interpretation:**
+- **High betweenness:** ⚠️ Architectural bottleneck - connects disparate parts of system
+- **Low betweenness:** ✓ Localized component, fewer transitive dependencies
 
 ### Architecture Quality Score (0-100)
 Composite metric based on:

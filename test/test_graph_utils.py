@@ -270,7 +270,7 @@ class TestDSMMetrics:
 
     def test_dsm_metrics_creation(self) -> None:
         """Test creating DSMMetrics."""
-        metrics = DSMMetrics(fan_out=5, fan_in=3, coupling=8, stability=0.625)
+        metrics = DSMMetrics(fan_out=5, fan_in=3, fan_out_project=5, fan_out_external=0, coupling=8, stability=0.625)
 
         assert metrics.fan_out == 5
         assert metrics.fan_in == 3

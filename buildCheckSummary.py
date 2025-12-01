@@ -155,8 +155,9 @@ def main() -> int:
         print(f"Analyzing: {args.build_directory}", file=sys.stderr)
 
     # Validate build directory using library helper
+    # Skip generated file checks since we only need ninja's build graph for explain mode
     try:
-        build_dir, _ = validate_build_directory_with_feedback(args.build_directory, verbose=args.verbose)
+        build_dir, _ = validate_build_directory_with_feedback(args.build_directory, verbose=args.verbose, skip_generated_files_check=True)
     except (ValueError, RuntimeError):
         # Error message already printed by helper
         return EXIT_INVALID_ARGS

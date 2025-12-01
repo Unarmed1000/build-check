@@ -26,15 +26,15 @@ class TestCouplingTrends:
     def test_coupling_trends_with_common_headers(self) -> None:
         """Test coupling trend computation with common headers."""
         baseline_metrics = {
-            "a.h": DSMMetrics(fan_out=5, fan_in=10, coupling=15, stability=0.33),
-            "b.h": DSMMetrics(fan_out=8, fan_in=12, coupling=20, stability=0.40),
-            "c.h": DSMMetrics(fan_out=3, fan_in=7, coupling=10, stability=0.30),
+            "a.h": DSMMetrics(fan_out=5, fan_in=10, fan_out_project=5, fan_out_external=0, coupling=15, stability=0.33),
+            "b.h": DSMMetrics(fan_out=8, fan_in=12, fan_out_project=8, fan_out_external=0, coupling=20, stability=0.40),
+            "c.h": DSMMetrics(fan_out=3, fan_in=7, fan_out_project=3, fan_out_external=0, coupling=10, stability=0.30),
         }
 
         current_metrics = {
-            "a.h": DSMMetrics(fan_out=6, fan_in=12, coupling=18, stability=0.33),
-            "b.h": DSMMetrics(fan_out=10, fan_in=15, coupling=25, stability=0.40),
-            "c.h": DSMMetrics(fan_out=3, fan_in=8, coupling=11, stability=0.27),
+            "a.h": DSMMetrics(fan_out=6, fan_in=12, fan_out_project=6, fan_out_external=0, coupling=18, stability=0.33),
+            "b.h": DSMMetrics(fan_out=10, fan_in=15, fan_out_project=10, fan_out_external=0, coupling=25, stability=0.40),
+            "c.h": DSMMetrics(fan_out=3, fan_in=8, fan_out_project=3, fan_out_external=0, coupling=11, stability=0.27),
         }
 
         common_headers = {"a.h", "b.h", "c.h"}
@@ -49,8 +49,8 @@ class TestCouplingTrends:
 
     def test_coupling_trends_no_common_headers(self) -> None:
         """Test coupling trends with no common headers returns zero stats."""
-        baseline_metrics = {"a.h": DSMMetrics(fan_out=5, fan_in=10, coupling=15, stability=0.33)}
-        current_metrics = {"b.h": DSMMetrics(fan_out=8, fan_in=12, coupling=20, stability=0.40)}
+        baseline_metrics = {"a.h": DSMMetrics(fan_out=5, fan_in=10, fan_out_project=5, fan_out_external=0, coupling=15, stability=0.33)}
+        current_metrics = {"b.h": DSMMetrics(fan_out=8, fan_in=12, fan_out_project=8, fan_out_external=0, coupling=20, stability=0.40)}
         common_headers: Set[str] = set()
 
         stats = compute_coupling_trends(baseline_metrics, current_metrics, common_headers)
@@ -101,13 +101,13 @@ class TestRippleImpact:
         current_graph.add_edges_from([("a.h", "b.h"), ("b.h", "c.h")])
 
         baseline_metrics = {
-            "a.h": DSMMetrics(fan_out=5, fan_in=10, coupling=15, stability=0.33),
-            "b.h": DSMMetrics(fan_out=8, fan_in=5, coupling=13, stability=0.62),
+            "a.h": DSMMetrics(fan_out=5, fan_in=10, fan_out_project=5, fan_out_external=0, coupling=15, stability=0.33),
+            "b.h": DSMMetrics(fan_out=8, fan_in=5, fan_out_project=8, fan_out_external=0, coupling=13, stability=0.62),
         }
 
         current_metrics = {
-            "a.h": DSMMetrics(fan_out=6, fan_in=12, coupling=18, stability=0.33),
-            "b.h": DSMMetrics(fan_out=8, fan_in=5, coupling=13, stability=0.62),
+            "a.h": DSMMetrics(fan_out=6, fan_in=12, fan_out_project=6, fan_out_external=0, coupling=18, stability=0.33),
+            "b.h": DSMMetrics(fan_out=8, fan_in=5, fan_out_project=8, fan_out_external=0, coupling=13, stability=0.62),
         }
 
         changed_headers = {"a.h"}
@@ -132,8 +132,8 @@ class TestRippleImpact:
         current_graph: "nx.DiGraph[str]" = nx.DiGraph()
         current_graph.add_edges_from([("a.h", "b.h"), ("b.h", "c.h"), ("a.h", "d.h")])
 
-        baseline_metrics = {"a.h": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0)}
-        current_metrics = {"a.h": DSMMetrics(fan_out=2, fan_in=0, coupling=2, stability=1.0)}
+        baseline_metrics = {"a.h": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0)}
+        current_metrics = {"a.h": DSMMetrics(fan_out=2, fan_in=0, fan_out_project=2, fan_out_external=0, coupling=2, stability=1.0)}
 
         changed_headers = {"a.h"}
 
@@ -155,13 +155,13 @@ class TestArchitecturalInsights:
         """Test full architectural insights computation."""
         # Create minimal DSMAnalysisResults
         baseline_metrics = {
-            "a.h": DSMMetrics(fan_out=5, fan_in=10, coupling=15, stability=0.33),
-            "b.h": DSMMetrics(fan_out=8, fan_in=12, coupling=20, stability=0.40),
+            "a.h": DSMMetrics(fan_out=5, fan_in=10, fan_out_project=5, fan_out_external=0, coupling=15, stability=0.33),
+            "b.h": DSMMetrics(fan_out=8, fan_in=12, fan_out_project=8, fan_out_external=0, coupling=20, stability=0.40),
         }
 
         current_metrics = {
-            "a.h": DSMMetrics(fan_out=6, fan_in=12, coupling=18, stability=0.33),
-            "b.h": DSMMetrics(fan_out=10, fan_in=15, coupling=25, stability=0.40),
+            "a.h": DSMMetrics(fan_out=6, fan_in=12, fan_out_project=6, fan_out_external=0, coupling=18, stability=0.33),
+            "b.h": DSMMetrics(fan_out=10, fan_in=15, fan_out_project=10, fan_out_external=0, coupling=25, stability=0.40),
         }
 
         baseline_graph: "nx.DiGraph[str]" = nx.DiGraph()

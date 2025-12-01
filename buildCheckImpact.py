@@ -156,8 +156,9 @@ Typical workflow:
     logging.basicConfig(level=log_level, format="%(levelname)s: %(message)s")
 
     # Validate build directory using library helper
+    # Skip generated file checks since we only use ninja deps and explain commands
     try:
-        build_dir, _ = validate_build_directory_with_feedback(args.build_directory, verbose=args.verbose)
+        build_dir, _ = validate_build_directory_with_feedback(args.build_directory, verbose=args.verbose, skip_generated_files_check=True)
     except (ValueError, RuntimeError):
         # Error message already printed by helper
         return 1

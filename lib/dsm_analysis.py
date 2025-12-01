@@ -69,6 +69,7 @@ from .ninja_utils import validate_build_directory_with_feedback
 from .clang_utils import build_include_graph, is_system_header
 from .git_utils import find_git_repo, get_working_tree_changes_from_commit, categorize_changed_files
 from .dependency_utils import build_reverse_dependency_map, compute_affected_sources
+from .sensitivity_thresholds import DetectionThresholds, SensitivityLevel
 
 logger = logging.getLogger(__name__)
 
@@ -365,6 +366,9 @@ def print_high_coupling_headers(
 ) -> None:
     """Print high-coupling headers analysis with PageRank prioritization.
 
+    Filters out foundation headers (high fan-in, low fan-out) since they represent
+    healthy architecture and are shown separately in the Architectural Hotspots section.
+
     Args:
         sorted_headers: Headers sorted by coupling (descending)
         metrics: Metrics dataclass for each header
@@ -376,8 +380,31 @@ def print_high_coupling_headers(
     from lib.graph_utils import identify_critical_headers
 
     print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
-    print(f"{Colors.BRIGHT}HIGH-COUPLING HEADERS{Colors.RESET}")
+    print(f"{Colors.BRIGHT}HIGH-COUPLING HEADERS (High Change Impact){Colors.RESET}")
     print(f"{Colors.BRIGHT}{'='*80}{Colors.RESET}")
+
+    # Identify foundation headers (high fan-in, low fan-out) - these are GOOD, not problematic
+    foundation_headers: List[Tuple[str, int, int]] = []
+    high_fan_in_threshold = 30
+    low_fan_out_threshold = 10
+
+    for header in sorted_headers:
+        m = metrics[header]
+        if m.fan_in >= high_fan_in_threshold and m.fan_out < low_fan_out_threshold:
+            foundation_headers.append((header, m.fan_in, m.fan_out))
+
+    # Filter out foundation headers from the coupling list
+    problematic_headers = [h for h in sorted_headers if h not in {fh[0] for fh in foundation_headers}]
+
+    # Show foundation header summary (positive framing)
+    if foundation_headers:
+        top_foundation = max(foundation_headers, key=lambda x: x[1])
+        top_foundation_name = os.path.relpath(top_foundation[0], project_root) if top_foundation[0].startswith(project_root) else top_foundation[0]
+        print(f"\n{Colors.GREEN}✓ Excluded {len(foundation_headers)} stable foundation headers{Colors.RESET}")
+        print(
+            f"{Colors.DIM}  (e.g., {top_foundation_name}: {top_foundation[1]} dependents, {top_foundation[2]} dependencies - healthy architecture){Colors.RESET}"
+        )
+        print(f"{Colors.DIM}  Foundation headers are shown in the 'Architectural Hotspots' section below{Colors.RESET}\n")
 
     # Compute PageRank if graph available
     pagerank_scores: Dict[str, float] = {}
@@ -388,23 +415,39 @@ def print_high_coupling_headers(
         except Exception as e:
             logger.warning("Could not compute PageRank: %s", e)
 
-    print(f"\n{Colors.BRIGHT}Top {min(max_display, len(sorted_headers))} headers by coupling:{Colors.RESET}")
-    print(f"{Colors.DIM}(Coupling = Fan-in + Fan-out, PageRank = architectural importance){Colors.RESET}\n")
+    print(f"\n{Colors.BRIGHT}Top {min(max_display, len(problematic_headers))} headers by coupling (high-impact dependencies):{Colors.RESET}")
+    print(f"{Colors.DIM}(Excludes foundation headers with fan-in ≥30 and fan-out <10){Colors.RESET}")
+    print(f"{Colors.DIM}(High coupling = high change impact | Focus on god objects, middlemen, and unstable interfaces){Colors.RESET}\n")
 
-    for header in sorted_headers[:max_display]:
+    displayed_count = 0
+    for header in problematic_headers:
+        if displayed_count >= max_display:
+            break
+
         rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else header
         m = metrics[header]
 
-        # Color by coupling level
+        # Color by architectural health, not just coupling
         coupling = m.coupling
-        if coupling >= HIGH_COUPLING_THRESHOLD:
+        in_cycle = header in headers_in_cycles
+
+        # Red: Actually problematic (cycles, high instability with high coupling, or extreme coupling)
+        if in_cycle:
             color = Colors.RED
+        elif coupling >= HIGH_COUPLING_THRESHOLD and m.stability > 0.7:
+            # High coupling + high instability = unstable interface (bad)
+            color = Colors.RED
+        elif coupling >= 100:
+            # Extreme coupling regardless of stability
+            color = Colors.RED
+        # Yellow: High coupling but stable (worth monitoring)
+        elif coupling >= HIGH_COUPLING_THRESHOLD:
+            color = Colors.YELLOW
         elif coupling >= MODERATE_COUPLING_THRESHOLD:
             color = Colors.YELLOW
         else:
             color = Colors.GREEN
 
-        in_cycle = header in headers_in_cycles
         cycle_marker = f" {Colors.RED}[IN CYCLE]{Colors.RESET}" if in_cycle else ""
 
         # Add PageRank indicator if available
@@ -417,8 +460,13 @@ def print_high_coupling_headers(
         print(f"{color}{rel_path}{Colors.RESET}{cycle_marker}")
         print(f"  Fan-out: {m.fan_out} | Fan-in: {m.fan_in} | Coupling: {coupling} | Stability: {m.stability:.3f}{pagerank_info}")
 
+        displayed_count += 1
 
-def print_architectural_hotspots(directed_graph: Any, metrics: Dict[str, "DSMMetrics"], project_root: str, top_n: int = 15) -> None:
+    if displayed_count == 0:
+        print(f"{Colors.GREEN}✓ No problematic high-coupling headers detected!{Colors.RESET}")
+
+
+def print_architectural_hotspots(directed_graph: Any, metrics: Dict[str, "DSMMetrics"], project_root: str, top_n: int = 15, verbose: bool = False) -> None:
     """Print architectural hotspots: betweenness centrality and hub nodes.
 
     Args:
@@ -426,6 +474,7 @@ def print_architectural_hotspots(directed_graph: Any, metrics: Dict[str, "DSMMet
         metrics: Per-header metrics
         project_root: Project root for relative paths
         top_n: Number of items to show
+        verbose: If True, show foundation headers (normally hidden as they're expected/good)
     """
     from lib.graph_utils import compute_betweenness_centrality, find_hub_nodes, detect_god_objects
 
@@ -469,48 +518,102 @@ def print_architectural_hotspots(directed_graph: Any, metrics: Dict[str, "DSMMet
     except Exception as e:
         print(f"  {Colors.DIM}Error computing betweenness: {e}{Colors.RESET}")
 
-    # Hub Nodes - high connectivity
-    print(f"\n{Colors.BRIGHT}Hub Headers (High Connectivity):{Colors.RESET}")
-    print(f"{Colors.DIM}Headers with high total degree (fan-in + fan-out) - architectural focal points{Colors.RESET}\n")
+    # Categorize headers by architectural role
+    print(f"\n{Colors.BRIGHT}Header Classification by Architectural Role:{Colors.RESET}")
+    print(f"{Colors.DIM}Categorizing headers based on fan-in/fan-out patterns{Colors.RESET}\n")
 
     try:
-        hubs = find_hub_nodes(directed_graph, threshold=15)
+        # Categorize all headers
+        foundation_headers = []  # High fan-in, low fan-out (stable base)
+        god_objects = []  # High fan-out, low fan-in (knows too much)
+        middleman_headers = []  # High both (central coupling)
 
-        if hubs:
-            for i, (header, fan_in, fan_out) in enumerate(hubs[:top_n], 1):
+        for header in directed_graph.nodes():
+            fan_in = directed_graph.in_degree(header)
+            fan_out = directed_graph.out_degree(header)
+
+            # Thresholds for categorization
+            high_fan_in_threshold = 30
+            high_fan_out_threshold = 30
+
+            if fan_in >= high_fan_in_threshold and fan_out < 10:
+                # Foundation: many depend on it, it depends on few
+                foundation_headers.append((header, fan_in, fan_out))
+            elif fan_out >= high_fan_out_threshold and fan_in < 10:
+                # God Object: depends on many, few depend on it
+                god_objects.append((header, fan_in, fan_out))
+            elif fan_in >= 15 and fan_out >= 15:
+                # Middleman: high coupling in both directions
+                middleman_headers.append((header, fan_in, fan_out))
+
+        # Sort by total degree
+        foundation_headers.sort(key=lambda x: x[1], reverse=True)  # Sort by fan-in
+        god_objects.sort(key=lambda x: x[2], reverse=True)  # Sort by fan-out
+        middleman_headers.sort(key=lambda x: x[1] + x[2], reverse=True)  # Sort by total
+
+        # Display Foundation Headers (GOOD) - only in verbose mode since they're expected
+        if verbose:
+            print(f"{Colors.GREEN}Foundation Headers (Stable Base - high reuse):{Colors.RESET}")
+            print(f"{Colors.DIM}Low dependencies, many dependents - stable architectural foundation{Colors.RESET}\n")
+            if foundation_headers:
+                for i, (header, fan_in, fan_out) in enumerate(foundation_headers[:top_n], 1):
+                    rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else header
+                    stability = fan_out / (fan_in + fan_out) if (fan_in + fan_out) > 0 else 0
+                    print(f"  {i:2d}. {Colors.GREEN}{rel_path}{Colors.RESET}")
+                    print(f"      {fan_out} dependencies → {fan_in} dependents (stability: {stability:.2f})")
+            else:
+                print(f"  {Colors.DIM}No foundation headers detected{Colors.RESET}")
+        elif foundation_headers:
+            # Just show count in non-verbose mode
+            print(f"{Colors.GREEN}✓ Found {len(foundation_headers)} foundation headers (stable base with high reuse){Colors.RESET}")
+            print(f"{Colors.DIM}  Use --verbose to see details{Colors.RESET}\n")
+
+        # Display God Objects (BAD)
+        print(f"{Colors.RED}God Objects (Knows Too Much - needs splitting):{Colors.RESET}")
+        print(f"{Colors.DIM}Many dependencies, few dependents - violates Single Responsibility{Colors.RESET}\n")
+        if god_objects:
+            for i, (header, fan_in, fan_out) in enumerate(god_objects[:top_n], 1):
+                rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else header
+                stability = fan_out / (fan_in + fan_out) if (fan_in + fan_out) > 0 else 0
+                print(f"  {i:2d}. {Colors.RED}{rel_path}{Colors.RESET}")
+                print(f"      {fan_out} dependencies → {fan_in} dependents (stability: {stability:.2f})")
+            print(f"\n  {Colors.YELLOW}💡 Tip: Consider splitting into smaller, focused components{Colors.RESET}")
+        else:
+            print(f"  {Colors.GREEN}✓ No god objects detected{Colors.RESET}")
+
+        # Display Middleman Headers (PROBLEMATIC)
+        print(f"\n{Colors.YELLOW}Middleman Headers (Central Coupling Point - consider decoupling):{Colors.RESET}")
+        print(f"{Colors.DIM}High coupling in both directions - architectural bottleneck{Colors.RESET}\n")
+        if middleman_headers:
+            for i, (header, fan_in, fan_out) in enumerate(middleman_headers[:top_n], 1):
                 rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else header
                 total_degree = fan_in + fan_out
-
-                # Color by connectivity level
-                if total_degree >= 30:
-                    color = Colors.RED
-                elif total_degree >= 20:
-                    color = Colors.YELLOW
-                else:
-                    color = Colors.CYAN
-
-                print(f"  {i:2d}. {color}{rel_path}{Colors.RESET}")
-                print(f"      Fan-in: {fan_in}, Fan-out: {fan_out}, Total: {total_degree}")
+                stability = fan_out / (fan_in + fan_out) if (fan_in + fan_out) > 0 else 0
+                print(f"  {i:2d}. {Colors.YELLOW}{rel_path}{Colors.RESET}")
+                print(f"      {fan_out} dependencies → {fan_in} dependents, total: {total_degree} (stability: {stability:.2f})")
+            print(f"\n  {Colors.YELLOW}💡 Tip: These act as brokers - reducing coupling here has high impact{Colors.RESET}")
         else:
-            print(f"  {Colors.DIM}No hub nodes with high connectivity detected{Colors.RESET}")
+            print(f"  {Colors.DIM}No middleman headers detected{Colors.RESET}")
+
     except Exception as e:
-        print(f"  {Colors.DIM}Error finding hub nodes: {e}{Colors.RESET}")
+        print(f"  {Colors.DIM}Error categorizing headers: {e}{Colors.RESET}")
 
-    # God Objects - extreme fan-out (anti-pattern)
-    print(f"\n{Colors.BRIGHT}God Object Detection (Anti-pattern):{Colors.RESET}")
-    print(f"{Colors.DIM}Headers with extreme fan-out that may violate Single Responsibility Principle{Colors.RESET}\n")
+    # Keep the old God Object Detection section for backward compatibility but hide if already shown above
+    if not god_objects:
+        print(f"\n{Colors.BRIGHT}God Object Detection (Anti-pattern):{Colors.RESET}")
+        print(f"{Colors.DIM}Headers with extreme fan-out that may violate Single Responsibility Principle{Colors.RESET}\n")
 
-    god_objects = detect_god_objects(metrics, threshold=50)
+        old_god_objects = detect_god_objects(metrics, threshold=50)
 
-    if god_objects:
-        print(f"  {Colors.RED}⚠ Found {len(god_objects)} potential God Object(s):{Colors.RESET}\n")
-        for i, (header, fan_out) in enumerate(god_objects[:10], 1):
-            rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else header
-            print(f"  {i:2d}. {Colors.RED}{rel_path}{Colors.RESET}")
-            print(f"      Fan-out: {fan_out} (depends on {fan_out} other headers)")
-        print(f"\n  {Colors.YELLOW}💡 Tip: Consider splitting these into smaller, focused components{Colors.RESET}")
-    else:
-        print(f"  {Colors.GREEN}✓ No God Objects detected (all fan-outs < 50){Colors.RESET}")
+        if old_god_objects:
+            print(f"  {Colors.RED}⚠ Found {len(old_god_objects)} potential God Object(s):{Colors.RESET}\n")
+            for i, (header, fan_out) in enumerate(old_god_objects[:10], 1):
+                rel_path = os.path.relpath(header, project_root) if header.startswith(project_root) else header
+                print(f"  {i:2d}. {Colors.RED}{rel_path}{Colors.RESET}")
+                print(f"      Fan-out: {fan_out} (depends on {fan_out} other headers)")
+            print(f"\n  {Colors.YELLOW}💡 Tip: Consider splitting these into smaller, focused components{Colors.RESET}")
+        else:
+            print(f"  {Colors.GREEN}✓ No God Objects detected (all fan-outs < 50){Colors.RESET}")
 
 
 def print_recommendations(
@@ -902,7 +1005,7 @@ def compute_ripple_impact(
     for header in changed_headers:
         if header in current_metrics:
             fan_in = current_metrics[header].fan_in
-            baseline_coupling = baseline_metrics.get(header, DSMMetrics(0, 0, 0, 0.5)).coupling
+            baseline_coupling = baseline_metrics.get(header, DSMMetrics(0, 0, 0, 0, 0, 0.5)).coupling
             current_coupling = current_metrics[header].coupling
             coupling_delta = current_coupling - baseline_coupling
 
@@ -2950,6 +3053,7 @@ def run_dsm_analysis(
     compute_layers: bool = True,
     show_progress: bool = True,
     source_to_deps: Optional[Dict[str, List[str]]] = None,
+    file_types: Optional[Dict[str, Any]] = None,
 ) -> DSMAnalysisResults:
     """Run all DSM analysis phases and return structured results.
 
@@ -2959,6 +3063,7 @@ def run_dsm_analysis(
         compute_layers: Whether to compute dependency layers (can be skipped for cycles-only mode)
         show_progress: Whether to print progress messages
         source_to_deps: Optional mapping of source files (.c/.cpp) to header dependencies
+        file_types: Optional file type classifications for split fan_out metrics
 
     Returns:
         DSMAnalysisResults containing all analysis results
@@ -2972,7 +3077,7 @@ def run_dsm_analysis(
 
     metrics: Dict[str, DSMMetrics] = {}
     for header in all_headers:
-        metrics[header] = calculate_dsm_metrics(header, header_to_headers, reverse_deps)
+        metrics[header] = calculate_dsm_metrics(header, header_to_headers, reverse_deps, file_types)
 
     # Analyze cycles
     if show_progress:
@@ -3030,6 +3135,8 @@ def display_analysis_results(
     show_layers: bool = False,
     show_library_boundaries: bool = False,
     cluster_by_directory: bool = False,
+    sort_by: str = "topological",
+    verbose: bool = False,
 ) -> None:
     """Display all analysis results based on configuration options.
 
@@ -3042,14 +3149,43 @@ def display_analysis_results(
         show_layers: Show hierarchical layer structure
         show_library_boundaries: Show library boundary analysis
         cluster_by_directory: Group headers by directory in output
+        sort_by: Sort order for matrix display ("coupling" or "topological")
     """
     # Print summary statistics
     print_summary_statistics(results.stats, len(results.cycles), len(results.headers_in_cycles), results.layers, results.has_cycles)
 
     # Show matrix visualization (unless cycles-only mode or top_n is 0)
     if not cycles_only and top_n > 0:
+        # Compute display order based on sort_by (only affects matrix rendering)
+        if sort_by == "topological":
+            # Try topological sort excluding self-loops (for visualization only)
+            import networkx as nx
+
+            graph: nx.DiGraph[str] = nx.DiGraph()
+            all_headers = set(results.metrics.keys())
+            graph.add_nodes_from(all_headers)
+            for header, deps in results.header_to_headers.items():
+                for dep in deps:
+                    if dep in all_headers and dep != header:  # Exclude self-loops
+                        graph.add_edge(header, dep)
+
+            try:
+                # Use topological_generations to get layers (excluding self-loops)
+                generations = list(nx.topological_generations(graph))
+                # Flatten layers into REVERSE topological order (top-level first, foundation last)
+                display_headers = [header for layer in reversed(generations) for header in sorted(layer)]
+            except (nx.NetworkXError, nx.NetworkXUnfeasible):
+                # Has multi-header cycles, fall back to coupling sort
+                from .color_utils import Colors
+
+                print(f"{Colors.DIM}Note: Using coupling sort due to circular dependencies{Colors.RESET}")
+                display_headers = results.sorted_headers
+        else:
+            # Use coupling-based ordering (highest coupling first)
+            display_headers = results.sorted_headers
+
         visualize_dsm(
-            results.sorted_headers, results.header_to_headers, results.headers_in_cycles, project_root, top_n, CYCLE_HIGHLIGHT, DEPENDENCY_MARKER, EMPTY_CELL
+            display_headers, results.header_to_headers, results.headers_in_cycles, project_root, top_n, CYCLE_HIGHLIGHT, DEPENDENCY_MARKER, EMPTY_CELL, sort_by
         )
 
     # Circular Dependencies Analysis
@@ -3068,7 +3204,7 @@ def display_analysis_results(
 
     # Architectural Hotspots (Betweenness Centrality, Hub Nodes, God Objects)
     if not cycles_only:
-        print_architectural_hotspots(results.directed_graph, results.metrics, project_root, top_n=15)
+        print_architectural_hotspots(results.directed_graph, results.metrics, project_root, top_n=15, verbose=verbose)
 
     # Library Boundary Analysis
     if show_library_boundaries and header_to_lib and not cycles_only:
@@ -3146,9 +3282,7 @@ def _display_library_boundary_analysis(header_to_headers: DefaultDict[str, Set[s
                 print(f"    Library: {lib_name} | Cross-library deps: {count}")
 
 
-def run_differential_analysis(
-    current_build_dir: str, baseline_build_dir: str, project_root: str, verbose: bool = False, include_system_headers: bool = False
-) -> int:
+def run_differential_analysis(current_build_dir: str, baseline_build_dir: str, project_root: str, verbose: bool = False, file_scope: str = "project") -> int:
     """Run differential DSM analysis comparing two builds.
 
     Args:
@@ -3156,7 +3290,7 @@ def run_differential_analysis(
         baseline_build_dir: Path to baseline build directory
         project_root: Project root directory for relative path display
         verbose: Show detailed statistical breakdowns
-        include_system_headers: Include system headers in analysis
+        file_scope: File scope for analysis ('project', 'thirdparty', 'system')
 
     Returns:
         Exit code (0 for success, non-zero for errors)
@@ -3205,26 +3339,40 @@ def run_differential_analysis(
     try:
         current_scan = build_include_graph(validated_current_dir)
         current_headers = current_scan.all_headers
+        current_file_types = current_scan.file_types
         print_success(f"Current: {len(current_headers)} headers in {current_scan.scan_time:.1f}s", prefix=False)
     except Exception as e:
         logger.error("Failed to analyze current build: %s", e)
         print_error(f"Failed to analyze current build: {e}")
         return EXIT_RUNTIME_ERROR
 
-    # Filter system headers if requested (for both baseline and current)
-    if not include_system_headers:
-        from .file_utils import filter_system_headers
+    # Apply file scope filtering based on file_scope parameter
+    exclude_types: Set[FileType] = set()
+    if file_scope == "project":
+        # Exclude both third-party and system files
+        exclude_types = {FileType.SYSTEM, FileType.THIRD_PARTY}
+    elif file_scope == "thirdparty":
+        # Exclude only system files, include third-party
+        exclude_types = {FileType.SYSTEM}
+    # else file_scope == "system": include everything, no exclusions
 
-        baseline_headers, _ = filter_system_headers(baseline_headers, show_progress=False)
-        current_headers, _ = filter_system_headers(current_headers, show_progress=False)
-        print(f"\n{Colors.DIM}System headers excluded from analysis{Colors.RESET}")
+    if exclude_types:
+        from .file_utils import filter_by_file_type
+        from .clang_utils import FileType
+
+        baseline_headers, _ = filter_by_file_type(baseline_headers, baseline_scan.file_types, exclude_types=exclude_types, show_progress=False)
+        current_headers, _ = filter_by_file_type(current_headers, current_file_types, exclude_types=exclude_types, show_progress=False)
+        scope_desc = "project files only" if file_scope == "project" else "project + third-party"
+        print(f"\n{Colors.DIM}File scope: {scope_desc}{Colors.RESET}")
 
     # Run DSM analysis on both
     print(f"\n{Colors.BRIGHT}Computing DSM metrics...{Colors.RESET}")
 
-    baseline_results = run_dsm_analysis(baseline_headers, baseline_scan.include_graph, compute_layers=True, show_progress=True)
+    baseline_results = run_dsm_analysis(
+        baseline_headers, baseline_scan.include_graph, compute_layers=True, show_progress=True, file_types=baseline_scan.file_types
+    )
 
-    current_results = run_dsm_analysis(current_headers, current_scan.include_graph, compute_layers=True, show_progress=True)
+    current_results = run_dsm_analysis(current_headers, current_scan.include_graph, compute_layers=True, show_progress=True, file_types=current_file_types)
 
     # Compute and display differences with architectural insights
     delta = compare_dsm_results(baseline_results, current_results)
@@ -3273,7 +3421,7 @@ def run_git_working_tree_analysis(
     filter_pattern: Optional[str] = None,
     exclude_patterns: Optional[List[str]] = None,
     show_layers: bool = False,
-    include_system_headers: bool = False,
+    file_scope: str = "project",
 ) -> int:
     """Run git working tree impact analysis using unified baseline comparison workflow.
 
@@ -3292,7 +3440,7 @@ def run_git_working_tree_analysis(
         filter_pattern: Optional glob pattern to filter headers
         exclude_patterns: Optional list of glob patterns to exclude headers
         show_layers: Show layer information in output
-        include_system_headers: Include system headers in analysis
+        file_scope: File scope for analysis ('project', 'thirdparty', 'system')
 
     Returns:
         Exit code (0 for success, non-zero for errors)
@@ -3301,8 +3449,9 @@ def run_git_working_tree_analysis(
         ValueError: If git repository not found or invalid reference
         RuntimeError: If analysis fails
     """
-    from .file_utils import filter_headers_by_pattern, exclude_headers_by_patterns, filter_system_headers
+    from .file_utils import filter_headers_by_pattern, exclude_headers_by_patterns, filter_by_file_type
     from .git_utils import reconstruct_head_graph, get_working_tree_changes_from_commit_batched
+    from .clang_utils import FileType, classify_file
 
     print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
     print(f"{Colors.BRIGHT}GIT WORKING TREE IMPACT ANALYSIS{Colors.RESET}")
@@ -3353,10 +3502,19 @@ def run_git_working_tree_analysis(
     try:
         changed_headers, changed_sources = categorize_changed_files(changed_files)
 
-        # Filter system headers from git changes if requested
-        if not include_system_headers:
-            changed_headers = [h for h in changed_headers if not is_system_header(h)]
-            changed_sources = [s for s in changed_sources if not is_system_header(s)]
+        # Filter system headers from git changes based on file scope
+        exclude_types: Set[FileType] = set()
+        if file_scope == "project":
+            # Exclude both third-party and system files
+            exclude_types = {FileType.SYSTEM, FileType.THIRD_PARTY}
+        elif file_scope == "thirdparty":
+            # Exclude only system files, include third-party
+            exclude_types = {FileType.SYSTEM}
+        # else file_scope == "system": include everything, no exclusions
+
+        if exclude_types:
+            changed_headers = [h for h in changed_headers if not (is_system_header(h) if FileType.SYSTEM in exclude_types else False)]
+            changed_sources = [s for s in changed_sources if not (is_system_header(s) if FileType.SYSTEM in exclude_types else False)]
 
         print(f"  • {len(changed_headers)} headers changed")
         print(f"  • {len(changed_sources)} sources changed\n")
@@ -3375,6 +3533,7 @@ def run_git_working_tree_analysis(
         scan_result = build_include_graph(build_dir)
         current_headers = scan_result.all_headers
         current_graph = scan_result.include_graph
+        current_file_types = scan_result.file_types
         source_to_deps = scan_result.source_to_deps
         elapsed = scan_result.scan_time
         print_success(f"Built current graph with {len(current_headers)} headers in {elapsed:.1f}s", prefix=False)
@@ -3401,6 +3560,12 @@ def run_git_working_tree_analysis(
             progress_callback=baseline_progress if verbose else None,
         )
         print_success(f"Reconstructed baseline with {len(baseline_headers)} headers", prefix=False)
+
+        # Classify baseline headers (reconstruct doesn't return file_types, so re-classify)
+        baseline_file_types: Dict[str, FileType] = {}
+        for header in baseline_headers:
+            baseline_file_types[header] = classify_file(header, build_dir)
+
     except ValueError as e:
         print_error(f"Failed to reconstruct baseline: {e}")
         return EXIT_INVALID_ARGS
@@ -3413,9 +3578,20 @@ def run_git_working_tree_analysis(
     filtered_baseline_headers = baseline_headers.copy()
     filtered_current_headers = current_headers.copy()
 
-    if not include_system_headers:
-        filtered_baseline_headers, _ = filter_system_headers(filtered_baseline_headers, show_progress=False)
-        filtered_current_headers, _ = filter_system_headers(filtered_current_headers, show_progress=False)
+    # Apply file scope filtering (reuse exclude_types from earlier)
+    if file_scope == "project":
+        # Exclude both third-party and system files
+        exclude_types = {FileType.SYSTEM, FileType.THIRD_PARTY}
+    elif file_scope == "thirdparty":
+        # Exclude only system files, include third-party
+        exclude_types = {FileType.SYSTEM}
+    else:
+        # file_scope == "system": include everything, no exclusions
+        exclude_types = set()
+
+    if exclude_types:
+        filtered_baseline_headers, _ = filter_by_file_type(filtered_baseline_headers, baseline_file_types, exclude_types=exclude_types, show_progress=False)
+        filtered_current_headers, _ = filter_by_file_type(filtered_current_headers, current_file_types, exclude_types=exclude_types, show_progress=False)
 
     if filter_pattern:
         filtered_baseline_headers = filter_headers_by_pattern(filtered_baseline_headers, filter_pattern, project_root)
@@ -3457,19 +3633,20 @@ def run_git_working_tree_analysis(
     return EXIT_SUCCESS
 
 
-def identify_improvement_candidates(results: DSMAnalysisResults, project_root: str) -> List["ImprovementCandidate"]:
+def identify_improvement_candidates(results: DSMAnalysisResults, project_root: str, thresholds: DetectionThresholds) -> List[ImprovementCandidate]:
     """Identify headers that are candidates for architectural improvement.
 
-    Detects anti-patterns using existing sophisticated metrics:
-    - God objects (fan-out >50)
+    Detects anti-patterns using configurable thresholds:
+    - God objects (fan_out_project > threshold)
     - Cycle participants (in circular dependencies)
-    - Coupling outliers (z-score >2.5σ)
-    - Unstable interfaces (stability >0.5, high fan-in)
+    - Coupling outliers (z-score > threshold σ)
+    - Unstable interfaces (stability > threshold, high fan-in)
     - Hub nodes (high betweenness centrality)
 
     Args:
         results: DSM analysis results
         project_root: Project root for relative paths
+        thresholds: Detection thresholds configuration
 
     Returns:
         List of ImprovementCandidate objects
@@ -3484,12 +3661,12 @@ def identify_improvement_candidates(results: DSMAnalysisResults, project_root: s
 
     mean_coupling = float(np.mean(couplings))
     stddev_coupling = float(np.std(couplings, ddof=1)) if len(couplings) > 1 else 0
-    outlier_threshold = mean_coupling + 2.5 * stddev_coupling if stddev_coupling > 0 else mean_coupling * 2
+    outlier_threshold = mean_coupling + thresholds.outlier_sigma * stddev_coupling if stddev_coupling > 0 else mean_coupling * 2
 
     # Calculate betweenness centrality for hub detection
     betweenness = nx.betweenness_centrality(results.directed_graph)
     sorted_betweenness = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)
-    high_betweenness_threshold = sorted_betweenness[min(10, len(sorted_betweenness) - 1)][1] if sorted_betweenness else 0.0
+    high_betweenness_threshold = sorted_betweenness[min(thresholds.hub_detection_top_n, len(sorted_betweenness) - 1)][1] if sorted_betweenness else 0.0
 
     for header, metric in metrics.items():
         issues: List[str] = []
@@ -3497,11 +3674,11 @@ def identify_improvement_candidates(results: DSMAnalysisResults, project_root: s
         anti_patterns: List[str] = []
         affected: Set[str] = set()
 
-        # Pattern 1: God Object Detection (fan-out >50)
-        if metric.fan_out > 50:
+        # Pattern 1: God Object Detection (fan_out_project > threshold)
+        if metric.fan_out_project > thresholds.god_object_fanout:
             anti_patterns.append("god_object")
-            issues.append(f"Includes {metric.fan_out} headers (god object pattern)")
-            steps.append(f"Split into focused modules (target: <20 includes each)")
+            issues.append(f"Includes {metric.fan_out_project} project headers (+ {metric.fan_out_external} external)")
+            steps.append(f"Split into focused modules (target: <{thresholds.split_target_includes} project includes each)")
             steps.append(f"Extract common utilities to separate headers")
             affected = results.reverse_deps.get(header, set())
 
@@ -3517,10 +3694,14 @@ def identify_improvement_candidates(results: DSMAnalysisResults, project_root: s
             steps.append("Use forward declarations to reduce includes")
             affected.update(results.reverse_deps.get(header, set()))
 
-        # Pattern 3: Coupling Outlier (>2.5σ)
-        # Exclude stable foundation headers (stability ≈ 0.0, high fan-in, low fan-out)
+        # Pattern 3: Coupling Outlier (>threshold σ)
+        # Exclude stable foundation headers (low project fan-out, high fan-in)
         # These are architecturally correct - they're meant to be widely used base types
-        is_foundation_header = metric.stability < 0.1 and metric.fan_in >= 30 and metric.fan_out <= 5
+        is_foundation_header = (
+            metric.fan_out_project <= thresholds.foundation_project_fanout_max
+            and metric.stability < thresholds.foundation_stability_threshold
+            and metric.fan_in >= thresholds.foundation_fanin_min
+        )
         if metric.coupling > outlier_threshold and not is_foundation_header:
             z_score = (metric.coupling - mean_coupling) / stddev_coupling if stddev_coupling > 0 else 0
             anti_patterns.append("coupling_outlier")
@@ -3528,18 +3709,18 @@ def identify_improvement_candidates(results: DSMAnalysisResults, project_root: s
             steps.append(f"Reduce coupling by {int(metric.coupling - mean_coupling)} to reach mean")
             affected.update(results.reverse_deps.get(header, set()))
 
-        # Pattern 4: Unstable Interface (stability >0.5, high fan-in)
-        if metric.stability > 0.5 and metric.fan_in >= 10:
+        # Pattern 4: Unstable Interface (stability > threshold, high fan-in)
+        if metric.stability > thresholds.unstable_stability_threshold and metric.fan_in >= thresholds.unstable_fanin_threshold:
             anti_patterns.append("unstable_interface")
             issues.append(f"High instability ({metric.stability:.2f}) with {metric.fan_in} dependents")
             issues.append(f"Changes ripple to {metric.fan_in} headers")
-            steps.append("Extract stable interface (reduce fan-out to <5)")
+            steps.append(f"Extract stable interface (reduce fan-out to <{thresholds.interface_extraction_target})")
             steps.append("Move implementation details to separate .cpp or impl header")
             affected = results.reverse_deps.get(header, set())
 
         # Pattern 5: Hub Node (high betweenness centrality)
         header_betweenness = betweenness.get(header, 0.0)
-        if header_betweenness >= high_betweenness_threshold and header_betweenness > 0.01:
+        if header_betweenness >= high_betweenness_threshold and header_betweenness > thresholds.hub_betweenness_min:
             anti_patterns.append("hub_node")
             issues.append(f"Critical hub node (betweenness: {header_betweenness:.3f})")
             issues.append(f"Bottleneck in dependency graph")
@@ -3570,24 +3751,31 @@ def identify_improvement_candidates(results: DSMAnalysisResults, project_root: s
 
 
 def estimate_improvement_roi(
-    candidate: "ImprovementCandidate", results: DSMAnalysisResults, source_to_deps: Optional[Dict[str, List[str]]] = None
+    candidate: ImprovementCandidate,
+    results: DSMAnalysisResults,
+    source_to_deps: Optional[Dict[str, List[str]]] = None,
+    thresholds: Optional[DetectionThresholds] = None,
 ) -> "ImprovementCandidate":
     """Estimate ROI for a refactoring candidate using precise transitive closure.
 
     Simulates refactoring scenarios:
-    - Splitting god objects: Reduce fan-out by 60-80%
+    - Splitting god objects: Reduce fan_out_project by 60-80%
     - Breaking cycles: Remove feedback edges
-    - Extracting interfaces: Reduce fan-out to <5
+    - Extracting interfaces: Reduce fan_out_project to threshold target
     - Isolating implementations: Reduce fan-in to 0-1
 
     Args:
         candidate: Improvement candidate to analyze
         results: DSM analysis results for context
         source_to_deps: Optional source-to-deps mapping for precise rebuild calculation
+        thresholds: Optional detection thresholds (uses MEDIUM defaults if not provided)
 
     Returns:
         Updated candidate with ROI estimates
     """
+    # Use MEDIUM defaults if no thresholds provided (backward compatibility)
+    if thresholds is None:
+        thresholds = DetectionThresholds.for_sensitivity(SensitivityLevel.MEDIUM)
     header = candidate.header
     metric = candidate.current_metrics
 
@@ -3596,16 +3784,16 @@ def estimate_improvement_roi(
     fan_in_reduction = 0
 
     if "god_object" in candidate.anti_pattern:
-        # Split god object: reduce fan-out by 70%
-        fan_out_reduction = int(metric.fan_out * 0.7)
+        # Split god object: reduce fan_out_project by 70%
+        fan_out_reduction = int(metric.fan_out_project * 0.7)
         effort = "high"  # Significant refactoring
     elif "cycle_participant" in candidate.anti_pattern:
         # Break cycle: remove 2-3 key includes
-        fan_out_reduction = min(3, max(1, metric.fan_out // 4))
+        fan_out_reduction = min(3, max(1, metric.fan_out_project // 4))
         effort = "medium"
     elif "unstable_interface" in candidate.anti_pattern:
-        # Extract interface: reduce fan-out to <5
-        fan_out_reduction = max(0, metric.fan_out - 5)
+        # Extract interface: reduce fan_out_project to threshold target
+        fan_out_reduction = max(0, metric.fan_out_project - thresholds.interface_extraction_target)
         effort = "medium"
     elif "coupling_outlier" in candidate.anti_pattern:
         # Reduce coupling: bring to mean
@@ -3615,10 +3803,10 @@ def estimate_improvement_roi(
         effort = "medium"
     elif "hub_node" in candidate.anti_pattern:
         # Reduce centrality: split into 2-3 focused headers
-        fan_out_reduction = int(metric.fan_out * 0.5)
+        fan_out_reduction = int(metric.fan_out_project * 0.5)
         effort = "high"
     else:
-        fan_out_reduction = int(metric.fan_out * 0.3)
+        fan_out_reduction = int(metric.fan_out_project * 0.3)
         effort = "medium"
 
     # Estimate coupling reduction
@@ -3733,6 +3921,52 @@ def estimate_affected_sources(affected_headers: Set[str], source_to_deps: Dict[s
     return affected_sources
 
 
+def calculate_combined_impact(
+    candidates: List["ImprovementCandidate"], results: DSMAnalysisResults, source_to_deps: Optional[Dict[str, List[str]]] = None, top_n: Optional[int] = None
+) -> Tuple[float, int, int]:
+    """Calculate realistic combined rebuild impact accounting for overlaps.
+
+    Args:
+        candidates: List of improvement candidates (should be ranked)
+        results: DSM analysis results
+        source_to_deps: Source file to header dependencies mapping
+        top_n: Only consider top N candidates (default: all)
+
+    Returns:
+        Tuple of (rebuild_reduction_percentage_points, unique_sources_improved, total_sources)
+    """
+    if not candidates or not source_to_deps:
+        return (0.0, 0, 0)
+
+    # Consider only top N candidates if specified
+    target_candidates = candidates[:top_n] if top_n else candidates
+
+    # Track which source files are affected by the baseline (before improvements)
+    # and after improvements for each candidate
+    all_sources = set(source_to_deps.keys())
+    total_sources = len(all_sources)
+
+    # For each candidate, track which sources would see reduced rebuilds
+    sources_improved: Set[str] = set()
+
+    for candidate in target_candidates:
+        # Get headers that transitively depend on this candidate's header
+        affected_headers = compute_transitive_dependents(candidate.header, results.reverse_deps)
+
+        # Find source files that include any of these headers
+        for source, deps in source_to_deps.items():
+            if any(header in affected_headers for header in deps):
+                # This source would benefit from fixing this candidate
+                sources_improved.add(source)
+
+    # Calculate percentage point improvement
+    # This represents sources that would rebuild less often after fixes
+    unique_sources_improved = len(sources_improved)
+    improvement_percentage = (unique_sources_improved / total_sources * 100) if total_sources > 0 else 0.0
+
+    return (improvement_percentage, unique_sources_improved, total_sources)
+
+
 def rank_improvements_by_impact(candidates: List["ImprovementCandidate"]) -> List["ImprovementCandidate"]:
     """Rank improvement candidates by composite impact score.
 
@@ -3759,8 +3993,93 @@ def rank_improvements_by_impact(candidates: List["ImprovementCandidate"]) -> Lis
     )
 
 
+def calculate_architectural_debt_score(results: DSMAnalysisResults, verbose: bool = False) -> Tuple[float, Optional[Dict[str, float]]]:
+    """Calculate comprehensive architectural debt score (0-100).
+
+    Uses 5 weighted components:
+    - P95 coupling (20%): 95th percentile coupling score
+    - Outliers (15%): Coupling outliers beyond 2σ
+    - Stability (15%): Average instability (fan_out/coupling)
+    - Hubs (10%): High-betweenness nodes (bottlenecks)
+    - Cycles (40%): Circular dependency count (heavily weighted)
+
+    Args:
+        results: DSM analysis results
+        verbose: If True, return breakdown of components
+
+    Returns:
+        Tuple of (total_score, breakdown_dict or None)
+        Score is 0-100 where 0=perfect, 100=maximum debt
+    """
+    if not results.metrics:
+        return (
+            0.0,
+            (
+                None
+                if not verbose
+                else {"p95_coupling_component": 0.0, "outlier_component": 0.0, "stability_component": 0.0, "hub_component": 0.0, "cycle_component": 0.0}
+            ),
+        )
+
+    couplings = [m.coupling for m in results.metrics.values()]
+
+    # Component 1: P95 coupling (20% weight) - reduced from 30%
+    # Normalize by assuming max reasonable coupling is 50 (tighter threshold)
+    p95_coupling = float(np.percentile(couplings, 95))
+    p95_component = min(20.0, (p95_coupling / 50.0) * 20.0)
+
+    # Component 2: Outliers beyond 2σ (15% weight) - reduced from 20%
+    # Count headers with coupling > mean + 2*stddev
+    mean_coupling = float(np.mean(couplings))
+    stddev_coupling = float(np.std(couplings, ddof=1)) if len(couplings) > 1 else 0
+    outlier_threshold = mean_coupling + 2 * stddev_coupling
+    outlier_count = sum(1 for c in couplings if c > outlier_threshold)
+    outlier_ratio = outlier_count / len(couplings) if couplings else 0
+    outlier_component = min(15.0, outlier_ratio * 75.0)  # 20% of headers = max 15 points
+
+    # Component 3: Average stability/instability (15% weight)
+    # High stability (fan_out/coupling) = unstable = bad
+    stabilities = [m.stability for m in results.metrics.values()]
+    avg_stability = float(np.mean(stabilities)) if stabilities else 0
+    stability_component = min(15.0, avg_stability * 15.0)  # Max at stability=1.0    # Component 4: Hub nodes (10% weight)
+    # High betweenness centrality = bottlenecks
+    if len(results.directed_graph.nodes()) > 1:
+        betweenness = nx.betweenness_centrality(results.directed_graph)
+        top_betweenness = sorted(betweenness.values(), reverse=True)[:5]
+        avg_top_betweenness = float(np.mean(top_betweenness)) if top_betweenness else 0
+        hub_component = min(10.0, avg_top_betweenness * 100.0)  # Betweenness is 0-1
+    else:
+        hub_component = 0.0
+
+    # Component 5: Cycles (40% weight) - increased from 25%
+    # Cycles are the most critical architectural issue
+    cycle_count = len(results.cycles)
+    # More aggressive: 1 cycle=10pts, 3 cycles=25pts, 5+ cycles=40pts
+    cycle_component = min(40.0, 40.0 * (1 - np.exp(-cycle_count / 2.5)))
+
+    # Total score (capped at 100)
+    total_score = min(100.0, p95_component + outlier_component + stability_component + hub_component + cycle_component)
+
+    if verbose:
+        breakdown = {
+            "p95_coupling_component": p95_component,
+            "outlier_component": outlier_component,
+            "stability_component": stability_component,
+            "hub_component": hub_component,
+            "cycle_component": cycle_component,
+        }
+        return (total_score, breakdown)
+
+    return (total_score, None)
+
+
 def display_improvement_suggestions(
-    candidates: List["ImprovementCandidate"], results: DSMAnalysisResults, project_root: str, top_n: int = 10, verbose: bool = False
+    candidates: List["ImprovementCandidate"],
+    results: DSMAnalysisResults,
+    project_root: str,
+    source_to_deps: Optional[Dict[str, List[str]]] = None,
+    top_n: int = 10,
+    verbose: bool = False,
 ) -> None:
     """Display ranked improvement suggestions with actionable recommendations.
 
@@ -3768,6 +4087,7 @@ def display_improvement_suggestions(
         candidates: Ranked improvement candidates
         results: DSM analysis results for context
         project_root: Project root for relative paths
+        source_to_deps: Source file to header dependencies (for precise impact calculation)
         top_n: Number of top candidates to display
         verbose: Show detailed breakdown
     """
@@ -3786,7 +4106,9 @@ def display_improvement_suggestions(
     critical = [c for c in candidates if c.severity == "critical"]
     moderate = [c for c in candidates if c.severity == "moderate"]
 
-    total_estimated_reduction = sum(c.estimated_rebuild_reduction for c in candidates)
+    # Calculate both naive sum and realistic combined impact
+    naive_reduction = sum(c.estimated_rebuild_reduction for c in candidates)
+    realistic_reduction, sources_improved, total_sources = calculate_combined_impact(candidates, results, source_to_deps, top_n=top_n)
     avg_break_even = float(np.mean([c.break_even_commits for c in candidates if c.break_even_commits < 900]))
 
     print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
@@ -3840,14 +4162,18 @@ def display_improvement_suggestions(
     print(f"  🟢 Quick Wins (ROI ≥60, break-even ≤5 commits): {len(quick_wins)}")
     print(f"  🔴 Critical (cycles or ROI ≥40): {len(critical)}")
     print(f"  🟡 Moderate (ROI <40): {len(moderate)}")
-    print(f"  Estimated Total .c/.cpp Rebuild Reduction: {total_estimated_reduction:.1f}%")
+
+    # Show realistic combined impact if source data available
+    if source_to_deps and realistic_reduction > 0:
+        print(f"  Potential Rebuild Impact (top {min(top_n, len(candidates))} fixes): {realistic_reduction:.1f}% of sources")
+        print(f"    ({sources_improved} of {total_sources} source files would rebuild less frequently)")
+    else:
+        print(f"  Potential Rebuild Impact: {naive_reduction:.1f} percentage points (cumulative, may overlap)")
+
     print(f"  Average Break-Even Point: {avg_break_even:.0f} commits (when rebuild savings exceed refactoring cost)")
 
-    # Architectural debt score (inverse of quality)
-    couplings = [m.coupling for m in results.metrics.values()]
-    mean_coupling = float(np.mean(couplings)) if couplings else 0
-    cycle_penalty = len(results.cycles) * 10
-    debt_score = min(100, mean_coupling + cycle_penalty)
+    # Architectural debt score (comprehensive 5-component formula)
+    debt_score, breakdown = calculate_architectural_debt_score(results, verbose=verbose)
 
     print(f"  Architectural Debt Score: {debt_score:.0f}/100 ", end="")
     if debt_score < 30:
@@ -3856,6 +4182,14 @@ def display_improvement_suggestions(
         print(f"{Colors.YELLOW}(Moderate){Colors.RESET}")
     else:
         print(f"{Colors.RED}(High){Colors.RESET}")
+
+    if verbose and breakdown:
+        print(f"\n  Debt Score Breakdown:")
+        print(f"    P95 Coupling (20%): {breakdown['p95_coupling_component']:.1f}")
+        print(f"    Outliers >2σ (15%): {breakdown['outlier_component']:.1f}")
+        print(f"    Avg Stability (15%): {breakdown['stability_component']:.1f}")
+        print(f"    Hub Nodes (10%): {breakdown['hub_component']:.1f}")
+        print(f"    Cycles (40%): {breakdown['cycle_component']:.1f}")
 
     # Display top N candidates
     display_count = min(top_n, len(candidates))
@@ -3875,10 +4209,10 @@ def display_improvement_suggestions(
         print(f"   ROI Score: {candidate.roi_score:.1f}/100")
         print(
             f"   Estimated Impact: {candidate.estimated_coupling_reduction} coupling reduction, "
-            f"{candidate.estimated_rebuild_reduction:.1f}% fewer .c/.cpp files rebuild"
+            f"{candidate.estimated_rebuild_reduction:.1f} pp rebuild reduction"
         )
         print(f"   Effort: {candidate.effort_estimate.capitalize()}")
-        print(f"   Break-Even: {candidate.break_even_commits:.0f} commits (until .c/.cpp rebuild savings cover refactoring cost)")
+        print(f"   Break-Even: {candidate.break_even_commits:.0f} commits (until rebuild savings cover refactoring cost)")
 
         if verbose:
             print(f"\n   {Colors.CYAN}Issues Detected:{Colors.RESET}")
@@ -3926,7 +4260,9 @@ def display_improvement_suggestions(
     if avg_break_even < 100:
         commits_per_week = 20  # Assume ~4 commits/day * 5 days
         weeks_to_payback = avg_break_even / commits_per_week
-        hours_saved_per_year = total_estimated_reduction * 2 * 52  # 2 hours per % per week
+        # Use realistic reduction if available, otherwise fall back to naive
+        impact_metric = realistic_reduction if source_to_deps and realistic_reduction > 0 else naive_reduction
+        hours_saved_per_year = impact_metric * 2 * 52  # 2 hours per % per week
 
         print(f"\n  {Colors.BRIGHT}Team Impact Estimation:{Colors.RESET}")
         print(f"     Average payback time: {weeks_to_payback:.1f} weeks")
@@ -3941,7 +4277,8 @@ def run_proactive_improvement_analysis(
     exclude_patterns: Optional[List[str]] = None,
     top_n: int = 10,
     verbose: bool = False,
-    include_system_headers: bool = False,
+    file_scope: str = "project",
+    sensitivity: str = "medium",
 ) -> int:
     """Run proactive improvement analysis without requiring a baseline.
 
@@ -3957,12 +4294,14 @@ def run_proactive_improvement_analysis(
         exclude_patterns: Optional list of glob patterns to exclude
         top_n: Number of top candidates to display
         verbose: Show detailed breakdown
-        include_system_headers: Include system headers in analysis
+        file_scope: File scope for analysis ('project', 'thirdparty', 'system')
+        sensitivity: Detection sensitivity ('low', 'medium', 'high')
 
     Returns:
         Exit code (0 for success)
     """
-    from .file_utils import filter_headers_by_pattern, exclude_headers_by_patterns, filter_system_headers
+    from .file_utils import filter_headers_by_pattern, exclude_headers_by_patterns, filter_by_file_type
+    from .clang_utils import FileType
 
     print(f"\n{Colors.BRIGHT}{'='*80}{Colors.RESET}")
     print(f"{Colors.BRIGHT}PROACTIVE ARCHITECTURAL IMPROVEMENT ANALYSIS{Colors.RESET}")
@@ -3984,6 +4323,7 @@ def run_proactive_improvement_analysis(
         scan_result = build_include_graph(build_dir)
         header_to_headers = scan_result.include_graph
         all_headers = scan_result.all_headers
+        file_types = scan_result.file_types
         source_to_deps = scan_result.source_to_deps
     except Exception as e:
         logger.error("Failed to build include graph: %s", e)
@@ -3995,8 +4335,18 @@ def run_proactive_improvement_analysis(
     # Apply filters
     filtered_headers = all_headers
 
-    if not include_system_headers:
-        filtered_headers, _ = filter_system_headers(filtered_headers)
+    # Apply file scope filtering
+    exclude_types: Set[FileType] = set()
+    if file_scope == "project":
+        # Exclude both third-party and system files
+        exclude_types = {FileType.SYSTEM, FileType.THIRD_PARTY}
+    elif file_scope == "thirdparty":
+        # Exclude only system files, include third-party
+        exclude_types = {FileType.SYSTEM}
+    # else file_scope == "system": include everything, no exclusions
+
+    if exclude_types:
+        filtered_headers, _ = filter_by_file_type(filtered_headers, file_types, exclude_types=exclude_types, show_progress=False)
 
     if filter_pattern:
         filtered_headers = filter_headers_by_pattern(filtered_headers, filter_pattern, project_root)
@@ -4008,13 +4358,19 @@ def run_proactive_improvement_analysis(
 
     # Run DSM analysis
     print(f"\n{Colors.CYAN}Analyzing architectural patterns...{Colors.RESET}")
-    results = run_dsm_analysis(filtered_headers, header_to_headers, compute_layers=True, show_progress=False, source_to_deps=source_to_deps)
+    results = run_dsm_analysis(
+        filtered_headers, header_to_headers, compute_layers=True, show_progress=False, source_to_deps=source_to_deps, file_types=file_types
+    )
     print_success(f"Analyzed {len(filtered_headers)} headers", prefix=False)
 
     # Identify improvement candidates
     print(f"\n{Colors.CYAN}Identifying improvement candidates...{Colors.RESET}")
-    candidates = identify_improvement_candidates(results, project_root)
-    print_success(f"Found {len(candidates)} candidates", prefix=False)
+    # Convert sensitivity string to enum
+    sensitivity_map = {"low": SensitivityLevel.LOW, "medium": SensitivityLevel.MEDIUM, "high": SensitivityLevel.HIGH}
+    sensitivity_level = sensitivity_map.get(sensitivity.lower(), SensitivityLevel.MEDIUM)
+    thresholds = DetectionThresholds.for_sensitivity(sensitivity_level)
+    candidates = identify_improvement_candidates(results, project_root, thresholds)
+    print_success(f"Found {len(candidates)} candidates (sensitivity: {sensitivity})", prefix=False)
 
     if not candidates:
         print(f"\n{Colors.GREEN}✓ No significant architectural debt detected{Colors.RESET}")
@@ -4025,7 +4381,7 @@ def run_proactive_improvement_analysis(
     for i, candidate in enumerate(candidates, 1):
         if i % 10 == 0 or i == len(candidates):
             print(f"  Progress: {i}/{len(candidates)} candidates analyzed", end="\r")
-        candidates[i - 1] = estimate_improvement_roi(candidate, results, source_to_deps)
+        candidates[i - 1] = estimate_improvement_roi(candidate, results, source_to_deps, thresholds)
     print()
     print_success(f"Completed ROI analysis for {len(candidates)} candidates", prefix=False)
 
@@ -4033,6 +4389,6 @@ def run_proactive_improvement_analysis(
     ranked_candidates = rank_improvements_by_impact(candidates)
 
     # Display results
-    display_improvement_suggestions(ranked_candidates, results, project_root, top_n=top_n, verbose=verbose)
+    display_improvement_suggestions(ranked_candidates, results, project_root, source_to_deps=source_to_deps, top_n=top_n, verbose=verbose)
 
     return EXIT_SUCCESS

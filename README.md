@@ -112,6 +112,9 @@ pip install -r requirements.txt
 
 # Make scripts executable
 chmod +x buildCheck*.py
+
+# Optional: Enable bash completion (see BASH_COMPLETION.md for details)
+source buildcheck-completion.bash
 ```
 
 ### Dependencies
@@ -275,6 +278,24 @@ Summary:
 - Coupling Outliers (statistical analysis)
 - Unstable Interfaces (low stability score)
 - Hub Nodes (architectural bottlenecks)
+
+**Header Classification by Architectural Role:**
+
+BuildCheckDSM categorizes headers based on their fan-in/fan-out patterns to distinguish between healthy architectural patterns and problematic anti-patterns:
+
+| Classification | Pattern | Indicators | Assessment | Example |
+|---------------|---------|-----------|------------|---------|
+| **Foundation Headers** | High fan-in<br/>Low fan-out | 30+ dependents<br/>< 10 dependencies<br/>Stability: 0.00-0.10 | ✅ **GOOD**<br/>Stable base, high reuse | `BasicTypes.hpp`<br/>`Vector2.hpp` |
+| **God Objects** | High fan-out<br/>Low fan-in | 30+ dependencies<br/>< 10 dependents<br/>Stability: 0.90-1.00 | ❌ **BAD**<br/>Knows too much, needs splitting | `Manager.hpp` with many includes |
+| **Middleman Headers** | High fan-in<br/>High fan-out | 15+ dependents<br/>15+ dependencies<br/>Stability: 0.40-0.60 | ⚠️ **PROBLEMATIC**<br/>Coupling bottleneck | `BaseWindow.hpp` acting as broker |
+| **Leaf/Client Headers** | Low fan-in<br/>Low fan-out | < 15 dependents<br/>< 15 dependencies<br/>Stability: varies | ✓ **NEUTRAL**<br/>Isolated component | Application-specific files |
+
+**Stability Score Interpretation:**
+- **0.00-0.10** = Highly stable (foundation, rarely changes)
+- **0.40-0.60** = Medium stability (middleman, coupling point)
+- **0.90-1.00** = Highly unstable (god object, frequently changes)
+
+**Note:** Foundation headers are listed in `--verbose` mode only, as they represent healthy architecture and don't require action.
 
 **ROI Calculation:**
 - Estimates rebuild time savings
@@ -520,6 +541,35 @@ build-check/
 3. **Sprint Planning:** Run `buildCheckDSM --suggest-improvements` to identify tech debt
 4. **Architecture Review:** Generate DSM reports quarterly to track architectural quality
 5. **CI/CD Optimization:** Use JSON outputs for dashboard integration and trend analysis
+
+## ⌨️ Bash Completion
+
+BuildCheck includes comprehensive bash completion for all tools, providing:
+
+- Tab-completion for all command options
+- Directory path completion for build directories
+- File path completion for output files
+- Smart completion for format choices and other enumerated options
+
+**Quick Setup:**
+
+```bash
+# Enable for current session
+source buildcheck-completion.bash
+
+# Or add to ~/.bashrc for permanent use
+echo "source $(pwd)/buildcheck-completion.bash" >> ~/.bashrc
+```
+
+**Usage Examples:**
+
+```bash
+buildCheckSummary --<Tab><Tab>     # Shows all options
+buildCheckDSM ../build/<Tab>       # Completes directory paths
+buildCheckSummary --format <Tab>   # Shows: text json
+```
+
+For detailed installation options and troubleshooting, see [BASH_COMPLETION.md](BASH_COMPLETION.md).
 
 ## 📄 License
 

@@ -33,10 +33,12 @@ from lib.dsm_serialization import (
     _serialize_matrix_statistics,
     _deserialize_dsm_metrics,
     _deserialize_matrix_statistics,
+    SchemaVersionError,
     SCHEMA_VERSION,
 )
 from lib.dsm_types import DSMAnalysisResults, MatrixStatistics
 from lib.graph_utils import DSMMetrics
+from lib.clang_utils import FileType
 
 
 class TestHelperFunctions:
@@ -89,11 +91,11 @@ class TestSerialization:
 
     def test_serialize_dsm_metrics(self) -> None:
         """Test DSMMetrics serialization."""
-        metrics = DSMMetrics(fan_out=5, fan_in=3, coupling=8, stability=0.625)
+        metrics = DSMMetrics(fan_out=5, fan_in=3, fan_out_project=5, fan_out_external=0, coupling=8, stability=0.625)
 
         result = _serialize_dsm_metrics(metrics)
 
-        assert result == {"coupling": 8, "fan_in": 3, "fan_out": 5, "stability": 0.625}
+        assert result == {"coupling": 8, "fan_in": 3, "fan_out": 5, "fan_out_project": 5, "fan_out_external": 0, "stability": 0.625}
         # Verify keys are sorted
         keys = list(result.keys())
         assert keys == sorted(keys)
@@ -121,12 +123,14 @@ class TestSerialization:
 
     def test_deserialize_dsm_metrics(self) -> None:
         """Test DSMMetrics deserialization."""
-        data = {"fan_out": 5, "fan_in": 3, "coupling": 8, "stability": 0.625}
+        data = {"fan_out": 5, "fan_in": 3, "fan_out_project": 5, "fan_out_external": 0, "coupling": 8, "stability": 0.625}
 
         metrics = _deserialize_dsm_metrics(data)
 
         assert metrics.fan_out == 5
         assert metrics.fan_in == 3
+        assert metrics.fan_out_project == 5
+        assert metrics.fan_out_external == 0
         assert metrics.coupling == 8
         assert metrics.stability == 0.625
 
@@ -167,9 +171,9 @@ class TestSaveLoadResults:
         graph.add_edge("/project/b.hpp", "/project/c.hpp")
 
         metrics = {
-            "/project/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-            "/project/b.hpp": DSMMetrics(fan_out=1, fan_in=1, coupling=2, stability=0.5),
-            "/project/c.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+            "/project/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+            "/project/b.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+            "/project/c.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
         }
 
         stats = MatrixStatistics(
@@ -205,8 +209,14 @@ class TestSaveLoadResults:
         unfiltered_graph = defaultdict(set)
         unfiltered_graph["/project/a.hpp"] = {"/project/b.hpp"}
         unfiltered_graph["/project/b.hpp"] = {"/project/c.hpp"}
+        file_types = {
+            "/project/a.hpp": FileType.PROJECT,
+            "/project/b.hpp": FileType.PROJECT,
+            "/project/c.hpp": FileType.PROJECT,
+            "/project/d.hpp": FileType.PROJECT,
+        }
 
-        save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, str(output_file), build_dir, "FslBase/*", ["*/test/*"])
+        save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), build_dir, "FslBase/*", ["*/test/*"])
 
         assert output_file.exists()
         assert output_file.stat().st_size > 0
@@ -220,14 +230,19 @@ class TestSaveLoadResults:
         assert data["metadata"]["build_directory"] == os.path.abspath(build_dir)
         assert data["metadata"]["filter_pattern"] == "FslBase/*"
         assert data["metadata"]["exclude_patterns"] == ["*/test/*"]
-        assert data["metadata"]["unfiltered_header_count"] == 4
+        assert data["metadata"]["unfiltered_file_count"] == 4
         assert data["metadata"]["filtered_header_count"] == 3
         assert "timestamp" in data["metadata"]
         assert "hostname" in data["metadata"]
         assert "git_commit" in data["metadata"]
-        assert "unfiltered_headers" in data
+        assert "files" in data
         assert "unfiltered_include_graph" in data
-        assert len(data["unfiltered_headers"]) == 4
+        assert len(data["files"]) == 4
+        # Verify FileRecord format (v1.2)
+        for file_record in data["files"]:
+            assert "path" in file_record
+            assert "type" in file_record
+            assert isinstance(file_record["type"], int)
 
     def test_save_results_without_filter(self, sample_results: DSMAnalysisResults, tmp_path: Path) -> None:
         """Test save without filter pattern."""
@@ -236,7 +251,8 @@ class TestSaveLoadResults:
         unfiltered_headers = set(sample_results.sorted_headers)
         unfiltered_graph = sample_results.header_to_headers
 
-        save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, str(output_file), build_dir, None)
+        file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+        save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), build_dir, None)
 
         with gzip.open(output_file, "rt") as f:
             data = json.load(f)
@@ -257,8 +273,10 @@ class TestSaveLoadResults:
         ):
             mock_dt.now.return_value.isoformat.return_value = "2025-01-01T00:00:00"
 
-            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, str(file1), build_dir)
-            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, str(file2), build_dir)
+            file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, file_types, str(file1), build_dir)
+            file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, file_types, str(file2), build_dir)
 
         # Compare decompressed content (gzip header includes filename, so raw bytes differ)
         with gzip.open(file1, "rt") as f1:
@@ -274,7 +292,8 @@ class TestSaveLoadResults:
         unfiltered_headers = set(sample_results.sorted_headers)
         unfiltered_graph = sample_results.header_to_headers
 
-        save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, str(output_file), "/project/build")
+        file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+        save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), "/project/build")
 
         with gzip.open(output_file, "rt") as f:
             content = f.read()
@@ -299,7 +318,8 @@ class TestSaveLoadResults:
         unfiltered_headers = set(sample_results.sorted_headers)
         unfiltered_graph = sample_results.header_to_headers
 
-        save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, str(output_file), "/project/build")
+        file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+        save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), "/project/build")
 
         with gzip.open(output_file, "rt") as f:
             data = json.load(f)
@@ -320,7 +340,8 @@ class TestSaveLoadResults:
         unfiltered_headers = set(sample_results.sorted_headers)
         unfiltered_graph = sample_results.header_to_headers
         with pytest.raises(IOError):
-            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, "/invalid/path/test.dsm.json.gz", "/project/build")
+            file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, file_types, "/invalid/path/test.dsm.json.gz", "/project/build")
 
     def test_load_results_success(self, sample_results: DSMAnalysisResults, tmp_path: Path) -> None:
         """Test successful load of DSM results."""
@@ -332,11 +353,12 @@ class TestSaveLoadResults:
 
         # Save first
         with patch("lib.dsm_serialization._get_hostname", return_value="testhost"):
-            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, str(output_file), build_dir)
+            file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), build_dir)
 
         # Load back
         with patch("lib.dsm_serialization._get_hostname", return_value="testhost"):
-            loaded_headers, loaded_graph = load_dsm_results(str(output_file), build_dir, project_root)
+            loaded_headers, loaded_graph, loaded_file_types = load_dsm_results(str(output_file), build_dir, project_root)
 
         # Verify unfiltered data is returned
         assert loaded_headers == unfiltered_headers
@@ -352,7 +374,7 @@ class TestSaveLoadResults:
         with gzip.open(output_file, "wt") as f:
             json.dump(data, f)
 
-        with pytest.raises(ValueError, match="Schema version mismatch"):
+        with pytest.raises(SchemaVersionError, match="Baseline schema v0.9 is outdated"):
             load_dsm_results(str(output_file), "/project/build", "/project")
 
     def test_load_results_build_dir_mismatch(self, sample_results: DSMAnalysisResults, tmp_path: Path) -> None:
@@ -365,7 +387,8 @@ class TestSaveLoadResults:
 
         # Save with one build dir
         with patch("lib.dsm_serialization._get_hostname", return_value="testhost"):
-            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, str(output_file), original_build_dir)
+            file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), original_build_dir)
 
         # Try to load with different build dir
         with patch("lib.dsm_serialization._get_hostname", return_value="testhost"), pytest.raises(
@@ -382,7 +405,8 @@ class TestSaveLoadResults:
 
         # Save with one hostname
         with patch("lib.dsm_serialization._get_hostname", return_value="host1"):
-            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, str(output_file), build_dir)
+            file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), build_dir)
 
         # Try to load with different hostname
         with patch("lib.dsm_serialization._get_hostname", return_value="host2"), pytest.raises(
@@ -399,7 +423,8 @@ class TestSaveLoadResults:
         unfiltered_graph = sample_results.header_to_headers
 
         with patch("lib.dsm_serialization._get_hostname", return_value="host1"):
-            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, str(output_file), build_dir1)
+            file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), build_dir1)
 
         with patch("lib.dsm_serialization._get_hostname", return_value="host2"):
             try:
@@ -440,7 +465,7 @@ class TestSaveLoadResults:
         graph.add_edge("/c.hpp", "/a.hpp")
 
         results = DSMAnalysisResults(
-            metrics={"/a.hpp": DSMMetrics(1, 1, 2, 0.5), "/b.hpp": DSMMetrics(1, 1, 2, 0.5), "/c.hpp": DSMMetrics(1, 1, 2, 0.5)},
+            metrics={"/a.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5), "/b.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5), "/c.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5)},
             cycles=[{"/a.hpp", "/b.hpp", "/c.hpp"}],
             headers_in_cycles={"/a.hpp", "/b.hpp", "/c.hpp"},
             feedback_edges=[("/c.hpp", "/a.hpp")],
@@ -460,8 +485,9 @@ class TestSaveLoadResults:
         unfiltered_graph = results.header_to_headers
 
         with patch("lib.dsm_serialization._get_hostname", return_value="testhost"):
-            save_dsm_results(results, unfiltered_headers, unfiltered_graph, str(output_file), build_dir)
-            loaded_headers, loaded_graph = load_dsm_results(str(output_file), build_dir, "/test")
+            file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+            save_dsm_results(results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), build_dir)
+            loaded_headers, loaded_graph, loaded_file_types = load_dsm_results(str(output_file), build_dir, "/test")
 
         # Verify unfiltered data is returned
         assert loaded_headers == unfiltered_headers
@@ -475,8 +501,9 @@ class TestSaveLoadResults:
         unfiltered_graph = sample_results.header_to_headers
 
         with patch("lib.dsm_serialization._get_hostname", return_value="testhost"):
-            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, str(output_file), build_dir)
-            loaded_headers, loaded_graph = load_dsm_results(str(output_file), build_dir, "/test")
+            file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+            save_dsm_results(sample_results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), build_dir)
+            loaded_headers, loaded_graph, loaded_file_types = load_dsm_results(str(output_file), build_dir, "/test")
 
         # Verify unfiltered data is returned
         assert loaded_headers == unfiltered_headers
@@ -494,7 +521,7 @@ class TestExcludePatterns:
         graph.add_edge("/project/a.hpp", "/project/b.hpp")
 
         results = DSMAnalysisResults(
-            metrics={"/project/a.hpp": DSMMetrics(1, 0, 1, 1.0)},
+            metrics={"/project/a.hpp": DSMMetrics(1, 0, 1, 0, 1, 1.0)},
             cycles=[],
             headers_in_cycles=set(),
             feedback_edges=[],
@@ -512,13 +539,14 @@ class TestExcludePatterns:
         unfiltered_headers = {"/project/a.hpp", "/project/ThirdParty/lib.hpp"}
         unfiltered_graph: defaultdict[str, set[str]] = defaultdict(set)
 
-        save_dsm_results(results, unfiltered_headers, unfiltered_graph, str(output_file), "/project/build", None, ["*/ThirdParty/*", "*/test/*"])
+        file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+        save_dsm_results(results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), "/project/build", None, ["*/ThirdParty/*", "*/test/*"])
 
         with gzip.open(output_file, "rt") as f:
             data = json.load(f)
 
         assert data["metadata"]["exclude_patterns"] == ["*/ThirdParty/*", "*/test/*"]
-        assert data["metadata"]["unfiltered_header_count"] == 2
+        assert data["metadata"]["unfiltered_file_count"] == 2
         assert data["metadata"]["filtered_header_count"] == 1
 
     def test_load_with_filter_inheritance(self, tmp_path: Path) -> None:
@@ -530,7 +558,7 @@ class TestExcludePatterns:
         graph.add_edge("/project/src/a.hpp", "/project/src/b.hpp")
 
         results = DSMAnalysisResults(
-            metrics={"/project/src/a.hpp": DSMMetrics(1, 0, 1, 1.0)},
+            metrics={"/project/src/a.hpp": DSMMetrics(1, 0, 1, 0, 1, 1.0)},
             cycles=[],
             headers_in_cycles=set(),
             feedback_edges=[],
@@ -552,10 +580,11 @@ class TestExcludePatterns:
 
         with patch("lib.dsm_serialization._get_hostname", return_value="testhost"):
             # Save with exclude patterns
-            save_dsm_results(results, unfiltered_headers, unfiltered_graph, str(output_file), "/project/build", "src/*", ["*/ThirdParty/*"])
+            file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+            save_dsm_results(results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), "/project/build", "src/*", ["*/ThirdParty/*"])
 
             # Load returns ALL unfiltered data (caller applies filters)
-            loaded_headers, loaded_graph = load_dsm_results(str(output_file), "/project/build", "/project")
+            loaded_headers, loaded_graph, loaded_file_types = load_dsm_results(str(output_file), "/project/build", "/project")
 
         # Should return complete unfiltered data
         assert loaded_headers == unfiltered_headers
@@ -570,7 +599,7 @@ class TestExcludePatterns:
         graph.add_edge("/project/a.hpp", "/project/b.hpp")
 
         results = DSMAnalysisResults(
-            metrics={"/project/a.hpp": DSMMetrics(1, 0, 1, 1.0)},
+            metrics={"/project/a.hpp": DSMMetrics(1, 0, 1, 0, 1, 1.0)},
             cycles=[],
             headers_in_cycles=set(),
             feedback_edges=[],
@@ -591,10 +620,11 @@ class TestExcludePatterns:
 
         with patch("lib.dsm_serialization._get_hostname", return_value="testhost"):
             # Save with one set of filters
-            save_dsm_results(results, unfiltered_headers, unfiltered_graph, str(output_file), "/project/build", "core/*", [])
+            file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+            save_dsm_results(results, unfiltered_headers, unfiltered_graph, file_types, str(output_file), "/project/build", "core/*", [])
 
             # Load returns unfiltered data (caller applies filters)
-            loaded_headers, loaded_graph = load_dsm_results(str(output_file), "/project/build", "/project")
+            loaded_headers, loaded_graph, loaded_file_types = load_dsm_results(str(output_file), "/project/build", "/project")
 
         # Should return complete unfiltered data including test directory
         assert loaded_headers == unfiltered_headers
@@ -613,7 +643,7 @@ class TestIntegration:
         baseline_graph.add_edge("/a.hpp", "/b.hpp")
 
         baseline = DSMAnalysisResults(
-            metrics={"/a.hpp": DSMMetrics(1, 0, 1, 1.0), "/b.hpp": DSMMetrics(0, 1, 1, 0.0)},
+            metrics={"/a.hpp": DSMMetrics(1, 0, 1, 0, 1, 1.0), "/b.hpp": DSMMetrics(0, 1, 0, 0, 1, 0.0)},
             cycles=[],
             headers_in_cycles=set(),
             feedback_edges=[],
@@ -634,10 +664,11 @@ class TestIntegration:
 
         # Save baseline
         with patch("lib.dsm_serialization._get_hostname", return_value="testhost"):
-            save_dsm_results(baseline, unfiltered_headers, unfiltered_graph, str(baseline_file), build_dir)
+            file_types = {h: FileType.PROJECT for h in unfiltered_headers}
+            save_dsm_results(baseline, unfiltered_headers, unfiltered_graph, file_types, str(baseline_file), build_dir)
 
             # Load it back
-            loaded_headers, loaded_graph = load_dsm_results(str(baseline_file), build_dir, "/test")
+            loaded_headers, loaded_graph, loaded_file_types = load_dsm_results(str(baseline_file), build_dir, "/test")
 
         # Verify unfiltered data is returned
         assert loaded_headers == unfiltered_headers

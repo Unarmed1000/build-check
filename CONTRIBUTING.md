@@ -415,6 +415,19 @@ We use semantic versioning (MAJOR.MINOR.PATCH):
 4. Add tests in `test/test_buildCheckNewTool.py`
 5. Update README.md with new tool description
 6. Add examples to demo/EXAMPLES.md
+7. Update `buildcheck-completion.bash` with new tool's completion function
+
+### Adding Command-Line Options
+
+When adding new command-line options to existing tools:
+
+1. Add the option using `parser.add_argument()` in the tool's argument parser
+2. Update the tool's docstring with the new option
+3. Update `buildcheck-completion.bash`:
+   - Add the option to the `opts` variable in the tool's completion function
+   - If the option takes arguments, add a `case` statement to handle completion
+4. Test the completion: `source buildcheck-completion.bash && ./test/test-completion.sh`
+5. Update the tool's README if applicable
 
 ### Adding a Library Function
 

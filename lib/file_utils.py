@@ -26,14 +26,88 @@
 import os
 import fnmatch
 import logging
+import enum
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Set, List, Dict, DefaultDict, Tuple, Optional, Any
 
-from .clang_utils import is_system_header, SYSTEM_PATH_PREFIXES
+from .clang_utils import is_system_header, SYSTEM_PATH_PREFIXES, FileType, classify_file
 from .color_utils import Colors, print_info
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FileClassificationStats:
+    """Statistics about file classification.
+
+    Tracks counts of files in each classification category.
+    All counts should sum to total.
+
+    Attributes:
+        total: Total number of files
+        system: Count of system files
+        third_party: Count of third-party files
+        generated: Count of generated files
+        project: Count of project files
+    """
+
+    total: int
+    system: int
+    third_party: int
+    generated: int
+    project: int
+
+
+def filter_by_file_type(
+    files: Set[str], file_types: Dict[str, FileType], exclude_types: Set[FileType], show_progress: bool = False
+) -> Tuple[Set[str], FileClassificationStats]:
+    """Filter files by type, excluding specified types.
+
+    Generic filtering function that uses pre-computed file classifications.
+    Files not in file_types map are treated as PROJECT type by default.
+
+    Args:
+        files: Set of file paths to filter
+        file_types: Pre-computed file type classifications
+        exclude_types: Set of FileType values to exclude
+        show_progress: Show progress message for large file sets
+
+    Returns:
+        Tuple of (filtered_files, classification_stats)
+        - filtered_files: Files after excluding specified types
+        - classification_stats: Count breakdown by type
+    """
+    if show_progress and len(files) > 5000:
+        print_info(f"Filtering {len(files)} files by type...")
+
+    # Count files by type
+    counts = {FileType.SYSTEM: 0, FileType.THIRD_PARTY: 0, FileType.GENERATED: 0, FileType.PROJECT: 0}
+
+    filtered_files: Set[str] = set()
+
+    for file_path in files:
+        # Get type (default to PROJECT if not in map)
+        file_type = file_types.get(file_path, FileType.PROJECT)
+        counts[file_type] += 1
+
+        # Add to filtered set if not excluded
+        if file_type not in exclude_types:
+            filtered_files.add(file_path)
+
+    stats = FileClassificationStats(
+        total=len(files),
+        system=counts[FileType.SYSTEM],
+        third_party=counts[FileType.THIRD_PARTY],
+        generated=counts[FileType.GENERATED],
+        project=counts[FileType.PROJECT],
+    )
+
+    logger.info(
+        "Filtered %d files: %d system, %d third-party, %d generated, %d project", stats.total, stats.system, stats.third_party, stats.generated, stats.project
+    )
+
+    return filtered_files, stats
 
 
 @dataclass
@@ -47,7 +121,7 @@ class FilterStatistics:
     Attributes:
         initial_count: Number of headers before any filtering
         final_count: Number of headers after all filtering
-        system_headers: System header statistics by prefix
+        system_headers: System header classification statistics (FileClassificationStats)
         exclude_patterns: Exclude pattern statistics by pattern
         filter_pattern: Pattern filter statistics (optional)
         library_filter: Library filter statistics (optional)
@@ -55,7 +129,7 @@ class FilterStatistics:
 
     initial_count: int
     final_count: int
-    system_headers: Dict[str, Any] = field(default_factory=dict)
+    system_headers: Optional[FileClassificationStats] = None
     exclude_patterns: Dict[str, Any] = field(default_factory=dict)
     filter_pattern: Optional[Dict[str, Any]] = None
     library_filter: Optional[Dict[str, Any]] = None
@@ -70,9 +144,9 @@ class FilterStatistics:
 
         excluded_parts = []
 
-        # System headers
-        if self.system_headers and self.system_headers.get("total_excluded", 0) > 0:
-            count = self.system_headers["total_excluded"]
+        # System headers (using FileClassificationStats)
+        if self.system_headers and self.system_headers.system > 0:
+            count = self.system_headers.system
             excluded_parts.append(f"{Colors.CYAN}{count}{Colors.RESET} {Colors.DIM}system{Colors.RESET}")
 
         # Exclude patterns
@@ -106,23 +180,14 @@ class FilterStatistics:
         """
         lines = []
 
-        # System headers breakdown
-        if self.system_headers and self.system_headers.get("total_excluded", 0) > 0:
-            lines.append(f"\n{Colors.BRIGHT}System Headers Excluded:{Colors.RESET}")
-            lines.append(f"  Total: {Colors.CYAN}{self.system_headers['total_excluded']}{Colors.RESET}")
-
-            by_prefix = self.system_headers.get("by_prefix", {})
-            # Sort by count descending, take top 3
-            sorted_prefixes = sorted(by_prefix.items(), key=lambda x: x[1]["count"], reverse=True)[:3]
-
-            for prefix, info in sorted_prefixes:
-                count = info["count"]
-                examples = info.get("examples", [])
-                if examples:
-                    example_str = ", ".join(examples[:5])
-                    lines.append(f"  {prefix}: {Colors.CYAN}{count}{Colors.RESET} {Colors.DIM}({example_str}){Colors.RESET}")
-                else:
-                    lines.append(f"  {prefix}: {Colors.CYAN}{count}{Colors.RESET}")
+        # System headers breakdown (using FileClassificationStats)
+        if self.system_headers and self.system_headers.system > 0:
+            lines.append(f"\n{Colors.BRIGHT}File Classification:{Colors.RESET}")
+            lines.append(f"  Total files: {Colors.CYAN}{self.system_headers.total}{Colors.RESET}")
+            lines.append(f"  System: {Colors.CYAN}{self.system_headers.system}{Colors.RESET}")
+            lines.append(f"  Third-party: {Colors.CYAN}{self.system_headers.third_party}{Colors.RESET}")
+            lines.append(f"  Generated: {Colors.CYAN}{self.system_headers.generated}{Colors.RESET}")
+            lines.append(f"  Project: {Colors.CYAN}{self.system_headers.project}{Colors.RESET}")
 
         # Exclude patterns breakdown
         if self.exclude_patterns and self.exclude_patterns.get("total_excluded", 0) > 0:
@@ -157,57 +222,6 @@ class FilterStatistics:
             lines.append(f"  Matched: {Colors.CYAN}{self.library_filter.get('matched', 0)}{Colors.RESET}")
 
         return "\n".join(lines)
-
-
-def filter_system_headers(headers: Set[str], show_progress: bool = False) -> Tuple[Set[str], Dict[str, Any]]:
-    """Filter out system headers from header set.
-
-    Categorizes excluded system headers by prefix and collects example paths.
-
-    Args:
-        headers: Set of header paths
-        show_progress: Show progress message for large header sets (>5000 headers)
-
-    Returns:
-        Tuple of (filtered_headers, statistics_dict)
-        - filtered_headers: Headers with system headers removed
-        - statistics_dict: {"total_excluded": int, "by_prefix": {prefix: {"count": int, "examples": List[str]}}}
-    """
-    if show_progress and len(headers) > 5000:
-        print_info("Filtering system headers...")
-
-    filtered_headers: Set[str] = set()
-    excluded_by_prefix: DefaultDict[str, List[str]] = defaultdict(list)
-
-    for header in headers:
-        if is_system_header(header):
-            # Find which prefix matches
-            for prefix in SYSTEM_PATH_PREFIXES:
-                if header.startswith(prefix):
-                    # Store up to 5 examples per prefix (just basenames)
-                    if len(excluded_by_prefix[prefix]) < 5:
-                        excluded_by_prefix[prefix].append(os.path.basename(header))
-                    else:
-                        # Still count but don't store more examples
-                        excluded_by_prefix[prefix].append("")  # Placeholder for counting
-                    break
-        else:
-            filtered_headers.add(header)
-
-    # Build statistics dict
-    total_excluded = len(headers) - len(filtered_headers)
-    by_prefix = {}
-
-    for prefix, examples_list in excluded_by_prefix.items():
-        # Filter out empty placeholders and get actual examples
-        actual_examples = [ex for ex in examples_list if ex][:5]
-        by_prefix[prefix] = {"count": len(examples_list), "examples": actual_examples}
-
-    stats = {"total_excluded": total_excluded, "by_prefix": by_prefix}
-
-    logger.info("Filtered %d system headers from %d total headers", total_excluded, len(headers))
-
-    return filtered_headers, stats
 
 
 def filter_headers_by_pattern(headers: Set[str], pattern: str, project_root: str) -> Set[str]:

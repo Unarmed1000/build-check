@@ -97,7 +97,8 @@ from lib.git_utils import find_git_repo, get_uncommitted_changes, get_working_tr
 from lib.ninja_utils import validate_and_prepare_build_dir, validate_build_directory_with_feedback
 from lib.dependency_utils import build_reverse_dependency_map, compute_affected_sources, SourceDependencyMap
 from lib.color_utils import Colors, print_error, print_warning, print_success
-from lib.file_utils import filter_system_headers
+from lib.file_utils import filter_by_file_type, FileClassificationStats
+from lib.clang_utils import FileType
 
 
 @dataclass
@@ -155,7 +156,9 @@ __all__ = [
 ]
 
 
-def analyze_ripple_effect(build_dir: str, changed_headers: List[str], changed_sources: List[str], verbose: bool = False) -> RippleEffectResult:
+def analyze_ripple_effect(
+    build_dir: str, changed_headers: List[str], changed_sources: List[str], verbose: bool = False
+) -> tuple[RippleEffectResult, Dict[str, "FileType"]]:
     """Analyze which C/C++ files will recompile due to changes.
 
     Args:
@@ -165,12 +168,9 @@ def analyze_ripple_effect(build_dir: str, changed_headers: List[str], changed_so
         verbose: Whether to print progress messages
 
     Returns:
-        Dictionary with analysis results:
-        - affected_sources: dict mapping changed header -> list of affected sources
-        - total_affected: set of all affected source files
-        - direct_sources: set of changed source files
-        - source_to_deps: dict mapping source files to their dependencies
-        - header_to_sources: dict mapping headers to sources that depend on them
+        Tuple of (RippleEffectResult, file_types_dict):
+        - RippleEffectResult with analysis results
+        - file_types: dict mapping file paths to FileType classifications
 
     Raises:
         ValueError: If build_dir is invalid or missing compile_commands.json
@@ -191,6 +191,7 @@ def analyze_ripple_effect(build_dir: str, changed_headers: List[str], changed_so
     try:
         scan_result = build_include_graph(build_dir)
         source_to_deps = scan_result.source_to_deps
+        file_types = scan_result.file_types
         scan_time = scan_result.scan_time
     except Exception as e:
         logging.error("Failed to build include graph: %s", e)
@@ -225,12 +226,15 @@ def analyze_ripple_effect(build_dir: str, changed_headers: List[str], changed_so
     if verbose:
         print()
 
-    return RippleEffectResult(
-        affected_sources=affected_sources,
-        total_affected=total_affected,
-        direct_sources=direct_sources,
-        source_to_deps=source_to_deps,
-        header_to_sources=header_to_sources,
+    return (
+        RippleEffectResult(
+            affected_sources=affected_sources,
+            total_affected=total_affected,
+            direct_sources=direct_sources,
+            source_to_deps=source_to_deps,
+            header_to_sources=header_to_sources,
+        ),
+        file_types,
     )
 
 
@@ -387,23 +391,23 @@ def get_ripple_effect_data(
             changed_headers=[], changed_sources=[], affected_sources_by_header={}, all_affected_sources=[], total_sources=0, rebuild_percentage=0.0
         )
 
+    # Analyze ripple effect first to get file_types (verbose=False to suppress progress messages)
+    analysis_result, file_types = analyze_ripple_effect(build_dir, changed_headers, changed_sources, verbose=False)
+
     # Filter system headers unless explicitly included
     if not include_system_headers:
         original_count = len(changed_headers)
-        filtered_headers, stats = filter_system_headers(set(changed_headers), show_progress=False)
+        filtered_headers, stats = filter_by_file_type(set(changed_headers), file_types, exclude_types={FileType.SYSTEM}, show_progress=False)
         changed_headers = list(filtered_headers)
 
-        if stats["total_excluded"] > 0 and verbose:
-            print_success(f"Excluded {stats['total_excluded']} system headers from analysis", prefix=False)
+        if stats.system > 0 and verbose:
+            print_success(f"Excluded {stats.system} system headers from analysis", prefix=False)
 
         # If all headers were system headers, return early
         if not changed_headers and not changed_sources:
             return RippleEffectData(
                 changed_headers=[], changed_sources=[], affected_sources_by_header={}, all_affected_sources=[], total_sources=0, rebuild_percentage=0.0
             )
-
-    # Analyze ripple effect (verbose=False to suppress progress messages)
-    analysis_result = analyze_ripple_effect(build_dir, changed_headers, changed_sources, verbose=False)
 
     affected_sources = analysis_result.affected_sources
     source_to_deps = analysis_result.source_to_deps
@@ -625,20 +629,20 @@ def run_analysis_workflow(build_dir: str, repo_dir: str, verbose: bool, from_ref
             print_warning("No C/C++ source or header files changed", prefix=False)
             return
 
+        # Analyze ripple effect first to get file_types
+        logging.info("Starting ripple effect analysis")
+        analysis_result, file_types = analyze_ripple_effect(build_dir, changed_headers, changed_sources, verbose=verbose)
+        logging.info("Ripple effect analysis completed")
+
         # Filter system headers unless explicitly included
         if not include_system_headers and changed_headers:
-            filtered_headers, stats = filter_system_headers(set(changed_headers), show_progress=False)
+            filtered_headers, stats = filter_by_file_type(set(changed_headers), file_types, exclude_types={FileType.SYSTEM}, show_progress=False)
             changed_headers = list(filtered_headers)
 
-            if stats["total_excluded"] > 0:
-                print_success(f"Excluded {stats['total_excluded']} system headers from analysis", prefix=False)
+            if stats.system > 0:
+                print_success(f"Excluded {stats.system} system headers from analysis", prefix=False)
 
         print(f"{Colors.BLUE}C/C++ changes: {len(changed_headers)} headers, {len(changed_sources)} sources{Colors.RESET}")
-
-        # Analyze ripple effect
-        logging.info("Starting ripple effect analysis")
-        analysis_result = analyze_ripple_effect(build_dir, changed_headers, changed_sources, verbose=verbose)
-        logging.info("Ripple effect analysis completed")
 
         # Print report
         print_ripple_report(changed_headers, changed_sources, analysis_result, repo_dir)

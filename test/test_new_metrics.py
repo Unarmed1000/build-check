@@ -92,9 +92,9 @@ class TestGodObjectDetection:
     def test_no_god_objects(self) -> None:
         """Test project with no God Objects."""
         metrics = {
-            "/a.hpp": DSMMetrics(fan_out=10, fan_in=5, coupling=15, stability=0.67),
-            "/b.hpp": DSMMetrics(fan_out=20, fan_in=10, coupling=30, stability=0.67),
-            "/c.hpp": DSMMetrics(fan_out=30, fan_in=15, coupling=45, stability=0.67),
+            "/a.hpp": DSMMetrics(fan_out=10, fan_in=5, fan_out_project=10, fan_out_external=0, coupling=15, stability=0.67),
+            "/b.hpp": DSMMetrics(fan_out=20, fan_in=10, fan_out_project=20, fan_out_external=0, coupling=30, stability=0.67),
+            "/c.hpp": DSMMetrics(fan_out=30, fan_in=15, fan_out_project=30, fan_out_external=0, coupling=45, stability=0.67),
         }
 
         god_objects = detect_god_objects(metrics, threshold=50)
@@ -103,9 +103,9 @@ class TestGodObjectDetection:
     def test_with_god_objects(self) -> None:
         """Test detection of God Objects."""
         metrics = {
-            "/a.hpp": DSMMetrics(fan_out=10, fan_in=5, coupling=15, stability=0.67),
-            "/god.hpp": DSMMetrics(fan_out=100, fan_in=20, coupling=120, stability=0.83),
-            "/mega_god.hpp": DSMMetrics(fan_out=200, fan_in=10, coupling=210, stability=0.95),
+            "/a.hpp": DSMMetrics(fan_out=10, fan_in=5, fan_out_project=10, fan_out_external=0, coupling=15, stability=0.67),
+            "/god.hpp": DSMMetrics(fan_out=100, fan_in=20, fan_out_project=100, fan_out_external=0, coupling=120, stability=0.83),
+            "/mega_god.hpp": DSMMetrics(fan_out=200, fan_in=10, fan_out_project=200, fan_out_external=0, coupling=210, stability=0.95),
         }
 
         god_objects = detect_god_objects(metrics, threshold=50)
@@ -120,8 +120,8 @@ class TestGodObjectDetection:
     def test_custom_threshold(self) -> None:
         """Test custom threshold."""
         metrics = {
-            "/a.hpp": DSMMetrics(fan_out=60, fan_in=5, coupling=65, stability=0.92),
-            "/b.hpp": DSMMetrics(fan_out=40, fan_in=10, coupling=50, stability=0.80),
+            "/a.hpp": DSMMetrics(fan_out=60, fan_in=5, fan_out_project=60, fan_out_external=0, coupling=65, stability=0.92),
+            "/b.hpp": DSMMetrics(fan_out=40, fan_in=10, fan_out_project=40, fan_out_external=0, coupling=50, stability=0.80),
         }
 
         # With threshold=50, both qualify
@@ -136,9 +136,9 @@ class TestInterfaceImplementationRatio:
     def test_all_interfaces(self) -> None:
         """Test project with all stable interfaces."""
         metrics = {
-            "/a.hpp": DSMMetrics(fan_out=1, fan_in=10, coupling=11, stability=0.09),
-            "/b.hpp": DSMMetrics(fan_out=2, fan_in=20, coupling=22, stability=0.09),
-            "/c.hpp": DSMMetrics(fan_out=0, fan_in=30, coupling=30, stability=0.0),
+            "/a.hpp": DSMMetrics(fan_out=1, fan_in=10, fan_out_project=1, fan_out_external=0, coupling=11, stability=0.09),
+            "/b.hpp": DSMMetrics(fan_out=2, fan_in=20, fan_out_project=2, fan_out_external=0, coupling=22, stability=0.09),
+            "/c.hpp": DSMMetrics(fan_out=0, fan_in=30, fan_out_project=0, fan_out_external=0, coupling=30, stability=0.0),
         }
 
         ratio, num_interfaces, total = calculate_interface_implementation_ratio(metrics, stability_threshold=0.3)
@@ -150,9 +150,9 @@ class TestInterfaceImplementationRatio:
     def test_no_interfaces(self) -> None:
         """Test project with no stable interfaces."""
         metrics = {
-            "/a.hpp": DSMMetrics(fan_out=10, fan_in=1, coupling=11, stability=0.91),
-            "/b.hpp": DSMMetrics(fan_out=20, fan_in=2, coupling=22, stability=0.91),
-            "/c.hpp": DSMMetrics(fan_out=30, fan_in=0, coupling=30, stability=1.0),
+            "/a.hpp": DSMMetrics(fan_out=10, fan_in=1, fan_out_project=10, fan_out_external=0, coupling=11, stability=0.91),
+            "/b.hpp": DSMMetrics(fan_out=20, fan_in=2, fan_out_project=20, fan_out_external=0, coupling=22, stability=0.91),
+            "/c.hpp": DSMMetrics(fan_out=30, fan_in=0, fan_out_project=30, fan_out_external=0, coupling=30, stability=1.0),
         }
 
         ratio, num_interfaces, total = calculate_interface_implementation_ratio(metrics, stability_threshold=0.3)
@@ -164,9 +164,9 @@ class TestInterfaceImplementationRatio:
     def test_mixed_interfaces(self) -> None:
         """Test project with mixed interface/implementation."""
         metrics = {
-            "/interface.hpp": DSMMetrics(fan_out=0, fan_in=10, coupling=10, stability=0.0),
-            "/impl1.hpp": DSMMetrics(fan_out=10, fan_in=1, coupling=11, stability=0.91),
-            "/impl2.hpp": DSMMetrics(fan_out=20, fan_in=2, coupling=22, stability=0.91),
+            "/interface.hpp": DSMMetrics(fan_out=0, fan_in=10, fan_out_project=0, fan_out_external=0, coupling=10, stability=0.0),
+            "/impl1.hpp": DSMMetrics(fan_out=10, fan_in=1, fan_out_project=10, fan_out_external=0, coupling=11, stability=0.91),
+            "/impl2.hpp": DSMMetrics(fan_out=20, fan_in=2, fan_out_project=20, fan_out_external=0, coupling=22, stability=0.91),
         }
 
         ratio, num_interfaces, total = calculate_interface_implementation_ratio(metrics, stability_threshold=0.3)
@@ -189,7 +189,7 @@ class TestCouplingOutliers:
 
     def test_no_outliers(self) -> None:
         """Test dataset with no outliers."""
-        metrics = {f"/header{i}.hpp": DSMMetrics(fan_out=10, fan_in=10, coupling=20, stability=0.5) for i in range(10)}
+        metrics = {f"/header{i}.hpp": DSMMetrics(fan_out=10, fan_in=10, fan_out_project=10, fan_out_external=0, coupling=20, stability=0.5) for i in range(10)}
 
         outliers, mean, stddev = detect_coupling_outliers(metrics, z_threshold=2.5)
 
@@ -200,8 +200,8 @@ class TestCouplingOutliers:
     def test_with_outliers(self) -> None:
         """Test detection of outliers."""
         # Need more data points for z-score to be meaningful
-        metrics = {f"/normal{i}.hpp": DSMMetrics(fan_out=10, fan_in=10, coupling=20, stability=0.5) for i in range(10)}
-        metrics["/outlier.hpp"] = DSMMetrics(fan_out=100, fan_in=100, coupling=200, stability=0.5)
+        metrics = {f"/normal{i}.hpp": DSMMetrics(fan_out=10, fan_in=10, fan_out_project=10, fan_out_external=0, coupling=20, stability=0.5) for i in range(10)}
+        metrics["/outlier.hpp"] = DSMMetrics(fan_out=100, fan_in=100, fan_out_project=100, fan_out_external=0, coupling=200, stability=0.5)
 
         outliers, mean, stddev = detect_coupling_outliers(metrics, z_threshold=2.0)
 
@@ -213,9 +213,9 @@ class TestCouplingOutliers:
     def test_multiple_outliers(self) -> None:
         """Test multiple outliers sorted by z-score."""
         # Create dataset with clear outliers
-        metrics = {f"/normal{i}.hpp": DSMMetrics(fan_out=5, fan_in=5, coupling=10, stability=0.5) for i in range(20)}
-        metrics["/outlier1.hpp"] = DSMMetrics(fan_out=30, fan_in=30, coupling=60, stability=0.5)
-        metrics["/outlier2.hpp"] = DSMMetrics(fan_out=50, fan_in=50, coupling=100, stability=0.5)
+        metrics = {f"/normal{i}.hpp": DSMMetrics(fan_out=5, fan_in=5, fan_out_project=5, fan_out_external=0, coupling=10, stability=0.5) for i in range(20)}
+        metrics["/outlier1.hpp"] = DSMMetrics(fan_out=30, fan_in=30, fan_out_project=30, fan_out_external=0, coupling=60, stability=0.5)
+        metrics["/outlier2.hpp"] = DSMMetrics(fan_out=50, fan_in=50, fan_out_project=50, fan_out_external=0, coupling=100, stability=0.5)
 
         outliers, _, _ = detect_coupling_outliers(metrics, z_threshold=2.0)
 
@@ -241,9 +241,9 @@ class TestMatrixStatisticsWithAdvancedMetrics:
         all_headers = {"/a.hpp", "/b.hpp", "/c.hpp"}
         header_to_headers = defaultdict(set, {"/a.hpp": {"/b.hpp"}, "/b.hpp": {"/c.hpp"}, "/c.hpp": set()})
         metrics = {
-            "/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-            "/b.hpp": DSMMetrics(fan_out=1, fan_in=1, coupling=2, stability=0.5),
-            "/c.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+            "/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+            "/b.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+            "/c.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
         }
         headers_in_cycles: set[str] = set()
         num_cycles = 0

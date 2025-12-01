@@ -115,8 +115,15 @@ import networkx as nx
 from lib.ninja_utils import extract_rebuild_info
 from lib.color_utils import Colors, print_warning, print_success
 from lib.constants import COMPILE_COMMANDS_JSON
-from lib.file_utils import exclude_headers_by_patterns, filter_system_headers
-from lib.clang_utils import VALID_SOURCE_EXTENSIONS, VALID_HEADER_EXTENSIONS, run_clang_scan_deps, create_filtered_compile_commands
+from lib.file_utils import exclude_headers_by_patterns, filter_by_file_type, FileClassificationStats
+from lib.clang_utils import (
+    VALID_SOURCE_EXTENSIONS,
+    VALID_HEADER_EXTENSIONS,
+    run_clang_scan_deps,
+    create_filtered_compile_commands,
+    build_include_graph,
+    FileType,
+)
 from lib.tool_detection import find_clang_scan_deps, find_ninja
 
 # Constants
@@ -425,65 +432,6 @@ def process_deps(deps_list: List[str], headers: Set[str], source_to_headers: Def
     # We would need to parse the actual header files or use a different tool
 
 
-def build_include_graph_from_clang_scan(build_dir: str) -> Tuple["nx.DiGraph[Any]", DefaultDict[str, Set[str]]]:
-    """Use clang-scan-deps to build an accurate include graph with NetworkX.
-
-    Args:
-        build_dir: Path to the build directory
-
-    Returns:
-        Tuple of (directed graph, source_to_headers mapping)
-
-    Raises:
-        ValueError: If build_dir is invalid
-        RuntimeError: If clang-scan-deps execution or parsing fails
-    """
-    if not build_dir or not isinstance(build_dir, str):
-        raise ValueError("build_dir must be a non-empty string")
-
-    logging.info("Building include graph from clang-scan-deps")
-
-    try:
-        filtered_db: str = create_filtered_compile_commands(build_dir)
-    except Exception as e:
-        logging.error("Failed to create filtered compile commands: %s", e)
-        raise RuntimeError(f"Compile commands preparation failed: {e}") from e
-
-    # Get CPU count for parallelism
-    num_cores: int = mp.cpu_count()
-    logging.info("Using %s CPU cores for parallel processing", num_cores)
-
-    print(f"{Colors.CYAN}Running clang-scan-deps using {num_cores} cores...{Colors.RESET}")
-
-    # Use cached clang-scan-deps execution from lib
-    try:
-        output, elapsed = run_clang_scan_deps(build_dir, filtered_db, timeout=CLANG_SCAN_DEPS_TIMEOUT)
-        logging.info("clang-scan-deps completed in %.2fs", elapsed)
-    except RuntimeError as e:
-        logging.error("clang-scan-deps failed: %s", e)
-        raise
-
-    # Parse output to build graph
-    print(f"{Colors.CYAN}Building dependency graph...{Colors.RESET}")
-    try:
-        edges: List[Tuple[str, str]]
-        all_headers: Set[str]
-        source_to_headers: DefaultDict[str, Set[str]]
-        edges, all_headers, source_to_headers = parse_scan_deps_chunk(output)
-
-        # Create directed graph for header-to-header relationships (if we had them)
-        # Note: clang-scan-deps gives us transitive deps, not direct include relationships
-        # So we focus on source-to-header mapping instead
-        graph: nx.DiGraph[str] = nx.DiGraph()
-        graph.add_nodes_from(all_headers)
-        graph.add_edges_from(edges)
-    except Exception as e:
-        logging.error("Failed to build include graph from clang-scan-deps output: %s", e)
-        raise RuntimeError(f"Graph construction failed: {e}") from e
-
-    return graph, source_to_headers
-
-
 def find_affected_source_files(changed_header: str, source_to_headers: Dict[str, Set[str]]) -> List[str]:
     """Find all .cpp files that will rebuild due to a changed header.
 
@@ -563,6 +511,10 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
     )
 
     parser.add_argument("--include-system-headers", action="store_true", help="Include system headers in analysis (default: exclude /usr/*, /lib/*, /opt/*)")
+
+    parser.add_argument(
+        "--debug-sanitization", action="store_true", help="Enable detailed logging of compile command sanitization (shows what gets removed and why)"
+    )
 
     return parser.parse_args()
 
@@ -653,23 +605,33 @@ def get_changed_headers(build_dir: str, args: argparse.Namespace) -> Set[str]:
     return changed_headers
 
 
-def analyze_dependencies(build_dir: str) -> Tuple["nx.DiGraph[Any]", DefaultDict[str, Set[str]], "nx.Graph[Any]", DefaultDict[str, Set[str]]]:
+def analyze_dependencies(build_dir: str) -> Tuple["nx.DiGraph[Any]", Dict[str, Set[str]], "nx.Graph[Any]", DefaultDict[str, Set[str]], Dict[str, "FileType"]]:
     """Build include and header dependency graphs.
 
     Args:
         build_dir: Path to the build directory
 
     Returns:
-        Tuple of (graph, source_to_headers, header_graph, header_to_headers)
+        Tuple of (graph, source_to_headers, header_graph, header_to_headers, file_types)
 
     Raises:
         SystemExit: If analysis fails
     """
-    # Build include graph using clang-scan-deps
+    # Build include graph using lib's build_include_graph
     try:
-        graph: nx.DiGraph[str]
-        source_to_headers: DefaultDict[str, Set[str]]
-        graph, source_to_headers = build_include_graph_from_clang_scan(build_dir)
+        scan_result = build_include_graph(build_dir)
+        source_to_headers_lists = scan_result.source_to_deps
+        # Convert List[str] to Set[str] for compatibility with build_header_dependency_graph
+        source_to_headers: Dict[str, Set[str]] = {src: set(deps) for src, deps in source_to_headers_lists.items()}
+        all_headers = scan_result.all_headers
+        file_types = scan_result.file_types
+
+        # Build NetworkX graph from source_to_headers for compatibility with existing code
+        graph: nx.DiGraph[str] = nx.DiGraph()
+        for source, headers in source_to_headers.items():
+            for header in headers:
+                graph.add_edge(source, header)
+
     except Exception as e:
         logging.error("Failed to build include graph: %s", e)
         print(f"{Colors.RED}Error: Failed to build include graph: {e}{Colors.RESET}")
@@ -686,7 +648,7 @@ def analyze_dependencies(build_dir: str) -> Tuple["nx.DiGraph[Any]", DefaultDict
         print(f"{Colors.RED}Error: Failed to build header dependency graph: {e}{Colors.RESET}")
         sys.exit(1)
 
-    return graph, source_to_headers, header_graph, header_to_headers
+    return graph, source_to_headers, header_graph, header_to_headers, file_types
 
 
 def print_dependency_summary(source_to_headers: Dict[str, Set[str]], header_graph: "nx.Graph[Any]") -> None:
@@ -707,7 +669,13 @@ def print_dependency_summary(source_to_headers: Dict[str, Set[str]], header_grap
 
 
 def filter_headers_to_analyze(
-    args: argparse.Namespace, changed_headers: Set[str], gateway_headers: List[Tuple[str, float, int, int]], header_graph: "nx.Graph[Any]", project_root: str
+    args: argparse.Namespace,
+    changed_headers: Set[str],
+    gateway_headers: List[Tuple[str, float, int, int]],
+    header_graph: "nx.Graph[Any]",
+    project_root: str,
+    build_dir: str,
+    file_types: Dict[str, FileType],
 ) -> List[str]:
     """Filter headers to analyze based on mode and exclusion patterns.
 
@@ -717,6 +685,8 @@ def filter_headers_to_analyze(
         gateway_headers: List of gateway header tuples
         header_graph: Header dependency graph
         project_root: Root directory of the project
+        build_dir: Build directory for file classification
+        file_types: Pre-computed file type classifications
 
     Returns:
         List of header paths to analyze
@@ -753,11 +723,11 @@ def filter_headers_to_analyze(
     # Filter system headers unless explicitly included
     if not getattr(args, "include_system_headers", False):
         headers_set = set(changed_headers_in_graph)
-        filtered_headers, stats = filter_system_headers(headers_set, show_progress=False)
+        filtered_headers, stats = filter_by_file_type(headers_set, file_types, exclude_types={FileType.SYSTEM}, show_progress=False)
 
-        if stats["total_excluded"] > 0:
+        if stats.system > 0:
             changed_headers_in_graph = [h for h in changed_headers_in_graph if h in filtered_headers]
-            print_success(f"Excluded {stats['total_excluded']} system headers", prefix=False)
+            print_success(f"Excluded {stats.system} system headers", prefix=False)
 
     if not changed_headers_in_graph:
         if args.full:
@@ -1010,6 +980,13 @@ def main() -> int:
         logging.getLogger().setLevel(logging.DEBUG)
         logging.debug("Verbose logging enabled")
 
+    # Set debug sanitization if requested
+    if args.debug_sanitization:
+        from lib.clang_utils import set_debug_sanitization
+
+        set_debug_sanitization(True)
+        logging.info("Debug sanitization enabled")
+
     # Validate system requirements
     if args.verbose:
         print(f"{Colors.CYAN}Checking system requirements...{Colors.RESET}")
@@ -1030,7 +1007,7 @@ def main() -> int:
     changed_headers: Set[str] = get_changed_headers(build_dir, args)
 
     # Analyze dependencies
-    _, source_to_headers, header_graph, _ = analyze_dependencies(build_dir)
+    _, source_to_headers, header_graph, _, file_types = analyze_dependencies(build_dir)
 
     # Print dependency summary
     print_dependency_summary(source_to_headers, header_graph)
@@ -1044,7 +1021,7 @@ def main() -> int:
         return 1
 
     # Filter headers to analyze
-    changed_headers_in_graph: List[str] = filter_headers_to_analyze(args, changed_headers, gateway_headers, header_graph, project_root)
+    changed_headers_in_graph: List[str] = filter_headers_to_analyze(args, changed_headers, gateway_headers, header_graph, project_root, build_dir, file_types)
 
     # Print analyses
     print_header_analysis(changed_headers_in_graph, source_to_headers, project_root, args, args.full)

@@ -22,8 +22,8 @@ class TestDeltaAwareRecommendations:
 
         return DSMAnalysisResults(
             metrics={
-                "a.h": DSMMetrics(fan_out=5, fan_in=10, coupling=15, stability=0.33),
-                "b.h": DSMMetrics(fan_out=8, fan_in=12, coupling=20, stability=0.40),
+                "a.h": DSMMetrics(fan_out=5, fan_in=10, fan_out_project=5, fan_out_external=0, coupling=15, stability=0.33),
+                "b.h": DSMMetrics(fan_out=8, fan_in=12, fan_out_project=8, fan_out_external=0, coupling=20, stability=0.40),
             },
             cycles=cycles,
             headers_in_cycles=set().union(*cycles) if cycles else set(),

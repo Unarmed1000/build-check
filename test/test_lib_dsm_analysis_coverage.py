@@ -177,9 +177,9 @@ class TestPrintHighCouplingHeaders:
         headers = [str(tmp_path / "HighCoupling.hpp"), str(tmp_path / "MediumCoupling.hpp"), str(tmp_path / "LowCoupling.hpp")]
 
         metrics = {
-            headers[0]: DSMMetrics(fan_in=20, fan_out=25, coupling=45, stability=0.556),
-            headers[1]: DSMMetrics(fan_in=10, fan_out=12, coupling=22, stability=0.545),
-            headers[2]: DSMMetrics(fan_in=2, fan_out=3, coupling=5, stability=0.6),
+            headers[0]: DSMMetrics(fan_out=25, fan_in=20, fan_out_project=25, fan_out_external=0, coupling=45, stability=0.556),
+            headers[1]: DSMMetrics(fan_out=12, fan_in=10, fan_out_project=12, fan_out_external=0, coupling=22, stability=0.545),
+            headers[2]: DSMMetrics(fan_out=3, fan_in=2, fan_out_project=3, fan_out_external=0, coupling=5, stability=0.6),
         }
 
         headers_in_cycles = {headers[0]}
@@ -203,7 +203,10 @@ class TestPrintRecommendations:
         from lib.graph_utils import DSMMetrics
 
         cycles = [{"A.hpp", "B.hpp"}]
-        metrics = {"A.hpp": DSMMetrics(fan_in=1, fan_out=1, coupling=2, stability=0.5), "B.hpp": DSMMetrics(fan_in=1, fan_out=1, coupling=2, stability=0.5)}
+        metrics = {
+            "A.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+            "B.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+        }
         all_headers = {"A.hpp", "B.hpp"}
         stats = MatrixStatistics(total_headers=2, total_actual_deps=2, total_possible_deps=2, sparsity=50.0, avg_deps=1.0, health="Moderate", health_color="")
         feedback_edges = [("A.hpp", "B.hpp")]
@@ -219,7 +222,7 @@ class TestPrintRecommendations:
         """Test recommendations for high coupling."""
         from lib.graph_utils import DSMMetrics
 
-        metrics = {f"H{i}.hpp": DSMMetrics(fan_in=25, fan_out=25, coupling=50, stability=0.5) for i in range(5)}
+        metrics = {f"H{i}.hpp": DSMMetrics(fan_out=25, fan_in=25, fan_out_project=25, fan_out_external=0, coupling=50, stability=0.5) for i in range(5)}
         all_headers = set(metrics.keys())
         stats = MatrixStatistics(
             total_headers=5, total_actual_deps=50, total_possible_deps=20, sparsity=30.0, avg_deps=10.0, health="Highly coupled", health_color=""
@@ -236,7 +239,7 @@ class TestPrintRecommendations:
         """Test recommendations for clean architecture."""
         from lib.graph_utils import DSMMetrics
 
-        metrics = {f"H{i}.hpp": DSMMetrics(fan_in=1, fan_out=1, coupling=2, stability=0.5) for i in range(5)}
+        metrics = {f"H{i}.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5) for i in range(5)}
         all_headers = set(metrics.keys())
         stats = MatrixStatistics(total_headers=5, total_actual_deps=5, total_possible_deps=20, sparsity=95.0, avg_deps=1.0, health="Healthy", health_color="")
         layers = [["H0.hpp"], ["H1.hpp"], ["H2.hpp"]]
@@ -264,7 +267,7 @@ class TestCompareDSMResults:
         baseline = DSMAnalysisResults(
             stats=MatrixStatistics(5, 10, 20, 90.0, 2.0, "Healthy", ""),
             sorted_headers=["A.hpp", "B.hpp", "C.hpp"],
-            metrics={"A.hpp": DSMMetrics(1, 1, 2, 0.5), "B.hpp": DSMMetrics(1, 1, 2, 0.5), "C.hpp": DSMMetrics(1, 1, 2, 0.5)},
+            metrics={"A.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5), "B.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5), "C.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5)},
             cycles=[],
             feedback_edges=[],
             layers=[],
@@ -279,7 +282,7 @@ class TestCompareDSMResults:
         current = DSMAnalysisResults(
             stats=MatrixStatistics(6, 12, 30, 88.0, 2.0, "Healthy", ""),
             sorted_headers=["A.hpp", "B.hpp", "D.hpp"],
-            metrics={"A.hpp": DSMMetrics(1, 1, 2, 0.5), "B.hpp": DSMMetrics(1, 1, 2, 0.5), "D.hpp": DSMMetrics(1, 1, 2, 0.5)},
+            metrics={"A.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5), "B.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5), "D.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5)},
             cycles=[],
             feedback_edges=[],
             layers=[],
@@ -311,7 +314,7 @@ class TestCompareDSMResults:
         baseline = DSMAnalysisResults(
             stats=MatrixStatistics(3, 3, 6, 80.0, 1.0, "Healthy", ""),
             sorted_headers=["A.hpp", "B.hpp", "C.hpp"],
-            metrics={"A.hpp": DSMMetrics(1, 1, 2, 0.5), "B.hpp": DSMMetrics(1, 1, 2, 0.5), "C.hpp": DSMMetrics(1, 1, 2, 0.5)},
+            metrics={"A.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5), "B.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5), "C.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5)},
             cycles=[],
             feedback_edges=[],
             layers=[],
@@ -326,7 +329,7 @@ class TestCompareDSMResults:
         current = DSMAnalysisResults(
             stats=MatrixStatistics(3, 4, 6, 75.0, 1.33, "Moderate", ""),
             sorted_headers=["A.hpp", "B.hpp", "C.hpp"],
-            metrics={"A.hpp": DSMMetrics(2, 2, 4, 0.5), "B.hpp": DSMMetrics(2, 2, 4, 0.5), "C.hpp": DSMMetrics(1, 1, 2, 0.5)},
+            metrics={"A.hpp": DSMMetrics(2, 2, 2, 0, 4, 0.5), "B.hpp": DSMMetrics(2, 2, 2, 0, 4, 0.5), "C.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5)},
             cycles=[{"A.hpp", "B.hpp"}],
             feedback_edges=[],
             layers=[],
@@ -357,7 +360,7 @@ class TestCompareDSMResults:
         baseline = DSMAnalysisResults(
             stats=MatrixStatistics(2, 2, 2, 80.0, 1.0, "Healthy", ""),
             sorted_headers=["A.hpp", "B.hpp"],
-            metrics={"A.hpp": DSMMetrics(5, 5, 10, 0.5), "B.hpp": DSMMetrics(3, 3, 6, 0.5)},
+            metrics={"A.hpp": DSMMetrics(5, 5, 5, 0, 10, 0.5), "B.hpp": DSMMetrics(3, 3, 3, 0, 6, 0.5)},
             cycles=[],
             feedback_edges=[],
             layers=[],
@@ -372,7 +375,7 @@ class TestCompareDSMResults:
         current = DSMAnalysisResults(
             stats=MatrixStatistics(2, 3, 2, 75.0, 1.5, "Moderate", ""),
             sorted_headers=["A.hpp", "B.hpp"],
-            metrics={"A.hpp": DSMMetrics(8, 8, 16, 0.5), "B.hpp": DSMMetrics(2, 2, 4, 0.5)},  # Coupling increased  # Coupling decreased
+            metrics={"A.hpp": DSMMetrics(8, 8, 8, 0, 16, 0.5), "B.hpp": DSMMetrics(2, 2, 2, 0, 4, 0.5)},  # Coupling increased  # Coupling decreased
             cycles=[],
             feedback_edges=[],
             layers=[],
@@ -402,7 +405,7 @@ class TestCompareDSMResults:
         baseline = DSMAnalysisResults(
             stats=MatrixStatistics(3, 3, 6, 80.0, 1.0, "Healthy", ""),
             sorted_headers=["A.hpp", "B.hpp", "C.hpp"],
-            metrics={"A.hpp": DSMMetrics(1, 1, 2, 0.5), "B.hpp": DSMMetrics(1, 1, 2, 0.5), "C.hpp": DSMMetrics(1, 1, 2, 0.5)},
+            metrics={"A.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5), "B.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5), "C.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5)},
             cycles=[],
             feedback_edges=[],
             layers=[["A.hpp"], ["B.hpp"], ["C.hpp"]],
@@ -417,7 +420,7 @@ class TestCompareDSMResults:
         current = DSMAnalysisResults(
             stats=MatrixStatistics(3, 3, 6, 80.0, 1.0, "Healthy", ""),
             sorted_headers=["A.hpp", "B.hpp", "C.hpp"],
-            metrics={"A.hpp": DSMMetrics(1, 1, 2, 0.5), "B.hpp": DSMMetrics(1, 1, 2, 0.5), "C.hpp": DSMMetrics(1, 1, 2, 0.5)},
+            metrics={"A.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5), "B.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5), "C.hpp": DSMMetrics(1, 1, 1, 0, 2, 0.5)},
             cycles=[],
             feedback_edges=[],
             layers=[["A.hpp"], ["C.hpp"], ["B.hpp"]],
@@ -466,7 +469,7 @@ class TestPrintDSMDelta:
         baseline = DSMAnalysisResults(
             stats=MatrixStatistics(2, 2, 2, 80.0, 1.0, "Healthy", ""),
             sorted_headers=["A.hpp", "B.hpp"],
-            metrics={"A.hpp": DSMMetrics(5, 5, 10, 0.5), "B.hpp": DSMMetrics(6, 6, 12, 0.5)},
+            metrics={"A.hpp": DSMMetrics(5, 5, 5, 0, 10, 0.5), "B.hpp": DSMMetrics(6, 6, 6, 0, 12, 0.5)},
             cycles=[],
             feedback_edges=[],
             layers=[],
@@ -481,7 +484,7 @@ class TestPrintDSMDelta:
         current = DSMAnalysisResults(
             stats=MatrixStatistics(2, 3, 2, 75.0, 1.5, "Moderate", ""),
             sorted_headers=["A.hpp", "B.hpp"],
-            metrics={"A.hpp": DSMMetrics(8, 7, 15, 0.467), "B.hpp": DSMMetrics(4, 5, 9, 0.556)},
+            metrics={"A.hpp": DSMMetrics(8, 7, 8, 0, 15, 0.467), "B.hpp": DSMMetrics(4, 5, 4, 0, 9, 0.556)},
             cycles=[{"A.hpp"}],
             feedback_edges=[],
             layers=[],
@@ -545,10 +548,10 @@ class TestPrintArchitecturalHotspots:
         graph.add_edges_from([("A.hpp", "B.hpp"), ("B.hpp", "C.hpp"), ("C.hpp", "D.hpp")])
 
         metrics = {
-            "A.hpp": DSMMetrics(0, 1, 1, 0.0),
-            "B.hpp": DSMMetrics(1, 2, 3, 0.667),  # Bottleneck
-            "C.hpp": DSMMetrics(2, 1, 3, 0.333),
-            "D.hpp": DSMMetrics(1, 0, 1, 1.0),
+            "A.hpp": DSMMetrics(0, 1, 0, 0, 1, 0.0),
+            "B.hpp": DSMMetrics(1, 2, 1, 0, 3, 0.667),  # Bottleneck
+            "C.hpp": DSMMetrics(2, 1, 2, 0, 3, 0.333),
+            "D.hpp": DSMMetrics(1, 0, 1, 0, 1, 1.0),
         }
 
         print_architectural_hotspots(graph, metrics, project_root, top_n=10)
@@ -556,7 +559,7 @@ class TestPrintArchitecturalHotspots:
         captured = capsys.readouterr()
         assert "ARCHITECTURAL HOTSPOTS" in captured.out
         assert "Bottleneck Headers" in captured.out
-        assert "Hub Headers" in captured.out
+        assert "Header Classification by Architectural Role" in captured.out
         assert "God Object Detection" in captured.out
 
     @pytest.mark.unit
@@ -575,7 +578,7 @@ class TestPrintArchitecturalHotspots:
         graph.add_node("Normal.hpp")
 
         # Create a god object with extreme fan-out (>50 threshold)
-        metrics = {"GodObject.hpp": DSMMetrics(5, 65, 70, 0.071), "Normal.hpp": DSMMetrics(2, 3, 5, 0.6)}  # Fan-out of 65 > 50 threshold
+        metrics = {"GodObject.hpp": DSMMetrics(5, 65, 5, 0, 70, 0.071), "Normal.hpp": DSMMetrics(2, 3, 2, 0, 5, 0.6)}  # Fan-out of 65 > 50 threshold
 
         print_architectural_hotspots(graph, metrics, project_root, top_n=10)
 
@@ -596,7 +599,7 @@ class TestPrintArchitecturalHotspots:
         project_root = str(tmp_path)
         graph: Any = nx.DiGraph()
 
-        metrics = {"Normal1.hpp": DSMMetrics(2, 3, 5, 0.6), "Normal2.hpp": DSMMetrics(1, 2, 3, 0.667)}
+        metrics = {"Normal1.hpp": DSMMetrics(2, 3, 2, 0, 5, 0.6), "Normal2.hpp": DSMMetrics(1, 2, 1, 0, 3, 0.667)}
 
         print_architectural_hotspots(graph, metrics, project_root, top_n=10)
 

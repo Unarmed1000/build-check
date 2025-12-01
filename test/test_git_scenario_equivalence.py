@@ -18,6 +18,55 @@ from lib.dsm_analysis import compare_dsm_results, run_dsm_analysis
 from lib.scenario_creators import BASELINE_CREATORS, SCENARIO_CREATORS, create_git_repo_from_scenario
 from lib.git_utils import reconstruct_head_graph
 from lib.clang_utils import build_include_graph
+from typing import Any
+
+
+def normalize_dsm_results_paths(dsm_results: Any, repo_path: str) -> Any:
+    """Normalize DSM results to use relative paths (relative to include directory).
+
+    This allows comparison between:
+    - Git-based analysis (absolute paths like /tmp/.../include/Module0/Header0.hpp)
+    - Programmatic scenarios (relative paths like Module0/Header0.hpp)
+
+    Args:
+        dsm_results: DSM analysis results with potentially absolute paths
+        repo_path: Repository root path
+
+    Returns:
+        DSM results with normalized relative paths
+    """
+    import os
+    from collections import defaultdict
+
+    include_dir = os.path.join(repo_path, "include")
+
+    def normalize_path(path: str) -> str:
+        """Convert absolute path to relative (from include dir) if applicable."""
+        if path.startswith(include_dir + os.sep):
+            return os.path.relpath(path, include_dir)
+        return path
+
+    # Create normalized copies
+    normalized_headers = [normalize_path(h) for h in dsm_results.sorted_headers]
+    normalized_metrics = {normalize_path(k): v for k, v in dsm_results.metrics.items()}
+    normalized_header_to_headers = defaultdict(set)
+    for header, deps in dsm_results.header_to_headers.items():
+        normalized_header_to_headers[normalize_path(header)] = {normalize_path(d) for d in deps}
+
+    # Update the DSM results object with normalized paths
+    dsm_results.sorted_headers = normalized_headers
+    dsm_results.metrics = normalized_metrics
+    dsm_results.header_to_headers = dict(normalized_header_to_headers)
+
+    # Normalize header_to_layer if present
+    if hasattr(dsm_results, "header_to_layer") and dsm_results.header_to_layer:
+        dsm_results.header_to_layer = {normalize_path(k): v for k, v in dsm_results.header_to_layer.items()}
+
+    # Normalize headers_in_cycles if present
+    if hasattr(dsm_results, "headers_in_cycles") and dsm_results.headers_in_cycles:
+        dsm_results.headers_in_cycles = {normalize_path(h) for h in dsm_results.headers_in_cycles}
+
+    return dsm_results
 
 
 @pytest.mark.parametrize("scenario_id", list(SCENARIO_CREATORS.keys()))
@@ -90,10 +139,12 @@ def test_git_scenario_equivalence(scenario_id: int, tmp_path: Path) -> None:
         source_to_deps=baseline_source_to_deps,
     )
 
-    # Compare baseline and current using git-based analysis
-    git_based_delta = compare_dsm_results(git_baseline_dsm, git_current_dsm)
+    # Normalize git-based results to use relative paths for comparison
+    git_current_dsm = normalize_dsm_results_paths(git_current_dsm, str(repo_path))
+    git_baseline_dsm = normalize_dsm_results_paths(git_baseline_dsm, str(repo_path))
 
-    # NOW COMPARE: DSM-direct vs Git-based analysis results
+    # Compare baseline and current using git-based analysis
+    git_based_delta = compare_dsm_results(git_baseline_dsm, git_current_dsm)  # NOW COMPARE: DSM-direct vs Git-based analysis results
     # Both should produce equivalent architectural metrics
 
     # Compare coupling changes (calculate from delta)

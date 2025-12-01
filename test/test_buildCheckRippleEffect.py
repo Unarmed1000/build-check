@@ -225,12 +225,16 @@ int multiply(int a, int b);  // New function
         # The affected sources depend on whether clang-scan-deps successfully parsed dependencies
         # At minimum we should have the changed header categorized correctly
 
-    def test_include_graph_finds_headers(self, mock_build_dir: Any, mock_git_repo: Any, mock_compile_commands: Any) -> None:
-        """Test that clang-scan-deps actually finds header dependencies."""
-        # This is a more direct test of the include graph building
-        from buildCheckDependencyHell import build_include_graph
+    @pytest.mark.integration
+    def test_include_graph_finds_headers(self, mock_build_dir: Any, mock_source_files: Any, mock_git_repo: Any, mock_compile_commands: Any) -> None:
+        """Test that clang-scan-deps actually finds header dependencies.
 
-        # Build the include graph
+        Note: This test depends on clang-scan-deps properly parsing dependencies from
+        mock compile_commands.json files. It may be flaky in some environments.
+        """
+        # This is a more direct test of the include graph building
+        from buildCheckDependencyHell import build_include_graph  # Build the include graph
+
         scan_result = build_include_graph(mock_build_dir)
 
         # Verify we got results
@@ -253,11 +257,14 @@ int multiply(int a, int b);  // New function
         # Verify source files have dependencies
         sources_with_deps = 0
         for source, deps in scan_result.source_to_deps.items():
-            if "main.cpp" in source or "utils.cpp" in source:
+            # Check if this is one of our test source files (keys are .o files like "main.o", "utils.o")
+            # After sanitization removes -o flag, clang-scan-deps uses source basename + .o
+            source_basename = os.path.basename(source)
+            if "main" in source_basename or "utils" in source_basename:
                 # Each source file should depend on at least itself and one header
                 assert (
                     len(deps) >= 2
-                ), f"Source {os.path.basename(source)} should have at least 2 deps (itself + headers), got {len(deps)}: {[os.path.basename(d) for d in deps]}"
+                ), f"Source {source_basename} should have at least 2 deps (itself + headers), got {len(deps)}: {[os.path.basename(d) for d in deps]}"
                 sources_with_deps += 1
 
         assert sources_with_deps >= 2, f"Should have checked at least 2 source files, got {sources_with_deps}"
@@ -281,9 +288,12 @@ class TestBuildCheckRippleEffectFromParameter:
         # Mock analyze_ripple_effect to avoid actual dependency scanning
         from buildCheckRippleEffect import RippleEffectResult
 
-        def mock_analyze_ripple(*args: Any, **kwargs: Any) -> RippleEffectResult:
-            return RippleEffectResult(
-                affected_sources={}, total_affected=set(), direct_sources=set(changed_files_list), source_to_deps={"dummy.cpp": []}, header_to_sources={}
+        def mock_analyze_ripple(*args: Any, **kwargs: Any) -> tuple[RippleEffectResult, dict[str, Any]]:
+            return (
+                RippleEffectResult(
+                    affected_sources={}, total_affected=set(), direct_sources=set(changed_files_list), source_to_deps={"dummy.cpp": []}, header_to_sources={}
+                ),
+                {},
             )
 
         monkeypatch.setattr(buildCheckRippleEffect, "validate_ancestor_relationship", mock_validate)

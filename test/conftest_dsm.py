@@ -153,7 +153,7 @@ def mock_dsm_metrics_simple(mock_dsm_graph_simple: Any) -> Dict[str, DSMMetrics]
         coupling = fan_out + fan_in
         stability = fan_out / coupling if coupling > 0 else 0.0
 
-        metrics[node] = DSMMetrics(fan_out=fan_out, fan_in=fan_in, coupling=coupling, stability=stability)
+        metrics[node] = DSMMetrics(fan_out=fan_out, fan_in=fan_in, fan_out_project=fan_out, fan_out_external=0, coupling=coupling, stability=stability)
 
     return metrics
 
@@ -168,7 +168,7 @@ def mock_dsm_metrics_medium(mock_dsm_graph_medium: Any) -> Dict[str, DSMMetrics]
         coupling = fan_out + fan_in
         stability = fan_out / coupling if coupling > 0 else 0.0
 
-        metrics[node] = DSMMetrics(fan_out=fan_out, fan_in=fan_in, coupling=coupling, stability=stability)
+        metrics[node] = DSMMetrics(fan_out=fan_out, fan_in=fan_in, fan_out_project=fan_out, fan_out_external=0, coupling=coupling, stability=stability)
 
     return metrics
 
@@ -183,7 +183,7 @@ def mock_dsm_metrics_complex(mock_dsm_graph_complex: Any) -> Dict[str, DSMMetric
         coupling = fan_out + fan_in
         stability = fan_out / coupling if coupling > 0 else 0.0
 
-        metrics[node] = DSMMetrics(fan_out=fan_out, fan_in=fan_in, coupling=coupling, stability=stability)
+        metrics[node] = DSMMetrics(fan_out=fan_out, fan_in=fan_in, fan_out_project=fan_out, fan_out_external=0, coupling=coupling, stability=stability)
 
     return metrics
 

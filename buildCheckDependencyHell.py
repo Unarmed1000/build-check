@@ -135,8 +135,8 @@ from lib.constants import EXIT_RUNTIME_ERROR, EXIT_KEYBOARD_INTERRUPT, BuildChec
 # Import library modules
 from lib.ninja_utils import extract_rebuild_info, parse_ninja_explain_line
 from lib.color_utils import Colors, print_warning, print_success
-from lib.file_utils import exclude_headers_by_patterns, filter_system_headers
-from lib.clang_utils import is_system_header as is_system_header_lib, build_include_graph, VALID_SOURCE_EXTENSIONS, VALID_HEADER_EXTENSIONS
+from lib.file_utils import exclude_headers_by_patterns, filter_by_file_type, FileClassificationStats
+from lib.clang_utils import is_system_header as is_system_header_lib, build_include_graph, FileType, VALID_SOURCE_EXTENSIONS, VALID_HEADER_EXTENSIONS
 from lib.graph_utils import build_dependency_graph, compute_reverse_dependencies, compute_transitive_metrics, compute_chain_lengths
 from lib.dependency_utils import find_dependency_fanout, DependencyAnalysisResult, SourceDependencyMap, compute_header_usage, identify_problematic_headers
 
@@ -162,7 +162,9 @@ logger = logging.getLogger(__name__)
 # build_dependency_graph is now imported from lib.graph_utils
 
 
-def analyze_dependency_hell(build_dir: str, rebuild_targets: List[str], threshold: int = DEFAULT_THRESHOLD) -> "DependencyAnalysisResult":
+def analyze_dependency_hell(
+    build_dir: str, rebuild_targets: List[str], threshold: int = DEFAULT_THRESHOLD
+) -> Tuple["DependencyAnalysisResult", Dict[str, FileType]]:
     """Find headers with excessive dependencies using include graph.
 
     Args:
@@ -195,6 +197,7 @@ def analyze_dependency_hell(build_dir: str, rebuild_targets: List[str], threshol
         source_to_deps = scan_result.source_to_deps
         include_graph = scan_result.include_graph
         all_headers = scan_result.all_headers
+        file_types = scan_result.file_types
     except Exception as e:
         raise RuntimeError(f"Failed to build include graph: {e}") from e
 
@@ -214,13 +217,13 @@ def analyze_dependency_hell(build_dir: str, rebuild_targets: List[str], threshol
     # Count header usage across all source files
     # Convert List[str] to Set[str] for compute_header_usage
     source_to_deps_sets = {src: set(deps) for src, deps in source_to_deps.items()}
-    header_usage_count = compute_header_usage(source_to_deps_sets)
+    header_usage_count = compute_header_usage(source_to_deps_sets, file_types)
 
     # Compute reverse dependencies using transitive closure
     reverse_deps, tc = compute_reverse_dependencies(G)
 
-    # Only process project headers
-    project_headers = [h for h in all_headers if not h.startswith("/usr/") and not h.startswith("/lib/")]
+    # Only process project headers (using file classification)
+    project_headers = [h for h in all_headers if file_types.get(h, FileType.PROJECT) == FileType.PROJECT]
 
     print(f"{Colors.BLUE}Computing rebuild impact metrics...{Colors.RESET}")
 
@@ -245,13 +248,16 @@ def analyze_dependency_hell(build_dir: str, rebuild_targets: List[str], threshol
 
     print(f"{Colors.BLUE}Dependency analysis complete.{Colors.RESET}")
 
-    return DependencyAnalysisResult(
-        problematic=sorted(problematic, key=lambda x: x[1], reverse=True),
-        source_to_deps=source_to_deps,
-        base_types=base_types,
-        header_usage_count=header_usage_count,
-        header_reverse_impact=header_reverse_impact,
-        header_max_chain_length=header_max_chain_length,
+    return (
+        DependencyAnalysisResult(
+            problematic=sorted(problematic, key=lambda x: x[1], reverse=True),
+            source_to_deps=source_to_deps,
+            base_types=base_types,
+            header_usage_count=header_usage_count,
+            header_reverse_impact=header_reverse_impact,
+            header_max_chain_length=header_max_chain_length,
+        ),
+        file_types,
     )
 
 
@@ -664,7 +670,7 @@ def main() -> int:
     print(f"\n{Colors.CYAN}Analyzing dependency hell ({len(rebuild_targets)} targets, {mode_desc})...{Colors.RESET}")
 
     try:
-        analysis_result = analyze_dependency_hell(build_dir, rebuild_targets, args.threshold)
+        analysis_result, file_types = analyze_dependency_hell(build_dir, rebuild_targets, args.threshold)
     except Exception as e:
         logger.error("Analysis failed: %s", e)
         logger.debug("Exception details:", exc_info=True)
@@ -686,18 +692,15 @@ def main() -> int:
             print_success(f"Excluded {excluded_count} headers matching {len(args.exclude)} pattern(s)", prefix=False)
 
         # Warn about patterns that matched nothing
-        for pattern in no_match_patterns:
-            print_warning(f"Exclude pattern '{pattern}' matched no headers", prefix=False)
-
     # Filter system headers unless explicitly included
     if not getattr(args, "include_system_headers", False):
         original_count = len(problematic)
         problematic_headers_set = set(h for h, _, _, _, _ in problematic)
-        filtered_headers, stats = filter_system_headers(problematic_headers_set, show_progress=False)
+        filtered_headers, stats = filter_by_file_type(problematic_headers_set, file_types, exclude_types={FileType.SYSTEM}, show_progress=False)
 
-        if stats["total_excluded"] > 0:
+        if stats.system > 0:
             problematic = [(h, c, u, r, ch) for h, c, u, r, ch in problematic if h in filtered_headers]
-            print_success(f"Excluded {stats['total_excluded']} system headers", prefix=False)
+            print_success(f"Excluded {stats.system} system headers", prefix=False)
 
     # Filter to only changed headers if requested
     if args.changed and changed_headers:

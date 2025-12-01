@@ -24,6 +24,7 @@ fi
 COVERAGE=false
 VERBOSE=false
 PATTERN=""
+FULL=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -39,6 +40,10 @@ while [[ $# -gt 0 ]]; do
             PATTERN="$2"
             shift 2
             ;;
+        --full)
+            FULL=true
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -46,11 +51,13 @@ while [[ $# -gt 0 ]]; do
             echo "  -c, --coverage    Generate coverage report"
             echo "  -v, --verbose     Verbose output"
             echo "  -p, --pattern     Run tests matching pattern"
+            echo "      --full        Enforce coverage threshold (59%)"
             echo "  -h, --help        Show this help"
             echo ""
             echo "Examples:"
             echo "  $0                          # Run all tests"
             echo "  $0 --coverage               # Run with coverage"
+            echo "  $0 --full                   # Run with coverage threshold check"
             echo "  $0 --pattern security       # Run security tests only"
             echo "  $0 -c -v                    # Verbose with coverage"
             exit 0
@@ -74,12 +81,20 @@ if [ -n "$PATTERN" ]; then
     PYTEST_CMD="$PYTEST_CMD -k $PATTERN"
 fi
 
-if [ "$COVERAGE" = true ]; then
-    if ! command -v pytest-cov &> /dev/null; then
+# Enable coverage if requested
+if [ "$COVERAGE" = true ] || [ "$FULL" = true ]; then
+    if ! python3 -c "import pytest_cov" 2>/dev/null; then
         echo "Warning: pytest-cov not found. Install with: pip install pytest-cov"
         echo "Running tests without coverage..."
     else
-        PYTEST_CMD="$PYTEST_CMD --cov=. --cov-report=term-missing --cov-report=html"
+        PYTEST_CMD="$PYTEST_CMD --cov=lib --cov-report=term-missing:skip-covered --cov-report=html:htmlcov --cov-report=json:.coverage.json --cov-branch"
+        
+        # Add coverage threshold check only with --full flag
+        if [ "$FULL" = true ]; then
+            PYTEST_CMD="$PYTEST_CMD --cov-fail-under=59"
+            echo "NOTE: Running with coverage threshold enforcement (59%)"
+            echo ""
+        fi
     fi
 fi
 

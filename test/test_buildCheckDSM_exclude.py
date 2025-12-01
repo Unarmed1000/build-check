@@ -67,11 +67,11 @@ class TestApplyAllFiltersWithExclude:
         }
 
         # Mock args with filter and exclude
-        args = Namespace(library_filter=None, filter="FslBase/*", exclude=["*/ThirdParty/*"], include_system_headers=True)
+        args = Namespace(library_filter=None, filter="FslBase/*", exclude=["*/ThirdParty/*"], file_scope="system")
         header_to_lib: Dict[str, str] = {}
         project_root = "/project"
 
-        filtered, stats = apply_all_filters(args, headers, header_to_lib, project_root)
+        filtered, stats = apply_all_filters(args, headers, header_to_lib, project_root, {})
 
         # Should include FslBase but exclude ThirdParty within it
         assert len(filtered) == 1
@@ -82,11 +82,11 @@ class TestApplyAllFiltersWithExclude:
         """Test exclude patterns without include filter."""
         headers = {"/project/src/Engine.hpp", "/project/ThirdParty/lib.hpp", "/project/src/Helper.hpp"}
 
-        args = Namespace(library_filter=None, filter=None, exclude=["ThirdParty/*"], include_system_headers=True)
+        args = Namespace(library_filter=None, filter=None, exclude=["ThirdParty/*"], file_scope="system")
         header_to_lib: Dict[str, str] = {}
         project_root = "/project"
 
-        filtered, stats = apply_all_filters(args, headers, header_to_lib, project_root)
+        filtered, stats = apply_all_filters(args, headers, header_to_lib, project_root, {})
 
         assert len(filtered) == 2
         assert "/project/ThirdParty/lib.hpp" not in filtered
@@ -96,11 +96,11 @@ class TestApplyAllFiltersWithExclude:
         headers = {"/project/src/Engine.hpp", "/project/src/Helper.hpp"}
 
         # Args without exclude attribute
-        args = Namespace(library_filter=None, filter=None, include_system_headers=True)
+        args = Namespace(library_filter=None, filter=None, file_scope="system")
         header_to_lib: Dict[str, str] = {}
         project_root = "/project"
 
-        filtered, stats = apply_all_filters(args, headers, header_to_lib, project_root)
+        filtered, stats = apply_all_filters(args, headers, header_to_lib, project_root, {})
 
         assert filtered == headers
 
@@ -108,12 +108,12 @@ class TestApplyAllFiltersWithExclude:
         """Test that excluding all headers raises ValueError."""
         headers = {"/project/ThirdParty/lib1.hpp", "/project/ThirdParty/lib2.hpp"}
 
-        args = Namespace(library_filter=None, filter=None, exclude=["ThirdParty/*"], include_system_headers=True)
+        args = Namespace(library_filter=None, filter=None, exclude=["ThirdParty/*"], file_scope="system")
         header_to_lib: Dict[str, str] = {}
         project_root = "/project"
 
         with pytest.raises(ValueError, match="No headers found after filtering and exclusions"):
-            apply_all_filters(args, headers, header_to_lib, project_root)
+            apply_all_filters(args, headers, header_to_lib, project_root, {})
 
     def test_multiple_exclude_patterns(self) -> None:
         """Test multiple exclude patterns together."""
@@ -125,11 +125,11 @@ class TestApplyAllFiltersWithExclude:
             "/project/src/Helper.hpp",
         }
 
-        args = Namespace(library_filter=None, filter=None, exclude=["ThirdParty/*", "test/*", "build/*"], include_system_headers=True)
+        args = Namespace(library_filter=None, filter=None, exclude=["ThirdParty/*", "test/*", "build/*"], file_scope="system")
         header_to_lib: Dict[str, str] = {}
         project_root = "/project"
 
-        filtered, stats = apply_all_filters(args, headers, header_to_lib, project_root)
+        filtered, stats = apply_all_filters(args, headers, header_to_lib, project_root, {})
 
         assert len(filtered) == 2
         assert "/project/src/Engine.hpp" in filtered

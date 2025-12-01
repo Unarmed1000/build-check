@@ -25,8 +25,8 @@ class TestExportDsmToCsv:
         header_to_headers[headers[0]] = {headers[1]}
 
         metrics = {
-            headers[0]: DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-            headers[1]: DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+            headers[0]: DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+            headers[1]: DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
         }
 
         output_file = temp_dir / "test.csv"
@@ -51,7 +51,7 @@ class TestExportDsmToCsv:
         """Test CSV includes correct metric values."""
         headers = [str(temp_dir / "header.hpp")]
         header_to_headers: Any = defaultdict(set)
-        metrics = {headers[0]: DSMMetrics(fan_out=5, fan_in=3, coupling=8, stability=0.625)}
+        metrics = {headers[0]: DSMMetrics(fan_out=5, fan_in=3, fan_out_project=5, fan_out_external=0, coupling=8, stability=0.625)}
 
         output_file = temp_dir / "metrics.csv"
         export_dsm_to_csv(str(output_file), headers, header_to_headers, metrics, str(temp_dir))
@@ -74,7 +74,7 @@ class TestExportDsmToCsv:
         header_to_headers: Any = defaultdict(set)
         header_to_headers[headers[0]] = {headers[1]}  # a depends on b
 
-        metrics = {h: DSMMetrics(fan_out=0, fan_in=0, coupling=0, stability=0.5) for h in headers}
+        metrics = {h: DSMMetrics(fan_out=0, fan_in=0, fan_out_project=0, fan_out_external=0, coupling=0, stability=0.5) for h in headers}
 
         output_file = temp_dir / "matrix.csv"
         export_dsm_to_csv(str(output_file), headers, header_to_headers, metrics, str(temp_dir))
@@ -103,7 +103,7 @@ class TestExportDsmToCsv:
         headers = [str(temp_dir / f"header{i}.hpp") for i in range(num_headers)]
 
         header_to_headers: Any = defaultdict(set)
-        metrics = {h: DSMMetrics(fan_out=0, fan_in=0, coupling=0, stability=0.5) for h in headers}
+        metrics = {h: DSMMetrics(fan_out=0, fan_in=0, fan_out_project=0, fan_out_external=0, coupling=0, stability=0.5) for h in headers}
 
         output_file = temp_dir / "large.csv"
         export_dsm_to_csv(str(output_file), headers, header_to_headers, metrics, str(temp_dir))
@@ -121,7 +121,7 @@ class TestExportDsmToCsv:
         """Test that absolute paths are converted to relative."""
         headers = [str(temp_dir / "module" / "header.hpp")]
         header_to_headers: Any = defaultdict(set)
-        metrics = {headers[0]: DSMMetrics(fan_out=0, fan_in=0, coupling=0, stability=0.5)}
+        metrics = {headers[0]: DSMMetrics(fan_out=0, fan_in=0, fan_out_project=0, fan_out_external=0, coupling=0, stability=0.5)}
 
         output_file = temp_dir / "paths.csv"
         export_dsm_to_csv(str(output_file), headers, header_to_headers, metrics, str(temp_dir))
@@ -154,9 +154,9 @@ class TestExportDependencyGraph:
     def test_graphml_export(self, temp_dir: Any, simple_graph: Any) -> None:
         """Test GraphML format export."""
         metrics = {
-            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, coupling=2, stability=0.5),
-            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
         }
         cycles: list[set[str]] = []
 
@@ -173,9 +173,9 @@ class TestExportDependencyGraph:
     def test_json_export(self, temp_dir: Any, simple_graph: Any) -> None:
         """Test JSON format export."""
         metrics = {
-            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, coupling=2, stability=0.5),
-            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
         }
         cycles: list[set[str]] = []
 
@@ -193,9 +193,9 @@ class TestExportDependencyGraph:
     def test_node_attributes(self, temp_dir: Any, simple_graph: Any) -> None:
         """Test that node attributes are added correctly."""
         metrics = {
-            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, coupling=2, stability=0.5),
-            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
         }
         cycles: list[set[str]] = []
 
@@ -212,9 +212,9 @@ class TestExportDependencyGraph:
     def test_cycle_detection_in_export(self, temp_dir: Any, simple_graph: Any) -> None:
         """Test that cycles are marked in exported graph."""
         metrics = {
-            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, coupling=2, stability=0.5),
-            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
         }
         cycles: list[set[str]] = [{"/path/a.hpp", "/path/b.hpp"}]
 
@@ -227,9 +227,9 @@ class TestExportDependencyGraph:
     def test_library_attributes(self, temp_dir: Any, simple_graph: Any) -> None:
         """Test library grouping attributes."""
         metrics = {
-            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, coupling=2, stability=0.5),
-            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
         }
         cycles: list[set[str]] = []
         header_to_lib = {"/path/a.hpp": "libFslBase.a", "/path/b.hpp": "libFslBase.a", "/path/c.hpp": "libFslGraphics.a"}
@@ -246,9 +246,9 @@ class TestExportDependencyGraph:
     def test_unsupported_format_fallback(self, temp_dir: Any, simple_graph: Any) -> None:
         """Test fallback to GraphML for unsupported format."""
         metrics = {
-            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, coupling=2, stability=0.5),
-            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
         }
         cycles: list[set[str]] = []
 
@@ -262,9 +262,9 @@ class TestExportDependencyGraph:
     def test_gexf_export(self, temp_dir: Any, simple_graph: Any) -> None:
         """Test GEXF format export."""
         metrics = {
-            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, coupling=2, stability=0.5),
-            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+            "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+            "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+            "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
         }
         cycles: list[set[str]] = []
 
@@ -281,7 +281,7 @@ class TestExportErrorHandling:
         """Test CSV export handles IO errors gracefully."""
         headers = ["/path/header.hpp"]
         header_to_headers: Any = defaultdict(set)
-        metrics = {headers[0]: DSMMetrics(fan_out=0, fan_in=0, coupling=0, stability=0.5)}
+        metrics = {headers[0]: DSMMetrics(fan_out=0, fan_in=0, fan_out_project=0, fan_out_external=0, coupling=0, stability=0.5)}
 
         # Try to write to read-only location
         readonly_dir = temp_dir / "readonly"
@@ -304,7 +304,7 @@ class TestExportErrorHandling:
         header_to_headers: Any = defaultdict(set)
 
         # Only provide metrics for some headers
-        metrics = {headers[0]: DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0)}
+        metrics = {headers[0]: DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0)}
 
         output_file = temp_dir / "partial.csv"
         export_dsm_to_csv(str(output_file), headers, header_to_headers, metrics, str(temp_dir))
@@ -347,7 +347,7 @@ class TestExportErrorHandling:
             G.add_edge("/path/b.hpp", "/path/c.hpp")
 
             # Only provide metrics for one node
-            metrics = {"/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0)}
+            metrics = {"/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0)}
             cycles: List[set[str]] = []
 
             output_file = temp_dir / "partial.json"
@@ -371,8 +371,8 @@ class TestExportErrorHandling:
             G.add_edge("/path/a.hpp", "/path/b.hpp")
 
             metrics = {
-                "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-                "/path/b.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+                "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+                "/path/b.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
             }
             cycles: List[set[str]] = []
 
@@ -398,9 +398,9 @@ class TestExportErrorHandling:
             header_to_headers["/path/b.hpp"] = {"/path/c.hpp"}
 
             metrics = {
-                "/path/a.hpp": DSMMetrics(fan_out=2, fan_in=0, coupling=2, stability=1.0),
-                "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, coupling=2, stability=0.5),
-                "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=2, coupling=2, stability=0.0),
+                "/path/a.hpp": DSMMetrics(fan_out=2, fan_in=0, fan_out_project=2, fan_out_external=0, coupling=2, stability=1.0),
+                "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+                "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=2, fan_out_project=0, fan_out_external=0, coupling=2, stability=0.0),
             }
             cycles: List[set[str]] = []
 
@@ -427,9 +427,9 @@ class TestExportErrorHandling:
             G.add_edge("/path/b.hpp", "/path/c.hpp")
 
             metrics = {
-                "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-                "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, coupling=2, stability=0.5),
-                "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+                "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+                "/path/b.hpp": DSMMetrics(fan_out=1, fan_in=1, fan_out_project=1, fan_out_external=0, coupling=2, stability=0.5),
+                "/path/c.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
             }
             cycles: List[set[str]] = []
 
@@ -457,8 +457,8 @@ class TestExportErrorHandling:
             G.add_edge("/path/main.cpp", "/path/utils.hpp")
 
             metrics = {
-                "/path/main.cpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-                "/path/utils.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+                "/path/main.cpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+                "/path/utils.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
             }
             cycles: List[set[str]] = []
 
@@ -481,8 +481,8 @@ class TestExportErrorHandling:
             G.add_edge("/path/a.hpp", "/path/b.hpp")
 
             metrics = {
-                "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-                "/path/b.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+                "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+                "/path/b.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
             }
             cycles: List[set[str]] = []
 
@@ -517,7 +517,7 @@ class TestExportRoundTrip:
             original_node_count = G.number_of_nodes()
             original_edge_count = G.number_of_edges()
 
-            metrics = {node: DSMMetrics(fan_out=0, fan_in=0, coupling=0, stability=0.5) for node in G.nodes()}
+            metrics = {node: DSMMetrics(fan_out=0, fan_in=0, fan_out_project=0, fan_out_external=0, coupling=0, stability=0.5) for node in G.nodes()}
             cycles: List[set[str]] = []
 
             output_file = temp_dir / "roundtrip.json"
@@ -541,8 +541,8 @@ class TestExportRoundTrip:
             G.add_edge("/path/a.hpp", "/path/b.hpp")
 
             metrics = {
-                "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, coupling=1, stability=1.0),
-                "/path/b.hpp": DSMMetrics(fan_out=0, fan_in=1, coupling=1, stability=0.0),
+                "/path/a.hpp": DSMMetrics(fan_out=1, fan_in=0, fan_out_project=1, fan_out_external=0, coupling=1, stability=1.0),
+                "/path/b.hpp": DSMMetrics(fan_out=0, fan_in=1, fan_out_project=0, fan_out_external=0, coupling=1, stability=0.0),
             }
             cycles: List[set[str]] = []
 

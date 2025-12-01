@@ -3,7 +3,8 @@
 """Tests for system header filtering in file_utils.py."""
 
 import pytest
-from lib.file_utils import filter_system_headers, FilterStatistics
+from lib.file_utils import filter_by_file_type, FilterStatistics, FileClassificationStats
+from lib.clang_utils import FileType
 
 
 class TestFilterSystemHeaders:
@@ -13,7 +14,16 @@ class TestFilterSystemHeaders:
         """Test basic system header filtering."""
         headers = {"/usr/include/iostream", "/usr/include/stdio.h", "/home/project/MyHeader.hpp", "/usr/lib/gcc/stddef.h", "/home/project/Utils.h"}
 
-        filtered, stats = filter_system_headers(headers, show_progress=False)
+        # Create file_types mapping
+        file_types = {
+            "/usr/include/iostream": FileType.SYSTEM,
+            "/usr/include/stdio.h": FileType.SYSTEM,
+            "/home/project/MyHeader.hpp": FileType.PROJECT,
+            "/usr/lib/gcc/stddef.h": FileType.SYSTEM,
+            "/home/project/Utils.h": FileType.PROJECT,
+        }
+
+        filtered, stats = filter_by_file_type(headers, file_types, exclude_types={FileType.SYSTEM}, show_progress=False)
 
         # Should keep only project headers
         assert len(filtered) == 2
@@ -21,41 +31,50 @@ class TestFilterSystemHeaders:
         assert "/home/project/Utils.h" in filtered
 
         # Check statistics
-        assert stats["total_excluded"] == 3
-        assert "/usr/" in stats["by_prefix"]
+        assert stats.system == 3
+        assert stats.project == 2
 
     def test_filter_system_headers_no_system_headers(self) -> None:
         """Test filtering when no system headers present."""
         headers = {"/home/project/Header1.hpp", "/home/project/Header2.hpp"}
 
-        filtered, stats = filter_system_headers(headers, show_progress=False)
+        # Create file_types mapping - all project files
+        file_types = {"/home/project/Header1.hpp": FileType.PROJECT, "/home/project/Header2.hpp": FileType.PROJECT}
+
+        filtered, stats = filter_by_file_type(headers, file_types, exclude_types={FileType.SYSTEM}, show_progress=False)
 
         assert filtered == headers
-        assert stats["total_excluded"] == 0
-        assert len(stats["by_prefix"]) == 0
+        assert stats.system == 0
+        assert stats.project == 2
 
     def test_filter_system_headers_all_system(self) -> None:
         """Test filtering when all headers are system headers."""
         headers = {"/usr/include/iostream", "/usr/include/vector", "/lib/x86_64-linux-gnu/glibc.h"}
 
-        filtered, stats = filter_system_headers(headers, show_progress=False)
+        # Create file_types mapping - all system files
+        file_types = {"/usr/include/iostream": FileType.SYSTEM, "/usr/include/vector": FileType.SYSTEM, "/lib/x86_64-linux-gnu/glibc.h": FileType.SYSTEM}
+
+        filtered, stats = filter_by_file_type(headers, file_types, exclude_types={FileType.SYSTEM}, show_progress=False)
 
         assert len(filtered) == 0
-        assert stats["total_excluded"] == 3
+        assert stats.system == 3
 
-    def test_filter_system_headers_examples_limit(self) -> None:
-        """Test that examples are limited to 5 per prefix."""
+    def test_filter_system_headers_large_set(self) -> None:
+        """Test filtering a large set of system headers."""
         headers = set()
-        # Add many system headers from same prefix
+        # Add many system headers
         for i in range(10):
             headers.add(f"/usr/include/header{i}.h")
 
-        filtered, stats = filter_system_headers(headers, show_progress=False)
+        # Create file_types mapping - all system files
+        file_types = {h: FileType.SYSTEM for h in headers}
+
+        filtered, stats = filter_by_file_type(headers, file_types, exclude_types={FileType.SYSTEM}, show_progress=False)
 
         # Should have all excluded
-        assert stats["total_excluded"] == 10
-        # But examples should be limited to 5
-        assert len(stats["by_prefix"]["/usr/"]["examples"]) == 5
+        assert len(filtered) == 0
+        assert stats.system == 10
+        assert stats.total == 10
 
 
 class TestFilterStatistics:
@@ -63,40 +82,34 @@ class TestFilterStatistics:
 
     def test_filter_statistics_concise_format(self) -> None:
         """Test concise format output."""
-        stats = FilterStatistics(
-            initial_count=1000,
-            final_count=500,
-            system_headers={"total_excluded": 100, "by_prefix": {}},
-            exclude_patterns={"total_excluded": 50, "by_pattern": {}},
-        )
+        file_stats = FileClassificationStats(system=100, third_party=0, generated=0, project=400, total=500)
+        stats = FilterStatistics(initial_count=1000, final_count=500, system_headers=file_stats, exclude_patterns={"total_excluded": 50, "by_pattern": {}})
 
         concise = stats.format_concise()
         assert "1,000" in concise
         assert "500" in concise
-        assert "100 system" in concise or "100" in concise
-        assert "50" in concise
+        assert "100" in concise  # system headers excluded
+        assert "50" in concise  # pattern excluded
 
     def test_filter_statistics_verbose_format(self) -> None:
         """Test verbose format output."""
+        file_stats = FileClassificationStats(system=100, third_party=50, generated=0, project=350, total=500)
         stats = FilterStatistics(
             initial_count=1000,
             final_count=500,
-            system_headers={
-                "total_excluded": 100,
-                "by_prefix": {"/usr/include": {"count": 80, "examples": ["iostream", "vector"]}, "/usr/lib": {"count": 20, "examples": ["stddef.h"]}},
-            },
+            system_headers=file_stats,
             exclude_patterns={"total_excluded": 50, "by_pattern": {"*/ThirdParty/*": {"count": 50, "examples": ["/project/ThirdParty/lib.hpp"]}}},
         )
 
         verbose = stats.format_verbose("/project")
-        assert "System Headers Excluded" in verbose
-        assert "/usr/include" in verbose
-        assert "iostream" in verbose
+        assert "File Classification" in verbose
+        assert "System:" in verbose or "100" in verbose
         assert "ThirdParty" in verbose
 
     def test_filter_statistics_no_exclusions(self) -> None:
         """Test statistics with no exclusions."""
-        stats = FilterStatistics(initial_count=100, final_count=100, system_headers={"total_excluded": 0, "by_prefix": {}}, exclude_patterns={})
+        file_stats = FileClassificationStats(system=0, third_party=0, generated=0, project=100, total=100)
+        stats = FilterStatistics(initial_count=100, final_count=100, system_headers=file_stats, exclude_patterns={})
 
         concise = stats.format_concise()
         assert "100" in concise

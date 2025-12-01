@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Comprehensive Architectural Debt Score** (Phase 4): Sophisticated 5-component formula replacing naive metrics
+  - **P95 Coupling Component (30% weight)**: 95th percentile coupling detection, normalized to 100, capped at 30 points
+  - **Outliers Component (20% weight)**: Statistical outlier detection (>mean+2σ), ratio-based scoring, capped at 20 points
+  - **Stability Component (15% weight)**: Average instability (fan_out/coupling), scaled by 15, capped at 15 points
+  - **Hub Nodes Component (10% weight)**: Top 5 betweenness centrality nodes (bottleneck detection), capped at 10 points
+  - **Cycles Component (25% weight)**: Diminishing returns formula `25*(1-exp(-count/4))`, capped at 25 points
+  - Score range: 0-100 where 0=perfect architecture, 100=maximum debt
+  - Color-coded display: Green (<30 Low), Yellow (30-60 Moderate), Red (≥60 High)
+  - Verbose breakdown with `--verbose` flag shows individual component contributions
+  - Integrated into `buildCheckDSM.py --suggest-improvements` output
+  - **Test Coverage**: 10 unit tests + 5 integration tests (15 new tests total)
+
+- **Parameterized Anti-Pattern Detection** (Phase 3): Configurable sensitivity thresholds for third-party detection
+  - **DetectionThresholds infrastructure**: Type-safe dataclass with 7 configurable parameters
+    * `coupling_threshold`: Headers with coupling above this considered problematic (default: 50)
+    * `stability_threshold`: Instability metric threshold (default: 0.7)
+    * `outlier_sigma`: Standard deviations for statistical outliers (default: 2.0)
+    * `hub_centrality_threshold`: Betweenness centrality for hub detection (default: 0.1)
+    * `fan_out_project_ratio`: Internal coupling ratio threshold (default: 0.3)
+    * `third_party_threshold`: External dependencies threshold (default: 20)
+    * `third_party_ratio`: External ratio threshold (default: 0.5)
+  - **CLI Integration**: `--sensitivity` flag with presets (strict/balanced/lenient) or custom values
+    * `--sensitivity=strict`: Aggressive detection (coupling=40, sigma=1.5, etc.)
+    * `--sensitivity=balanced`: Default balanced detection (coupling=50, sigma=2.0)
+    * `--sensitivity=lenient`: Relaxed detection (coupling=60, sigma=2.5, etc.)
+    * `--sensitivity=custom:coupling=45,sigma=1.8`: Custom parameter override
+  - **fan_out_project Integration**: All anti-pattern detection now uses project-internal coupling
+    * Replaces naive `fan_out` metric with accurate `fan_out_project` for better third-party separation
+    * `excessive_coupling` now based on internal coupling only
+    * `high_stability` uses `fan_out_project / coupling` ratio
+    * `third_party_heavy` detects when `fan_out_external / coupling > third_party_ratio`
+  - **Test Coverage**: 23 new tests (9 DetectionThresholds + 8 fan_out_project + 6 CLI)
+
 - **Comprehensive main README.md**: Complete rewrite with professional documentation
   - Added two Mermaid flowchart diagrams (GitHub-compatible):
     * Tool Selection Guide: Interactive decision tree helping users choose the right tool

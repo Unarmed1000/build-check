@@ -272,15 +272,19 @@ class TestSanitizeCompileCommand:
         assert "test.cpp" in result
 
     def test_preserve_normal_flags(self) -> None:
-        """Test that normal compilation flags are preserved."""
+        """Test that essential compilation flags are preserved, but warnings/optimization removed."""
         from lib.clang_utils import sanitize_compile_command
 
         cmd = "g++ -c test.cpp -std=c++17 -Wall -O2 -I/usr/include -o test.o"
         result = sanitize_compile_command(cmd)
+
+        # Essential preprocessing flags should be preserved
         assert "-std=c++17" in result
-        assert "-Wall" in result
-        assert "-O2" in result
         assert "-I/usr/include" in result
+
+        # Warning and optimization flags should be removed (not needed for preprocessing)
+        assert "-Wall" not in result
+        assert "-O2" not in result
 
     def test_complex_ccache_command(self) -> None:
         """Test sanitizing complex command with ccache wrapper and environment variables."""
@@ -301,17 +305,18 @@ class TestSanitizeCompileCommand:
 
         # Malformed command with unmatched quotes
         cmd = 'g++ -c test.cpp -DSTRING="unclosed'
-        result = sanitize_compile_command(cmd)
-        # Should return original command if parsing fails
-        assert result == cmd
+        # Should raise ValueError with fail-fast approach
+        with pytest.raises(ValueError, match="Failed to parse compile command"):
+            sanitize_compile_command(cmd)
 
     def test_empty_command(self) -> None:
         """Test empty command handling."""
         from lib.clang_utils import sanitize_compile_command
 
         cmd = ""
-        result = sanitize_compile_command(cmd)
-        assert result == cmd
+        # Should raise ValueError for empty command
+        with pytest.raises(ValueError, match="Empty or whitespace-only"):
+            sanitize_compile_command(cmd)
 
     def test_macos_clang_with_ccache(self) -> None:
         """Test macOS clang command with ccache (as seen in user's error)."""
@@ -424,7 +429,7 @@ build test.o: cxx_link test.cpp
         assert "-Xlinker" not in cmd
 
     def test_create_filtered_compile_commands_preserves_valid_flags(self, tmp_path: Path) -> None:
-        """Test that valid compilation flags are preserved."""
+        """Test that preprocessing-relevant flags are preserved, warnings/optimization removed."""
         from lib.clang_utils import create_filtered_compile_commands
         import json
 
@@ -448,11 +453,15 @@ build test.o: cxx_flags test.cpp
             filtered = json.load(f)
 
         cmd = filtered[0]["command"]
+
+        # Essential preprocessing flags should be preserved
         assert "-std=c++17" in cmd
-        assert "-Wall" in cmd
-        assert "-O2" in cmd
         assert "-I/usr/include" in cmd
         assert "-DNDEBUG" in cmd
+
+        # Warning and optimization flags should be removed
+        assert "-Wall" not in cmd
+        assert "-O2" not in cmd
 
     def test_missing_compile_commands(self, tmp_path: Path) -> None:
         """Test when compile_commands.json doesn't exist."""

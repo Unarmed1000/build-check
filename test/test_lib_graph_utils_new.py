@@ -418,7 +418,7 @@ class TestDSMMetricsDataclass:
     @pytest.mark.unit
     def test_dsm_metrics_creation(self) -> None:
         """Test creating DSMMetrics instance."""
-        metrics = DSMMetrics(fan_out=5, fan_in=10, coupling=15, stability=0.33)
+        metrics = DSMMetrics(fan_out=5, fan_in=10, fan_out_project=5, fan_out_external=0, coupling=15, stability=0.33)
 
         assert metrics.fan_out == 5
         assert metrics.fan_in == 10
@@ -428,7 +428,7 @@ class TestDSMMetricsDataclass:
     @pytest.mark.unit
     def test_dsm_metrics_stable_header(self) -> None:
         """Test DSMMetrics for a stable header (low stability value)."""
-        metrics = DSMMetrics(fan_out=1, fan_in=20, coupling=21, stability=1 / 21)
+        metrics = DSMMetrics(fan_out=1, fan_in=20, fan_out_project=1, fan_out_external=0, coupling=21, stability=1 / 21)
 
         # Stable headers have low stability value (few dependencies, many dependents)
         assert metrics.stability < 0.1
@@ -437,7 +437,7 @@ class TestDSMMetricsDataclass:
     @pytest.mark.unit
     def test_dsm_metrics_unstable_header(self) -> None:
         """Test DSMMetrics for an unstable header (high stability value)."""
-        metrics = DSMMetrics(fan_out=20, fan_in=1, coupling=21, stability=20 / 21)
+        metrics = DSMMetrics(fan_out=20, fan_in=1, fan_out_project=20, fan_out_external=0, coupling=21, stability=20 / 21)
 
         # Unstable headers have high stability value (many dependencies, few dependents)
         assert metrics.stability > 0.9

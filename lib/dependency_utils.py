@@ -119,11 +119,12 @@ class SourceDependencyMap:
         return f"SourceDependencyMap(targets={len(self._target_to_dependencies)})"
 
 
-def compute_header_usage(source_to_deps: Dict[str, Set[str]]) -> Dict[str, int]:
+def compute_header_usage(source_to_deps: Dict[str, Set[str]], file_types: Dict[str, Any]) -> Dict[str, int]:
     """Count how many source files include each header (directly or transitively).
 
     Args:
         source_to_deps: Mapping of source files to their dependencies
+        file_types: Dictionary mapping file paths to FileType classification
 
     Returns:
         Dictionary mapping headers to usage count
@@ -135,7 +136,10 @@ def compute_header_usage(source_to_deps: Dict[str, Set[str]]) -> Dict[str, int]:
         if idx % 100 == 0:
             print(f"\r{Colors.DIM}  Progress: {idx}/{len(source_to_deps)} sources analyzed{Colors.RESET}", end="", flush=True)
         for dep in deps:
-            if dep.endswith((".h", ".hpp", ".hxx")) and not dep.startswith("/usr/") and not dep.startswith("/lib/"):
+            # Use file classification to filter project headers only
+            from lib.clang_utils import FileType
+
+            if dep.endswith((".h", ".hpp", ".hxx")) and file_types.get(dep, FileType.PROJECT) == FileType.PROJECT:
                 header_usage_count[dep] += 1
 
     if len(source_to_deps) >= 100:

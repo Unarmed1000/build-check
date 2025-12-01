@@ -339,12 +339,12 @@ class TestRefactoredFunctions:
 
     def test_apply_all_filters_no_filters(self) -> None:
         """Test apply_all_filters with no filters applied."""
-        args = argparse.Namespace(library_filter=None, filter=None, include_system_headers=True)
+        args = argparse.Namespace(library_filter=None, filter=None, file_scope="system")
         all_headers = {"/a.hpp", "/b.hpp", "/c.hpp"}
         header_to_lib: dict[str, str] = {}
         project_root = "/project"
 
-        result_headers, stats = buildCheckDSM.apply_all_filters(args, all_headers, header_to_lib, project_root)
+        result_headers, stats = buildCheckDSM.apply_all_filters(args, all_headers, header_to_lib, project_root, {})
 
         assert result_headers == all_headers
         assert stats.initial_count == 3
@@ -358,12 +358,13 @@ class TestRefactoredFunctions:
         project_root = "/project"
 
         # Mock filter_headers_by_pattern to return empty set
+        file_types: dict[str, Any] = {}
         original_filter = buildCheckDSM.filter_headers_by_pattern
         buildCheckDSM.filter_headers_by_pattern = lambda *args, **kwargs: set()
 
         try:
             with pytest.raises(ValueError, match="No headers found after filtering"):
-                buildCheckDSM.apply_all_filters(args, all_headers, header_to_lib, project_root)
+                buildCheckDSM.apply_all_filters(args, all_headers, header_to_lib, project_root, file_types)
         finally:
             buildCheckDSM.filter_headers_by_pattern = original_filter
 
@@ -372,7 +373,7 @@ class TestRefactoredFunctions:
         from lib.graph_utils import DSMMetrics
         from lib.dsm_analysis import MatrixStatistics
 
-        metrics = {"/a.hpp": DSMMetrics(fan_in=1, fan_out=2, coupling=3, stability=0.5)}
+        metrics = {"/a.hpp": DSMMetrics(fan_out=2, fan_in=1, fan_out_project=2, fan_out_external=0, coupling=3, stability=0.5)}
         cycles = [{"/a.hpp", "/b.hpp"}]
         headers_in_cycles = {"/a.hpp", "/b.hpp"}
         feedback_edges = [("/a.hpp", "/b.hpp")]

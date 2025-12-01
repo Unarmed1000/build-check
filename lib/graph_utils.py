@@ -51,16 +51,25 @@ class DSMMetrics:
     """Metrics for a single header in the DSM.
 
     Attributes:
-        fan_out: Number of headers this header depends on
+        fan_out: Total number of headers this header depends on (project + external)
         fan_in: Number of headers that depend on this header
+        fan_out_project: Number of project headers this header depends on
+        fan_out_external: Number of external headers (system/third-party) this header depends on
         coupling: Total coupling (fan_out + fan_in)
         stability: Stability metric (0=stable, 1=unstable)
     """
 
     fan_out: int
     fan_in: int
+    fan_out_project: int
+    fan_out_external: int
     coupling: int
     stability: float
+
+    def __post_init__(self) -> None:
+        """Validate that fan_out split is consistent."""
+        if self.fan_out != self.fan_out_project + self.fan_out_external:
+            raise ValueError(f"fan_out ({self.fan_out}) must equal fan_out_project ({self.fan_out_project}) + " f"fan_out_external ({self.fan_out_external})")
 
 
 def build_dependency_graph(include_graph: Dict[str, Set[str]], all_headers: Set[str]) -> "nx.DiGraph[Any]":
@@ -293,6 +302,7 @@ def compute_layers(header_to_headers: Dict[str, Set[str]], all_headers: Set[str]
     graph: nx.DiGraph[str] = nx.DiGraph()
     graph.add_nodes_from(all_headers)
 
+    # Build graph
     for header, deps in header_to_headers.items():
         for dep in deps:
             if dep in all_headers:
@@ -339,6 +349,9 @@ def analyze_cycles(
     directed_graph.add_nodes_from(all_headers)
 
     for header, deps in header_to_headers.items():
+        # Only process headers that are in our filtered set
+        if header not in all_headers:
+            continue
         for dep in deps:
             if dep in all_headers:
                 directed_graph.add_edge(header, dep)
@@ -640,19 +653,43 @@ def export_graph_to_graphml(graph: "nx.DiGraph[Any]", output_path: str, node_att
         return False
 
 
-def calculate_dsm_metrics(header: str, header_to_headers: Dict[str, Set[str]], reverse_deps: Dict[str, Set[str]]) -> DSMMetrics:
+def calculate_dsm_metrics(
+    header: str, header_to_headers: Dict[str, Set[str]], reverse_deps: Dict[str, Set[str]], file_types: Optional[Dict[str, Any]] = None
+) -> DSMMetrics:
     """Calculate DSM metrics for a single header.
 
     Args:
         header: Path to the header file
         header_to_headers: Mapping of headers to headers they depend on
         reverse_deps: Mapping of headers to headers that depend on them
+        file_types: Optional file type classifications (FileType enum values)
 
     Returns:
-        DSMMetrics with fan_out, fan_in, coupling, and stability
+        DSMMetrics with fan_out, fan_in, fan_out_project, fan_out_external, coupling, and stability
     """
-    fan_out: int = len(header_to_headers.get(header, set()))
+    dependencies = header_to_headers.get(header, set())
+    fan_out: int = len(dependencies)
     fan_in: int = len(reverse_deps.get(header, set()))
+
+    # Split fan_out into project vs external if file_types available
+    fan_out_project = 0
+    fan_out_external = 0
+
+    if file_types:
+        # Import FileType for classification (avoid circular import at module level)
+        from .clang_utils import FileType
+
+        for dep in dependencies:
+            dep_type = file_types.get(dep, FileType.PROJECT)
+            if dep_type == FileType.PROJECT:
+                fan_out_project += 1
+            else:
+                fan_out_external += 1
+    else:
+        # Fallback: treat all as project dependencies if file_types not provided
+        fan_out_project = fan_out
+        fan_out_external = 0
+
     coupling: int = fan_out + fan_in
 
     # Stability: 0 = very stable (many dependents, few dependencies)
@@ -662,7 +699,9 @@ def calculate_dsm_metrics(header: str, header_to_headers: Dict[str, Set[str]], r
     else:
         stability = 0.5  # Neutral if isolated
 
-    return DSMMetrics(fan_out=fan_out, fan_in=fan_in, coupling=coupling, stability=stability)
+    return DSMMetrics(
+        fan_out=fan_out, fan_in=fan_in, fan_out_project=fan_out_project, fan_out_external=fan_out_external, coupling=coupling, stability=stability
+    )
 
 
 def calculate_architecture_quality_score(
@@ -854,11 +893,12 @@ def visualize_dsm(
     cycle_highlight: str = "●",
     dependency_marker: str = "X",
     empty_cell: str = "·",
+    sort_by: str = "coupling",
 ) -> None:
     """Display a compact Dependency Structure Matrix.
 
     Args:
-        headers: List of headers to show (sorted by coupling)
+        headers: List of headers to show
         header_to_headers: Mapping of headers to their dependencies
         headers_in_cycles: Set of headers that are in cycles
         project_root: Root directory of the project
@@ -866,6 +906,7 @@ def visualize_dsm(
         cycle_highlight: Symbol for headers in cycles
         dependency_marker: Symbol for dependencies
         empty_cell: Symbol for no dependency
+        sort_by: Sort order used ("coupling" or "topological")
     """
     if not headers:
         print_warning("No headers to display in matrix", prefix=False)
@@ -892,8 +933,13 @@ def visualize_dsm(
     # Find max label width for alignment
     max_label_width = max(len(label) for label in labels) if labels else 0
 
-    print(f"\n{Colors.BRIGHT}Dependency Structure Matrix (Top {n} headers):{Colors.RESET}")
-    print(f"{Colors.DIM}Rows include columns (row depends on column){Colors.RESET}\n")
+    # Display sort mode in title
+    sort_mode_desc = "reverse topological order (high-level → foundation)" if sort_by == "topological" else "coupling"
+    print(f"\n{Colors.BRIGHT}Dependency Structure Matrix (Top {n} headers, sorted by {sort_mode_desc}):{Colors.RESET}")
+    print(f"{Colors.DIM}Rows include columns (row depends on column){Colors.RESET}")
+    if sort_by == "topological":
+        print(f"{Colors.DIM}Well-layered architecture: dependencies below diagonal. Cycles/back-deps: above diagonal.{Colors.RESET}")
+    print()
 
     # Print column headers (rotated 90 degrees would be ideal, but use indices)
     header_line = " " * (max_label_width + 2)

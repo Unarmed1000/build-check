@@ -30,8 +30,8 @@ import pytest
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.file_utils import filter_system_headers
-from lib.clang_utils import is_system_header
+from lib.file_utils import filter_by_file_type
+from lib.clang_utils import is_system_header, FileType
 
 
 class TestSystemHeaderFiltering:
@@ -54,7 +54,7 @@ class TestSystemHeaderFiltering:
 
     @pytest.mark.unit
     def test_filter_system_headers_removes_system_headers(self) -> None:
-        """Test that filter_system_headers removes system headers."""
+        """Test that filter_by_file_type removes system headers."""
         headers: Set[str] = {
             "/usr/include/stdio.h",
             "/usr/include/stdlib.h",
@@ -64,7 +64,17 @@ class TestSystemHeaderFiltering:
             "/opt/local/include/boost/shared_ptr.hpp",
         }
 
-        filtered, stats = filter_system_headers(headers, show_progress=False)
+        # Create file_types mapping
+        file_types = {
+            "/usr/include/stdio.h": FileType.SYSTEM,
+            "/usr/include/stdlib.h": FileType.SYSTEM,
+            "/home/user/project/include/myheader.h": FileType.PROJECT,
+            "/workspace/src/utils.hpp": FileType.PROJECT,
+            "/lib/gcc/include/stddef.h": FileType.SYSTEM,
+            "/opt/local/include/boost/shared_ptr.hpp": FileType.SYSTEM,
+        }
+
+        filtered, stats = filter_by_file_type(headers, file_types, exclude_types={FileType.SYSTEM}, show_progress=False)
 
         # Should only have project headers
         assert len(filtered) == 2
@@ -72,21 +82,28 @@ class TestSystemHeaderFiltering:
         assert "/workspace/src/utils.hpp" in filtered
 
         # Should have filtered out 4 system headers
-        assert stats["total_excluded"] == 4
+        assert stats.system == 4
 
     @pytest.mark.unit
     def test_filter_system_headers_preserves_all_when_no_system_headers(self) -> None:
-        """Test that filter_system_headers preserves all headers when there are no system headers."""
+        """Test that filter_by_file_type preserves all headers when there are no system headers."""
         headers: Set[str] = {"/home/user/project/include/myheader.h", "/workspace/src/utils.hpp", "include/mylib/header.h"}
 
-        filtered, stats = filter_system_headers(headers, show_progress=False)
+        # Create file_types mapping - all project files
+        file_types = {
+            "/home/user/project/include/myheader.h": FileType.PROJECT,
+            "/workspace/src/utils.hpp": FileType.PROJECT,
+            "include/mylib/header.h": FileType.PROJECT,
+        }
+
+        filtered, stats = filter_by_file_type(headers, file_types, exclude_types={FileType.SYSTEM}, show_progress=False)
 
         # Should have all headers
         assert len(filtered) == 3
         assert filtered == headers
 
         # Should have filtered out 0 headers
-        assert stats["total_excluded"] == 0
+        assert stats.system == 0
 
 
 class TestGitImpactSystemHeaderFiltering:
@@ -94,7 +111,7 @@ class TestGitImpactSystemHeaderFiltering:
 
     @pytest.mark.unit
     def test_git_impact_filters_system_headers_by_default(self, tmp_path: Path) -> None:
-        """Test that git-impact filters system headers when include_system_headers=False."""
+        """Test that git-impact filters system headers when file_scope='project' (default)."""
         from lib.dsm_analysis import run_git_working_tree_analysis
 
         # Create fake git repo directory
@@ -115,8 +132,8 @@ class TestGitImpactSystemHeaderFiltering:
         ) as mock_compare, patch(
             "lib.dsm_analysis.print_dsm_delta"
         ), patch(
-            "lib.file_utils.filter_system_headers"
-        ) as mock_filter_system:
+            "lib.file_utils.filter_by_file_type"
+        ) as mock_filter_by_type:
 
             # Setup mocks
             mock_find_repo.return_value = str(fake_repo)
@@ -137,8 +154,19 @@ class TestGitImpactSystemHeaderFiltering:
                 "/opt/toolchain/include/vector.h",
             }
 
+            # Create file_types for current scan
+            current_file_types = {
+                "/usr/include/stdio.h": FileType.SYSTEM,
+                "/home/user/project/src/myheader.h": FileType.PROJECT,
+                "/lib/gcc/include/stddef.h": FileType.SYSTEM,
+                "/home/user/project/include/utils.hpp": FileType.PROJECT,
+                "/opt/toolchain/include/vector.h": FileType.SYSTEM,
+            }
+
             mock_graph = MagicMock()
-            mock_build_graph.return_value = Mock(include_graph=mock_graph, all_headers=current_headers_with_system, scan_time=0.1, source_to_deps={})
+            mock_build_graph.return_value = Mock(
+                include_graph=mock_graph, all_headers=current_headers_with_system, scan_time=0.1, source_to_deps={}, file_types=current_file_types
+            )
 
             # Baseline with system headers mixed in
             baseline_headers_with_system = {"/usr/include/stdio.h", "/home/user/project/src/myheader.h", "/lib/gcc/include/string.h"}
@@ -146,24 +174,33 @@ class TestGitImpactSystemHeaderFiltering:
 
             # Track what headers were filtered
             filtered_headers_calls = []
+            from lib.file_utils import FileClassificationStats
 
-            def filter_side_effect(headers: Set[str], show_progress: bool = False) -> Tuple[Set[str], Dict[str, int]]:
+            def filter_side_effect(
+                headers: Set[str], file_types: Dict[str, FileType], exclude_types: Set[FileType], show_progress: bool = False
+            ) -> Tuple[Set[str], FileClassificationStats]:
                 # Record the call for verification
                 filtered_headers_calls.append(headers.copy())
                 # Actually filter system headers
-                filtered = {h for h in headers if not is_system_header(h)}
-                excluded_count = len(headers) - len(filtered)
-                stats = {"total_excluded": excluded_count}
+                filtered = {h for h in headers if file_types.get(h, FileType.PROJECT) not in exclude_types}
+
+                stats = FileClassificationStats(
+                    system=sum(1 for h in headers if file_types.get(h) == FileType.SYSTEM),
+                    third_party=0,
+                    generated=0,
+                    project=sum(1 for h in headers if file_types.get(h, FileType.PROJECT) == FileType.PROJECT),
+                    total=len(headers),
+                )
                 return (filtered, stats)
 
-            mock_filter_system.side_effect = filter_side_effect
+            mock_filter_by_type.side_effect = filter_side_effect
 
             # Mock DSM analysis results
             mock_dsm_result = Mock()
             mock_run_dsm.return_value = mock_dsm_result
             mock_compare.return_value = Mock()
 
-            # Run analysis WITHOUT include_system_headers flag
+            # Run analysis with file_scope='project' (filters system and third-party)
             run_git_working_tree_analysis(
                 build_dir="/fake/build",
                 project_root="/fake/project",
@@ -173,11 +210,11 @@ class TestGitImpactSystemHeaderFiltering:
                 filter_pattern=None,
                 exclude_patterns=None,
                 show_layers=False,
-                include_system_headers=False,  # Should filter system headers
+                file_scope="project",  # Should filter system and third-party headers
             )
 
-            # Verify that filter_system_headers was called exactly twice (baseline + current)
-            assert mock_filter_system.call_count == 2, f"Expected 2 calls, got {mock_filter_system.call_count}"
+            # Verify that filter_by_file_type was called exactly twice (baseline + current)
+            assert mock_filter_by_type.call_count == 2, f"Expected 2 calls, got {mock_filter_by_type.call_count}"
 
             # Verify both calls received headers with system headers mixed in
             assert len(filtered_headers_calls) == 2
@@ -198,8 +235,8 @@ class TestGitImpactSystemHeaderFiltering:
             assert len(current_system_headers) > 0, "Current should have system headers before filtering"
 
     @pytest.mark.unit
-    def test_git_impact_includes_system_headers_when_flag_set(self) -> None:
-        """Test that git-impact includes system headers when include_system_headers=True."""
+    def test_git_impact_includes_system_headers_when_requested(self) -> None:
+        """Test that git-impact includes system headers when file_scope='system'."""
         from lib.dsm_analysis import run_git_working_tree_analysis
 
         # Mock the necessary functions
@@ -214,8 +251,8 @@ class TestGitImpactSystemHeaderFiltering:
         ) as mock_compare, patch(
             "lib.dsm_analysis.print_dsm_delta"
         ), patch(
-            "lib.file_utils.filter_system_headers"
-        ) as mock_filter_system:
+            "lib.file_utils.filter_by_file_type"
+        ) as mock_filter_by_type:
 
             # Setup mocks
             mock_find_repo.return_value = "/fake/repo"
@@ -224,8 +261,16 @@ class TestGitImpactSystemHeaderFiltering:
             # Create headers with system headers
             all_headers = {"/usr/include/stdio.h", "/home/user/project/src/myheader.h", "/lib/gcc/include/stddef.h", "/home/user/project/include/utils.hpp"}
 
+            # Create file_types
+            file_types = {
+                "/usr/include/stdio.h": FileType.SYSTEM,
+                "/home/user/project/src/myheader.h": FileType.PROJECT,
+                "/lib/gcc/include/stddef.h": FileType.SYSTEM,
+                "/home/user/project/include/utils.hpp": FileType.PROJECT,
+            }
+
             mock_graph = MagicMock()
-            mock_build_graph.return_value = Mock(include_graph=mock_graph, all_headers=all_headers, scan_time=0.1, source_to_deps={})
+            mock_build_graph.return_value = Mock(include_graph=mock_graph, all_headers=all_headers, scan_time=0.1, source_to_deps={}, file_types=file_types)
 
             baseline_headers = {"/usr/include/stdio.h", "/home/user/project/src/myheader.h"}
             mock_reconstruct.return_value = (baseline_headers, mock_graph)
@@ -235,7 +280,7 @@ class TestGitImpactSystemHeaderFiltering:
             mock_run_dsm.return_value = mock_dsm_result
             mock_compare.return_value = Mock()
 
-            # Run analysis WITH include_system_headers flag
+            # Run analysis with file_scope='system' (includes all headers)
             run_git_working_tree_analysis(
                 build_dir="/fake/build",
                 project_root="/fake/project",
@@ -245,11 +290,11 @@ class TestGitImpactSystemHeaderFiltering:
                 filter_pattern=None,
                 exclude_patterns=None,
                 show_layers=False,
-                include_system_headers=True,  # Should NOT filter system headers
+                file_scope="system",  # Should NOT filter system headers
             )
 
-            # Verify that filter_system_headers was NOT called
-            assert mock_filter_system.call_count == 0
+            # Verify that filter_by_file_type was NOT called
+            assert mock_filter_by_type.call_count == 0
 
 
 class TestDependencyHellSystemHeaderFiltering:
@@ -258,7 +303,7 @@ class TestDependencyHellSystemHeaderFiltering:
     @pytest.mark.unit
     def test_dependency_hell_applies_system_header_filter(self) -> None:
         """Test that buildCheckDependencyHell filters system headers correctly."""
-        from lib.file_utils import filter_system_headers
+        from lib.file_utils import filter_by_file_type
 
         # Simulate problematic headers with system headers mixed in
         problematic_headers = {
@@ -269,8 +314,17 @@ class TestDependencyHellSystemHeaderFiltering:
             "/opt/local/include/boost/shared_ptr.hpp",
         }
 
+        # Create file_types mapping
+        file_types = {
+            "/usr/include/stdio.h": FileType.SYSTEM,
+            "/home/user/project/src/bloated_header.h": FileType.PROJECT,
+            "/lib/gcc/include/stddef.h": FileType.SYSTEM,
+            "/home/user/project/include/god_object.hpp": FileType.PROJECT,
+            "/opt/local/include/boost/shared_ptr.hpp": FileType.SYSTEM,
+        }
+
         # Filter system headers
-        filtered, stats = filter_system_headers(problematic_headers, show_progress=False)
+        filtered, stats = filter_by_file_type(problematic_headers, file_types, exclude_types={FileType.SYSTEM}, show_progress=False)
 
         # Should only have project headers
         assert len(filtered) == 2
@@ -283,7 +337,7 @@ class TestDependencyHellSystemHeaderFiltering:
         assert "/opt/local/include/boost/shared_ptr.hpp" not in filtered
 
         # Stats should show 3 excluded
-        assert stats["total_excluded"] == 3
+        assert stats.system == 3
 
 
 if __name__ == "__main__":

@@ -105,177 +105,6 @@ PERFORMANCE:
     Similar to buildCheckIncludeGraph.py (3-10 seconds). Uses NetworkX for efficient
     graph analysis. Results can be cached.
 
-REQUIREMENTS:
-    - Python 3.7+
-    - networkx: pip install networkx
-    - colorama: pip install colorama (optional, for colored output)
-    - clang-scan-deps (clang-19, clang-18, or clang-XX)
-    - compile_commands.json (auto-generated from Ninja build)
-
-COMPLEMENTARY TOOLS:
-    - buildCheckSummary.py: What changed and will rebuild
-    - buildCheckImpact.py: Quick impact check
-    - buildCheckIncludeGraph.py: Gateway header analysis
-    - buildCheckDependencyHell.py: Multi-metric dependency analysis
-    - buildCheckIncludeChains.py: Cooccurrence patterns
-
-EXAMPLES:
-    # Basic DSM of all project headers
-    ./buildCheckDSM.py ../build/release/
-
-    # Show only top 50 most coupled headers
-    ./buildCheckDSM.py ../build/release/ --top 50
-
-    # Focus on cycle analysis only
-    ./buildCheckDSM.py ../build/release/ --cycles-only
-
-    # Show hierarchical layers
-    ./buildCheckDSM.py ../build/release/ --show-layers
-
-    # Export full matrix to CSV
-    ./buildCheckDSM.py ../build/release/ --export matrix.csv
-
-    # Export dependency graph for visualization (with library metadata)
-    ./buildCheckDSM.py ../build/release/ --export-graph graph.graphml
-    ./buildCheckDSM.py ../build/release/ --export-graph graph.json
-    ./buildCheckDSM.py ../build/release/ --export-graph graph.gexf
-
-    # Export with enhanced library grouping information
-    ./buildCheckDSM.py ../build/release/ --show-library-boundaries --export-graph graph.graphml
-
-    # Filter to specific directory/module
-    ./buildCheckDSM.py ../build/release/ --filter "FslBase/*"
-
-    # Exclude third-party libraries and generated files
-    ./buildCheckDSM.py ../build/release/ --exclude "*/ThirdParty/*" --exclude "*/build/*"
-    ./buildCheckDSM.py ../build/release/ --exclude "*_generated.h" --exclude "*/test/*"
-
-    # Combine filter and exclude (include FslBase, but exclude tests)
-    ./buildCheckDSM.py ../build/release/ --filter "FslBase/*" --exclude "*/test/*"
-
-    # Cluster by directory structure
-    ./buildCheckDSM.py ../build/release/ --cluster-by-directory
-
-    # SAVE/LOAD BASELINE: Save analysis for later comparison
-    # Step 1: Analyze and save baseline (compressed ~200-500KB for 1000 headers)
-    git checkout main
-    ./buildCheckDSM.py ../build/release/ --save-results baseline.dsm.json.gz
-
-    # Step 2: Analyze current build and compare with saved baseline
-    git checkout feature-branch
-    ./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz
-
-    # STATISTICAL & RIPPLE IMPACT ANALYSIS:
-    # Baseline comparison includes comprehensive architectural insights
-
-    # Full transitive closure analysis with architectural insights
-    ./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz
-
-    # Detailed statistical breakdown with verbose mode
-    ./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz --verbose
-
-    # Filter to specific module with architectural insights
-    ./buildCheckDSM.py ../build/release/ --load-baseline baseline.dsm.json.gz --filter "Graphics/*"
-
-    # Statistical insights include:
-    #   - Coupling distribution (μ, σ, P95, P99) with interpretation
-    #   - Cycle complexity analysis with critical breaking edges
-    #   - Layer depth evolution and stability changes
-    #   - Precise ripple impact with full transitive closure
-    #   - Severity-scored recommendations (🔴 Critical, 🟡 Moderate, 🟢 Positive)
-
-    # Note: Baselines save unfiltered raw data for flexibility.
-    # Filters applied at comparison time. System headers excluded by default.
-    # Differential analysis uses precise transitive closure for accurate impact assessment.
-
-    # GIT WORKING TREE ANALYSIS: Analyze uncommitted changes impact
-    # Check architectural impact of current working tree changes (vs HEAD)
-    ./buildCheckDSM.py ../build/release/ --git-impact
-
-    # Compare working tree against specific branch or commit
-    ./buildCheckDSM.py ../build/release/ --git-impact --git-from origin/main
-    ./buildCheckDSM.py ../build/release/ --git-impact --git-from HEAD~5
-    ./buildCheckDSM.py ../build/release/ --git-impact --git-from v2.0.0
-
-    # Focus git impact on specific module
-    ./buildCheckDSM.py ../build/release/ --git-impact --filter "FslBase/*"
-
-    # Precise analysis with detailed output
-    ./buildCheckDSM.py ../build/release/ --git-impact --verbose
-
-    # Shows: changed headers/sources, rebuild percentage, architectural risks,
-    #        cycle involvement, coupling metrics, severity-based recommendations
-
-    # DIFFERENTIAL ANALYSIS: Compare architecture between two builds
-    # Step 1: Create baseline build
-    git checkout main
-    mkdir build_baseline && cd build_baseline
-    cmake .. && ninja
-
-    # Step 2: Create current build
-    git checkout feature-branch
-    mkdir build_current && cd build_current
-    cmake .. && ninja
-
-    # Step 3: Compare
-    ./buildCheckDSM.py build_current/ --compare-with build_baseline/
-
-    # Shows: headers added/removed, cycles introduced/resolved,
-    #        coupling changes, layer shifts, overall assessment
-
-    # PROACTIVE IMPROVEMENT ANALYSIS: Identify high-impact refactorings (no baseline required)
-    # Analyze current codebase for improvement opportunities
-    ./buildCheckDSM.py ../build/release/ --suggest-improvements
-
-    # Focus on specific module
-    ./buildCheckDSM.py ../build/release/ --suggest-improvements --filter "FslBase/*"
-
-    # Show detailed breakdown with verbose mode
-    ./buildCheckDSM.py ../build/release/ --suggest-improvements --verbose
-
-    # Show more candidates
-    ./buildCheckDSM.py ../build/release/ --suggest-improvements --top 20
-
-    # Exclude third-party code from suggestions
-    ./buildCheckDSM.py ../build/release/ --suggest-improvements --exclude "*/ThirdParty/*"
-
-    # Identifies:
-    #   - 🟢 Quick Wins: Low effort, high ROI (break-even ≤5 commits)
-    #   - 🔴 Critical: Cycles or high-impact refactorings (ROI ≥40)
-    #   - 🟡 Moderate: Beneficial but lower priority (ROI <40)
-    #
-    # Anti-patterns detected:
-    #   - God objects (fan-out >50)
-    #   - Cycle participants (circular dependencies)
-    #   - Coupling outliers (>2.5σ above mean)
-    #   - Unstable interfaces (stability >0.5, high fan-in)
-    #   - Hub nodes (high betweenness centrality)
-    #
-    # For each candidate shows:
-    #   - Current metrics (fan-in, fan-out, coupling, stability)
-    #   - ROI score (0-100, composite metric)
-    #   - Estimated impact (coupling reduction, rebuild % reduction)
-    #   - Effort estimate (low/medium/high)
-    #   - Break-even commits (commits until ROI positive)
-    #   - Actionable refactoring steps
-    #
-    # Uses precise transitive closure analysis for accurate ROI calculation
-    # No baseline required - analyzes current state only
-
-Note: This tool provides the architectural "big picture" view that complements the
-      detailed analysis provided by other buildCheck tools.
-
-      Differential analysis enables architectural impact assessment by comparing
-      two complete builds. User manages builds manually - no git integration needed.
-
-      Proactive improvement analysis identifies refactoring opportunities WITHOUT
-      requiring a baseline, using sophisticated anti-pattern detection and ROI modeling.
-
-      Graph exports can be visualized with:
-      - GraphML (.graphml): Gephi, yEd, Cytoscape
-      - JSON (.json): D3.js, custom visualization tools
-      - GEXF (.gexf): Gephi
-      - DOT (.dot): Graphviz (requires pydot: pip install pydot)
 """
 __version__ = "1.2.0"
 
@@ -288,7 +117,7 @@ from typing import Dict, Set, List, Tuple, DefaultDict, Any
 # Import library modules
 from lib.color_utils import Colors, print_error, print_warning, print_success
 from lib.constants import DEFAULT_TOP_N, EXIT_INVALID_ARGS, EXIT_RUNTIME_ERROR, EXIT_KEYBOARD_INTERRUPT, EXIT_SUCCESS, BuildCheckError
-from lib.file_utils import filter_headers_by_pattern, cluster_headers_by_directory, exclude_headers_by_patterns, filter_system_headers, FilterStatistics
+from lib.file_utils import filter_headers_by_pattern, cluster_headers_by_directory, exclude_headers_by_patterns, filter_by_file_type, FilterStatistics
 from lib.library_parser import map_headers_to_libraries
 from lib.export_utils import export_dsm_to_csv, export_dependency_graph
 from lib.ninja_utils import validate_build_directory_with_feedback
@@ -304,7 +133,7 @@ from lib.dsm_types import DSMAnalysisResults
 from lib.dsm_serialization import save_dsm_results, load_dsm_results
 
 # Import build_include_graph from library
-from lib.clang_utils import build_include_graph
+from lib.clang_utils import build_include_graph, FileType
 
 # Explicitly export functions for testing
 __all__ = [
@@ -373,7 +202,9 @@ def setup_library_mapping(args: argparse.Namespace, all_headers: Set[str]) -> Di
     return header_to_lib
 
 
-def apply_all_filters(args: argparse.Namespace, all_headers: Set[str], header_to_lib: Dict[str, str], project_root: str) -> Tuple[Set[str], FilterStatistics]:
+def apply_all_filters(
+    args: argparse.Namespace, all_headers: Set[str], header_to_lib: Dict[str, str], project_root: str, file_types: Dict[str, Any]
+) -> Tuple[Set[str], FilterStatistics]:
     """Apply all filtering options and return filtered header set with statistics.
 
     Args:
@@ -381,6 +212,7 @@ def apply_all_filters(args: argparse.Namespace, all_headers: Set[str], header_to
         all_headers: Initial set of all headers
         header_to_lib: Mapping of headers to libraries
         project_root: Project root directory for relative paths
+        file_types: Pre-computed file type classifications
 
     Returns:
         Tuple of (filtered_headers, filter_statistics)
@@ -392,11 +224,24 @@ def apply_all_filters(args: argparse.Namespace, all_headers: Set[str], header_to
     stats = FilterStatistics(initial_count=len(all_headers), final_count=0)
     filtered_headers: Set[str] = all_headers
 
-    # Step 1: Filter system headers (unless --include-system-headers flag is set)
-    if not getattr(args, "include_system_headers", False):
-        filtered_headers, system_stats = filter_system_headers(filtered_headers, show_progress=(len(filtered_headers) > 5000))
+    # Step 1: Apply file scope filtering based on --file-scope argument
+    file_scope = getattr(args, "file_scope", "project")
+    exclude_types: Set[FileType] = set()
+
+    if file_scope == "project":
+        # Exclude both third-party and system files
+        exclude_types = {FileType.SYSTEM, FileType.THIRD_PARTY}
+    elif file_scope == "thirdparty":
+        # Exclude only system files, include third-party
+        exclude_types = {FileType.SYSTEM}
+    # else file_scope == "system": include everything, no exclusions
+
+    if exclude_types:
+        filtered_headers, system_stats = filter_by_file_type(
+            filtered_headers, file_types, exclude_types=exclude_types, show_progress=(len(filtered_headers) > 5000)
+        )
         stats.system_headers = system_stats
-        logging.info("After system header filtering: %d headers", len(filtered_headers))
+        logging.info("After file scope filtering (%s): %d headers", file_scope, len(filtered_headers))
 
     # Step 2: Apply library filter if specified
     if args.library_filter:
@@ -560,7 +405,26 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
 
     parser.add_argument("--verbose", action="store_true", help="Enable verbose debug logging")
 
-    parser.add_argument("--include-system-headers", action="store_true", help="Include system headers in analysis (default: exclude /usr/*, /lib/*, /opt/*)")
+    parser.add_argument(
+        "--file-scope",
+        type=str,
+        choices=["project", "thirdparty", "system"],
+        default="project",
+        help="File scope for analysis (default: project). "
+        "project: only user project files (excludes third-party and system headers). "
+        "thirdparty: project + third-party libraries (excludes system headers). "
+        "system: all files including system headers (/usr/*, /lib/*, /opt/*).",
+    )
+
+    parser.add_argument(
+        "--sort-by",
+        type=str,
+        choices=["coupling", "topological"],
+        default="topological",
+        help="Sort DSM matrix by coupling (highest first) or topological layers (foundation first). "
+        "Default: topological. Topological sorting shows dependencies in build order; "
+        "falls back to coupling if cycles exist.",
+    )
 
     parser.add_argument(
         "--compare-with", type=str, metavar="BASELINE_BUILD_DIR", help="Compare DSM against baseline build directory (enables differential analysis)"
@@ -610,12 +474,34 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
         "unstable interfaces, and hub nodes. Provides ROI-ranked recommendations with break-even analysis.",
     )
 
+    parser.add_argument(
+        "--sensitivity",
+        type=str,
+        choices=["low", "medium", "high"],
+        default="medium",
+        help="Detection sensitivity for anti-patterns (default: medium). "
+        "Low: fewer candidates, high thresholds (large projects). "
+        "Medium: balanced detection (most projects). "
+        "High: more candidates, strict thresholds (small projects or aggressive refactoring).",
+    )
+
+    parser.add_argument(
+        "--debug-sanitization", action="store_true", help="Enable detailed logging of compile command sanitization (shows what gets removed and why)"
+    )
+
     args: argparse.Namespace = parser.parse_args()
 
     # Set logging level based on verbose flag
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
         logging.debug("Verbose logging enabled")
+
+    # Set debug sanitization if requested
+    if args.debug_sanitization:
+        from lib.clang_utils import set_debug_sanitization
+
+        set_debug_sanitization(True)
+        logging.info("Debug sanitization enabled")
 
     try:
         # Phase 1: Validate and prepare
@@ -643,7 +529,8 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
                 exclude_patterns=args.exclude if hasattr(args, "exclude") else None,
                 top_n=args.top if args.top > 0 else 10,
                 verbose=args.verbose,
-                include_system_headers=args.include_system_headers if hasattr(args, "include_system_headers") else False,
+                file_scope=getattr(args, "file_scope", "project"),
+                sensitivity=args.sensitivity,
             )
 
         # Check if git working tree analysis is requested
@@ -657,17 +544,13 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
                 filter_pattern=args.filter,
                 exclude_patterns=args.exclude if hasattr(args, "exclude") else None,
                 show_layers=args.show_layers,
-                include_system_headers=args.include_system_headers if hasattr(args, "include_system_headers") else False,
+                file_scope=getattr(args, "file_scope", "project"),
             )
 
         # Check if differential analysis is requested
         if args.compare_with:
             return run_differential_analysis(
-                build_dir,
-                args.compare_with,
-                project_root,
-                verbose=args.verbose,
-                include_system_headers=args.include_system_headers if hasattr(args, "include_system_headers") else False,
+                build_dir, args.compare_with, project_root, verbose=args.verbose, file_scope=getattr(args, "file_scope", "project")
             )
 
         # Phase 2: Build dependency graph
@@ -683,6 +566,7 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
             scan_result = build_include_graph(build_dir)
             header_to_headers = scan_result.include_graph
             all_headers = scan_result.all_headers
+            file_types = scan_result.file_types
             elapsed = scan_result.scan_time
         except Exception as e:
             logging.error("Failed to build include graph: %s", e)
@@ -693,12 +577,15 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
         # Keep unfiltered data for saving baselines
         unfiltered_headers: Set[str] = all_headers.copy()
         unfiltered_include_graph: DefaultDict[str, Set[str]] = header_to_headers
+        # Compute all_files (headers + sources) for baseline
+        all_files: Set[str] = set(all_headers)
+        all_files.update(scan_result.source_to_deps.keys())
 
         # Phase 3: Setup library mapping (if requested)
         header_to_lib: Dict[str, str] = setup_library_mapping(args, all_headers)
 
         # Phase 4: Apply all filters
-        all_headers, filter_stats = apply_all_filters(args, all_headers, header_to_lib, project_root)
+        all_headers, filter_stats = apply_all_filters(args, all_headers, header_to_lib, project_root, file_types)
 
         # Display filtering scope
         print(f"\n{Colors.BRIGHT}Filter Scope:{Colors.RESET} {filter_stats.format_concise()}\n")
@@ -710,7 +597,12 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
         # Phase 5: Run DSM analysis
         compute_layers_flag = args.show_layers or not args.cycles_only
         results: DSMAnalysisResults = run_dsm_analysis(
-            all_headers, header_to_headers, compute_layers=compute_layers_flag, show_progress=True, source_to_deps=scan_result.source_to_deps
+            all_headers,
+            header_to_headers,
+            compute_layers=compute_layers_flag,
+            show_progress=True,
+            source_to_deps=scan_result.source_to_deps,
+            file_types=file_types,
         )
 
         # Phase 6: Display results
@@ -723,6 +615,8 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
             show_layers=args.show_layers,
             show_library_boundaries=args.show_library_boundaries,
             cluster_by_directory=args.cluster_by_directory,
+            sort_by=args.sort_by,
+            verbose=args.verbose,
         )
 
         # Phase 7: Export data (if requested)
@@ -736,18 +630,20 @@ Requires: clang-scan-deps (install: sudo apt install clang-19)
 
         # Save results (if requested)
         if args.save_results:
-            save_dsm_results(results, unfiltered_headers, unfiltered_include_graph, args.save_results, build_dir, args.filter, args.exclude)
+            save_dsm_results(results, all_files, unfiltered_include_graph, file_types, args.save_results, build_dir, args.filter, args.exclude)
 
         # Load and compare with baseline (if requested)
         if args.load_baseline:
             # Load unfiltered baseline data
-            baseline_headers, baseline_include_graph = load_dsm_results(args.load_baseline, build_dir, project_root)
+            baseline_headers, baseline_include_graph, baseline_file_types = load_dsm_results(args.load_baseline, build_dir, project_root)
 
             # Apply identical filtering to baseline as current analysis
-            baseline_headers, baseline_filter_stats = apply_all_filters(args, baseline_headers, header_to_lib, project_root)
+            baseline_headers, baseline_filter_stats = apply_all_filters(args, baseline_headers, header_to_lib, project_root, baseline_file_types)
 
             # Run DSM analysis on filtered baseline
-            baseline_results = run_dsm_analysis(baseline_headers, baseline_include_graph, compute_layers=compute_layers_flag, show_progress=False)
+            baseline_results = run_dsm_analysis(
+                baseline_headers, baseline_include_graph, compute_layers=compute_layers_flag, show_progress=False, file_types=baseline_file_types
+            )
 
             # Display side-by-side filter scope comparison
             print(f"\n{Colors.BRIGHT}Filter Scope Comparison:{Colors.RESET}")

@@ -1,6 +1,31 @@
 #!/bin/bash
 # Quick validation script to verify BuildCheck quality standards
 
+# Parse command line arguments
+RUN_FULL=false
+for arg in "$@"; do
+    case $arg in
+        --full)
+            RUN_FULL=true
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Run comprehensive quality checks on BuildCheck project."
+            echo ""
+            echo "Options:"
+            echo "  --full        Run tests with full coverage analysis (slower)"
+            echo "  -h, --help    Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  $0              # Quick check without coverage"
+            echo "  $0 --full       # Full check with coverage"
+            exit 0
+            ;;
+    esac
+done
+
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -134,7 +159,7 @@ done
 # Run type checking
 echo ""
 echo "📝 Type Checking (mypy):"
-MYPY_OUTPUT=$(bash "$SCRIPT_DIR/run_mypy.sh" 2>&1) || true
+MYPY_OUTPUT=$(bash "$SCRIPT_DIR/run_mypy.sh" 2>&1)
 MYPY_EXIT_CODE=$?
 if [ $MYPY_EXIT_CODE -eq 0 ] && echo "$MYPY_OUTPUT" | grep -q "Success: no issues found"; then
     echo -e "   ${GREEN}✓ All type checks passed${NC}"
@@ -194,7 +219,12 @@ fi
 # Run tests
 echo ""
 echo "🧪 Test Suite:"
-TEST_OUTPUT=$("$SCRIPT_DIR/run_tests.sh" 2>&1) || true
+# Run with --full flag only if passed to this script
+if [ "$RUN_FULL" = true ]; then
+    TEST_OUTPUT=$("$SCRIPT_DIR/run_tests.sh" --full 2>&1) || true
+else
+    TEST_OUTPUT=$("$SCRIPT_DIR/run_tests.sh" 2>&1) || true
+fi
 TEST_EXIT_CODE=$?
 TESTS_FAILED=false
 if [ $TEST_EXIT_CODE -eq 0 ] && echo "$TEST_OUTPUT" | tail -1 | grep -q "Tests completed successfully"; then
@@ -208,7 +238,7 @@ elif echo "$TEST_OUTPUT" | grep -q "FAILED"; then
     echo "Failed tests:"
     echo "$TEST_OUTPUT" | grep "FAILED" | sed 's/^/   /'
     echo ""
-    echo "To see full details, run: ./test/run_tests.sh"
+    echo "To see full details, run: ./test/run_tests.sh --full"
     TESTS_FAILED=true
     QUALITY_SCORE=$((QUALITY_SCORE - 2))
     QUALITY_ISSUES+=("test failures")

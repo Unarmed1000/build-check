@@ -31,6 +31,8 @@ import subprocess
 import multiprocessing as mp
 import time
 import re
+import fnmatch
+import enum
 from typing import List, Tuple, Set, Dict, DefaultDict, Optional
 from collections import defaultdict
 from dataclasses import dataclass
@@ -50,11 +52,290 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["find_clang_scan_deps", "is_valid_source_file", "is_valid_header_file", "build_include_graph", "IncludeGraphScanResult"]
 
+# Global flag for debug sanitization output
+_DEBUG_SANITIZATION = False
+
 # Constants
 VALID_SOURCE_EXTENSIONS = (".cpp", ".c", ".cc", ".cxx")
 VALID_HEADER_EXTENSIONS = (".h", ".hpp", ".hxx", ".hh")
-COMPILER_NAMES = ("g++", "gcc", "clang++", "clang", "/c++")
+COMPILER_NAMES = ("g++", "gcc", "clang++", "clang", "c++", "cc", "cl.exe", "cl")
 SYSTEM_PATH_PREFIXES = ("/usr/", "/lib/", "/lib64/", "/opt/")
+
+# Build wrappers to remove from compile commands
+BUILD_WRAPPERS = ("ccache", "distcc", "icecc", "sccache")
+
+# Flags that take an argument and should be removed (output/dependency files)
+OUTPUT_FLAGS = ("-o", "-MF", "-MT", "-MQ", "-MJ")
+
+# Dependency generation flags that conflict with clang-scan-deps
+DEPENDENCY_FLAGS = ("-M", "-MM", "-MD", "-MMD", "-MG")
+
+# Valid compiler flag prefixes (GCC/Clang/MSVC)
+# These are the minimal preprocessing-relevant patterns we whitelist for clang-scan-deps
+# clang-scan-deps only needs: include paths, defines, language mode, and compilation control
+VALID_FLAG_PREFIXES = (
+    "-I",  # Include paths
+    "-D",  # Defines
+    "-U",  # Undefines
+    "-std=",  # Language standard
+    "-isystem",  # System include paths
+    "-iquote",  # Quote include paths
+    "-isysroot",  # System root
+    "-iprefix",  # Include prefix
+    "-iwithprefix",  # Include with prefix
+    "-idirafter",  # Include after
+    "-c",  # Compile only (required)
+    "-x",  # Language specification
+    "-include",  # Force include
+    "-pthread",  # Threading
+    "--sysroot=",  # System root (Clang style)
+    "--target=",  # Target triple
+    # MSVC style flags
+    "/I",  # Include paths (MSVC)
+    "/D",  # Defines (MSVC)
+    "/std:",  # Language standard (MSVC)
+    "/c",  # Compile only (MSVC)
+)
+
+
+class FileType(enum.IntEnum):
+    """File classification types.
+
+    Integer enum for JSON-serializable file classification.
+    Values are chosen to be stable across versions.
+
+    Priority order for classification:
+    1. SYSTEM (highest) - System headers from /usr/, /lib/, /opt/
+    2. GENERATED - Auto-generated files (*.pb.h, moc_*.h, etc.)
+    3. THIRD_PARTY - External libraries (outside build_dir, not system)
+    4. PROJECT (default) - User-written project code
+
+    Attributes:
+        SYSTEM: System headers and libraries
+        THIRD_PARTY: Third-party external libraries
+        GENERATED: Auto-generated files
+        PROJECT: User-written project files
+    """
+
+    SYSTEM = 1
+    THIRD_PARTY = 2
+    GENERATED = 3
+    PROJECT = 4
+
+
+# Generated file patterns (ordered by likelihood for performance)
+_GENERATED_FILE_PATTERNS = (
+    # Protobuf (most common in many projects)
+    "*.pb.h",
+    "*.pb.hpp",
+    "*.pb.cc",
+    "*.pb.cpp",
+    # Qt Meta-Object Compiler
+    "moc_*.h",
+    "moc_*.cpp",
+    # Qt UI Compiler
+    "ui_*.h",
+    # Qt Resource Compiler
+    "qrc_*.h",
+    "qrc_*.cpp",
+    # CMake generated files
+    "*Config.h",
+    "*Config.hpp",
+    "*Export.h",
+    "*Export.hpp",
+    "*_export.h",
+    "*_export.hpp",
+    # Generic autogen patterns
+    "*_generated.h",
+    "*_generated.hpp",
+    "*_generated.cpp",
+    "*_autogen.h",
+    "*_autogen.hpp",
+    "*_autogen.cpp",
+)
+
+
+def is_generated_file(path: str) -> bool:
+    """Check if file is auto-generated based on filename patterns.
+
+    Detects common auto-generated file patterns from:
+    - Protocol Buffers (protobuf)
+    - Qt (moc, uic, rcc)
+    - CMake (Config.h, Export.h)
+    - Generic autogen patterns
+
+    Args:
+        path: File path to check
+
+    Returns:
+        True if file matches generated file patterns
+    """
+    basename = os.path.basename(path)
+    return any(fnmatch.fnmatch(basename, pattern) for pattern in _GENERATED_FILE_PATTERNS)
+
+
+def find_project_root_from_sources(source_files: List[str]) -> str:
+    """Find project root by finding the common prefix of all source file paths.
+
+    Args:
+        source_files: List of source file paths from compile_commands.json
+
+    Returns:
+        Common project root directory path
+    """
+    if not source_files:
+        return "/"
+
+    # Get absolute paths
+    abs_paths = [os.path.abspath(f) for f in source_files]
+
+    # Find common prefix
+    if len(abs_paths) == 1:
+        # Single file - use its directory
+        return os.path.dirname(abs_paths[0])
+
+    common_prefix = os.path.commonpath(abs_paths)
+
+    # Ensure it's a directory
+    if os.path.isfile(common_prefix):
+        common_prefix = os.path.dirname(common_prefix)
+
+    return common_prefix
+
+
+def extract_source_files_from_compile_commands(compile_commands_path: str) -> List[str]:
+    """Extract actual source file paths from compile_commands.json.
+
+    Args:
+        compile_commands_path: Path to compile_commands.json (or filtered version)
+
+    Returns:
+        List of absolute source file paths (.cpp, .c, .cc, etc.)
+    """
+    import json
+
+    source_files = []
+
+    try:
+        with open(compile_commands_path, "r") as f:
+            compile_commands = json.load(f)
+
+        for entry in compile_commands:
+            file_path = entry.get("file", "")
+            directory = entry.get("directory", "")
+
+            # Only include actual source files, not utility targets
+            if file_path and is_valid_source_file(file_path):
+                # Resolve relative paths using the directory field
+                if not os.path.isabs(file_path) and directory:
+                    file_path = os.path.join(directory, file_path)
+                source_files.append(file_path)
+
+    except (json.JSONDecodeError, IOError, KeyError) as e:
+        logger.warning("Failed to extract source files from compile_commands.json: %s", e)
+
+    return source_files
+
+
+def is_third_party_file(path: str, build_dir: str) -> bool:
+    """Check if file is third-party (external library).
+
+    NOTE: This function cannot accurately determine third-party status without
+    knowing the project root, which cannot be reliably inferred from build_dir alone.
+    The build directory can be anywhere and has no relationship to source location.
+
+    This is a placeholder that returns False (assumes not third-party) since proper
+    classification requires project-specific context from compile_commands.json.
+    The actual classification is done later in classify_file() using source file paths.
+
+    Args:
+        path: File path to check (symlinks will be resolved)
+        build_dir: Build directory path (unused, kept for API compatibility)
+
+    Returns:
+        False (cannot determine without project context)
+    """
+    # System headers are not third-party
+    if is_system_header(path):
+        return False
+
+    # Cannot reliably determine third-party status without project root context
+    # This will be properly classified later using source file paths from compile_commands.json
+    return False
+
+
+def classify_file(path: str, build_dir: str) -> FileType:
+    """Classify file into one of four types.
+
+    Classification priority (first match wins):
+    1. SYSTEM - System headers (/usr/, /lib/, /opt/)
+    2. GENERATED - Auto-generated files (*.pb.h, moc_*.h, etc.)
+    3. THIRD_PARTY - External libraries (outside project, not system)
+    4. PROJECT - User-written project code (default)
+
+    Args:
+        path: File path to classify
+        build_dir: Build directory path (used for third-party detection)
+
+    Returns:
+        FileType enum value
+    """
+    # Priority 1: System headers (highest priority)
+    if is_system_header(path):
+        return FileType.SYSTEM
+
+    # Priority 2: Generated files
+    if is_generated_file(path):
+        return FileType.GENERATED
+
+    # Priority 3: Third-party files
+    if is_third_party_file(path, build_dir):
+        return FileType.THIRD_PARTY
+
+    # Default: Project files
+    return FileType.PROJECT
+
+
+def classify_file_with_project_root(path: str, project_root: str, ninja_generated_files: Optional[Set[str]] = None) -> FileType:
+    """Classify file into one of four types using known project root and ninja data.
+
+    Classification priority (first match wins):
+    1. SYSTEM - System headers (/usr/, /lib/, /opt/)
+    2. GENERATED - Files that are outputs in build.ninja (or pattern-based if ninja data unavailable)
+    3. THIRD_PARTY - External libraries (outside project, not system)
+    4. PROJECT - User-written project code (default)
+
+    Args:
+        path: File path to classify
+        project_root: Project root directory (computed from source files)
+        ninja_generated_files: Set of files that are build outputs (from build.ninja)
+
+    Returns:
+        FileType enum value
+    """
+    # Priority 1: System headers (highest priority)
+    if is_system_header(path):
+        return FileType.SYSTEM
+
+    # Priority 2: Generated files (use ninja data if available, otherwise fall back to patterns)
+    if ninja_generated_files is not None:
+        # Use actual build.ninja data - most accurate
+        real_path = os.path.realpath(path)
+        if real_path in ninja_generated_files or path in ninja_generated_files:
+            return FileType.GENERATED
+    else:
+        # Fall back to pattern-based detection
+        if is_generated_file(path):
+            return FileType.GENERATED
+
+    # Priority 3: Third-party files (outside project root)
+    real_path = os.path.realpath(path)
+    real_project_root = os.path.realpath(project_root)
+    if not real_path.startswith(real_project_root + os.sep) and real_path != real_project_root:
+        return FileType.THIRD_PARTY
+
+    # Default: Project files
+    return FileType.PROJECT
 
 
 @dataclass
@@ -66,12 +347,14 @@ class IncludeGraphScanResult:
         include_graph: Mapping of headers to the headers they directly include
         all_headers: Set of all discovered project headers
         scan_time: Time taken to run clang-scan-deps (in seconds)
+        file_types: Classification of each discovered file (SYSTEM, THIRD_PARTY, GENERATED, PROJECT)
     """
 
     source_to_deps: Dict[str, List[str]]
     include_graph: DefaultDict[str, Set[str]]
     all_headers: Set[str]
     scan_time: float
+    file_types: Dict[str, FileType]
 
     def to_tuple(self) -> Tuple[Dict[str, List[str]], DefaultDict[str, Set[str]], Set[str], float]:
         """Convert to tuple for backward compatibility.
@@ -128,76 +411,440 @@ def is_system_header(filepath: str) -> bool:
     return False
 
 
-def sanitize_compile_command(command: str) -> str:
+def set_debug_sanitization(enabled: bool) -> None:
+    """Enable or disable debug output for compile command sanitization.
+
+    Args:
+        enabled: If True, sanitization will print detailed debug information
+    """
+    global _DEBUG_SANITIZATION
+    _DEBUG_SANITIZATION = enabled
+
+
+def _is_build_wrapper(arg: str) -> bool:
+    """Check if argument is a build wrapper tool.
+
+    Args:
+        arg: Command argument to check
+
+    Returns:
+        True if argument is a build wrapper (ccache, distcc, etc.)
+    """
+    arg_lower = arg.lower()
+    for wrapper in BUILD_WRAPPERS:
+        if arg_lower == wrapper or arg_lower.endswith(f"/{wrapper}"):
+            return True
+    return False
+
+
+def _is_valid_compiler_flag(arg: str) -> bool:
+    """Check if argument is a valid compiler flag for clang-scan-deps.
+
+    Uses whitelist approach - only known compiler flags are accepted.
+
+    Args:
+        arg: Command argument to check
+
+    Returns:
+        True if argument is a valid compiler flag
+    """
+    # Check against whitelist of valid prefixes
+    for prefix in VALID_FLAG_PREFIXES:
+        if arg.startswith(prefix):
+            return True
+
+    # Allow response files to be explicitly handled
+    if arg.startswith("@"):
+        return False
+
+    return False
+
+
+def _is_compiler_executable(arg: str) -> bool:
+    """Check if argument is a compiler executable.
+
+    Uses basename matching to avoid false positives from substring matches
+    (e.g., 'cl' in 'include', 'c++' in paths).
+
+    Args:
+        arg: Command argument to check
+
+    Returns:
+        True if argument looks like a compiler
+    """
+    # Extract basename to avoid substring false positives
+    basename = os.path.basename(arg)
+    for compiler_name in COMPILER_NAMES:
+        # Match compiler name at end of basename (handles /usr/bin/g++ and g++)
+        if basename == compiler_name or basename.endswith("/" + compiler_name):
+            return True
+    return False
+
+
+def _is_source_file(arg: str) -> bool:
+    """Check if argument is a source file.
+
+    Args:
+        arg: Command argument to check
+
+    Returns:
+        True if argument is a valid source file
+    """
+    return is_valid_source_file(arg)
+
+
+def _should_skip_flag_with_argument(flag: str) -> bool:
+    """Check if flag takes an argument that should both be skipped.
+
+    Args:
+        flag: Flag to check
+
+    Returns:
+        True if this flag and its argument should be removed
+    """
+    return flag in OUTPUT_FLAGS
+
+
+def _flag_takes_separate_argument(flag: str) -> bool:
+    """Check if flag takes a separate argument that should be kept.
+
+    Flags like -I, -D, -isystem can be specified as:
+    - Combined: -I/path or -DFOO
+    - Separate: -I /path or -D FOO
+
+    Args:
+        flag: Flag to check
+
+    Returns:
+        True if this flag takes a separate argument
+    """
+    # Flags that take arguments (when not combined with =)
+    separate_arg_flags = ("-I", "-D", "-U", "-isystem", "-iquote", "-include", "-isysroot", "-iprefix", "-iwithprefix", "-idirafter", "-x", "/I", "/D")
+    return flag in separate_arg_flags
+
+
+def _is_suspicious_bare_argument(arg: str) -> bool:
+    """Check if argument is suspicious (likely misplaced config value).
+
+    Detects bare arguments like 'sloppiness=value' that aren't compiler flags.
+
+    Args:
+        arg: Command argument to check
+
+    Returns:
+        True if argument looks suspicious
+    """
+    # Bare key=value without - or / prefix is suspicious
+    if "=" in arg and not arg.startswith("-") and not arg.startswith("/"):
+        # Not a valid flag, likely env var value or config
+        return True
+    return False
+
+
+def _translate_compiler_to_clang(compiler_path: str) -> str:
+    """Translate compiler executable to clang equivalent for clang-scan-deps.
+
+    clang-scan-deps expects clang-compatible compilers. This function translates:
+    - gcc/g++ → clang/clang++
+    - MSVC cl.exe → clang-cl
+    - clang/clang++ → unchanged
+
+    Args:
+        compiler_path: Original compiler executable path or name
+
+    Returns:
+        Clang-compatible compiler name suitable for clang-scan-deps
+
+    Examples:
+        >>> _translate_compiler_to_clang("/usr/bin/g++")
+        'clang++'
+        >>> _translate_compiler_to_clang("gcc")
+        'clang'
+        >>> _translate_compiler_to_clang("/usr/bin/clang++")
+        '/usr/bin/clang++'
+        >>> _translate_compiler_to_clang("cl.exe")
+        'clang-cl'
+    """
+    compiler_basename = os.path.basename(compiler_path)
+
+    # Check if it's already clang - keep the full path
+    if "clang" in compiler_basename.lower():
+        return compiler_path
+
+    # Translate GCC to Clang (use basename only)
+    if "g++" in compiler_basename or "c++" in compiler_basename:
+        return "clang++"
+    if "gcc" in compiler_basename:
+        return "clang"
+
+    # Translate MSVC to clang-cl
+    if compiler_basename.lower() in ("cl.exe", "cl"):
+        return "clang-cl"
+
+    # If we don't recognize it, try clang++ as default for safety
+    logger.debug("Unknown compiler '%s', defaulting to clang++", compiler_basename)
+    return "clang++"
+
+
+def sanitize_compile_command(command: str, debug: bool = False) -> str:
     """Sanitize compile command to remove problematic arguments for clang-scan-deps.
 
+    Uses whitelist approach: only keeps preprocessing-relevant compiler flags that
+    clang-scan-deps actually needs. Removes build wrappers, output specifications,
+    optimization flags, warnings, and other arguments not needed for dependency scanning.
+
+    clang-scan-deps minimal requirements:
+    - Include paths (where to find headers)
+    - Preprocessor macros (defines/undefines)
+    - Language mode (C/C++ standard)
+    - Source file and compilation control flags
+
     Removes:
-    - ccache wrapper and environment variables
-    - linker-specific flags that clang-scan-deps doesn't understand
-    - Response files (@file) that may cause issues
+    - Build wrappers (ccache, distcc, icecc, sccache)
+    - Environment variable assignments and bare values
+    - Output file specifications (-o, -MF, -MT, -MQ)
+    - Dependency generation flags (-MD, -MMD, -M, -MM)
+    - Linker-specific flags (-Wl,, -Xlinker)
+    - Response files (@file) that may contain problematic options
+    - Suspicious bare arguments (key=value without - prefix)
+    - Warning flags (-W, /W) - not needed for preprocessing
+    - Optimization flags (-O, -g, /O) - not needed for preprocessing
+    - Feature/codegen flags (-f, -m, -march=, -mtune=) - not needed for preprocessing
+
+    Keeps (preprocessing-relevant only):
+    - Compiler executable (translated to clang/clang++/clang-cl)
+    - Source file
+    - Include paths (-I, -isystem, -iquote, -idirafter, --sysroot=, /I)
+    - Preprocessor defines (-D, -U, /D)
+    - Language standard (-std=, /std:)
+    - Compilation control (-c, -x, -include, -pthread, --target=, /c)
 
     Args:
         command: Original compile command string
+        debug: If True, log detailed information (deprecated - use set_debug_sanitization() instead)
 
     Returns:
         Sanitized command string suitable for clang-scan-deps
+
+    Raises:
+        ValueError: If command is empty, or if no compiler or source file found after sanitization
     """
+    # Validate input
+    if not command or not command.strip():
+        raise ValueError("Empty or whitespace-only compile command")
+
     try:
         parts = shlex.split(command)
-    except ValueError:
-        # If we can't parse it, return as-is
-        logger.debug("Failed to parse command for sanitization: %s", command[:100])
-        return command
+    except ValueError as e:
+        raise ValueError(f"Failed to parse compile command: {e}")
+
+    # Track what gets removed for debug output
+    removed_items: dict[str, list[str]] = {
+        "build_wrappers": [],
+        "compiler_translation": [],
+        "suspicious_args": [],
+        "response_files": [],
+        "output_flags": [],
+        "dependency_flags": [],
+        "linker_flags": [],
+        "unknown_args": [],
+    }
 
     sanitized_parts = []
     skip_next = False
     compiler_found = False
+    source_file_found = False
 
-    # List of environment variable patterns that cause issues
-    problematic_env_patterns = ["CCACHE_", "CC_", "CXX_"]
+    i = 0
+    while i < len(parts):
+        part = parts[i]
 
-    # List of flags that should be removed entirely
-    problematic_flags = ["-Wl,", "-Xlinker", "--linker-option"]  # Linker flags
-
-    for i, part in enumerate(parts):
         if skip_next:
             skip_next = False
+            i += 1
             continue
 
-        # Skip environment variable assignments (KEY=VALUE format)
-        if "=" in part and not part.startswith("-"):
-            var_name = part.split("=", 1)[0]
-            if any(var_name.startswith(pattern) for pattern in problematic_env_patterns):
-                continue
-
-        # Skip ccache wrapper
-        if part == "ccache" or part.endswith("/ccache"):
+        # Skip build wrappers
+        if _is_build_wrapper(part):
+            removed_items["build_wrappers"].append(part)
+            logger.debug("Removing build wrapper: %s", part)
+            i += 1
             continue
+
+        # Skip environment variable assignments (KEY=VALUE format at start)
+        if "=" in part and not part.startswith("-") and not part.startswith("/"):
+            # Check if it's a path-like thing (contains /) or truly an env var
+            if "/" not in part or "=" in part.split("/")[0]:
+                # Skip suspicious bare arguments
+                if _is_suspicious_bare_argument(part):
+                    removed_items["suspicious_args"].append(part)
+                    logger.debug("Removing suspicious bare argument: %s", part)
+                    i += 1
+                    continue
 
         # Skip response files (they may contain ccache options)
         if part.startswith("@"):
+            removed_items["response_files"].append(part)
+            logger.debug("Removing response file: %s", part)
+            i += 1
             continue
 
-        # Skip problematic linker flags
-        if any(part.startswith(flag) for flag in problematic_flags):
+        # Skip output flags and their arguments
+        if part in OUTPUT_FLAGS:
+            next_arg = parts[i + 1] if i + 1 < len(parts) else "<missing>"
+            removed_items["output_flags"].append(f"{part} {next_arg}")
+            logger.debug("Removing output flag: %s", part)
+            # Skip this flag and next argument
+            i += 2
+            continue
+
+        # Skip dependency generation flags
+        if part in DEPENDENCY_FLAGS:
+            removed_items["dependency_flags"].append(part)
+            logger.debug("Removing dependency flag: %s", part)
+            i += 1
+            continue
+
+        # Skip linker flags
+        if part.startswith("-Wl,") or part.startswith("--linker-option"):
+            removed_items["linker_flags"].append(part)
+            logger.debug("Removing linker flag: %s", part)
+            i += 1
             continue
 
         # Skip -Xlinker and its argument
-        if part == "-Xlinker" and i + 1 < len(parts):
-            skip_next = True
+        if part == "-Xlinker":
+            next_arg = parts[i + 1] if i + 1 < len(parts) else "<missing>"
+            removed_items["linker_flags"].append(f"-Xlinker {next_arg}")
+            logger.debug("Removing -Xlinker and its argument")
+            i += 2  # Skip both -Xlinker and its argument
             continue
 
-        # Track if we found the compiler
-        if not compiler_found and any(compiler in part for compiler in COMPILER_NAMES):
+        # Check if it's the compiler executable
+        if _is_compiler_executable(part):
             compiler_found = True
+            # Translate to clang-compatible compiler for clang-scan-deps
+            translated = _translate_compiler_to_clang(part)
+            sanitized_parts.append(translated)
+            if translated != part:
+                removed_items["compiler_translation"].append(f"{part} → {translated}")
+                logger.debug("Translated compiler: %s → %s", part, translated)
+            i += 1
+            continue
 
-        sanitized_parts.append(part)
+        # Check if it's the source file
+        if _is_source_file(part):
+            source_file_found = True
+            sanitized_parts.append(part)
+            i += 1
+            continue
 
-    # If no compiler was found in the sanitized command, log a warning
-    if not compiler_found and sanitized_parts:
-        logger.debug("Warning: No compiler found in sanitized command")
+        # Check if it's a valid compiler flag (whitelist)
+        if _is_valid_compiler_flag(part):
+            sanitized_parts.append(part)
+            # Check if this flag takes a separate argument
+            if _flag_takes_separate_argument(part) and i + 1 < len(parts):
+                # Keep the next argument as well
+                next_arg = parts[i + 1]
+                sanitized_parts.append(next_arg)
+                i += 2
+            else:
+                i += 1
+            continue
 
-    return shlex.join(sanitized_parts) if sanitized_parts else command
+        # Everything else is skipped (unknown/unsafe)
+        removed_items["unknown_args"].append(part)
+        logger.debug("Removing unknown/unsafe argument: %s", part)
+        i += 1
+
+    # Print debug output if requested
+    if debug or _DEBUG_SANITIZATION:
+        from lib.color_utils import print_info, print_warning
+
+        print_info("\n" + "=" * 80)
+        print_info("COMPILE COMMAND SANITIZATION DEBUG")
+        print_info("=" * 80)
+
+        print_info("\n📋 ORIGINAL COMMAND:")
+        print_info(f"  {command}")
+
+        total_removed = sum(len(items) for items in removed_items.values())
+        if total_removed > 0:
+            print_warning(f"\n🗑️  REMOVED {total_removed} ITEMS:")
+
+            if removed_items["build_wrappers"]:
+                print_warning(f"  Build Wrappers ({len(removed_items['build_wrappers'])}):")
+                for item in removed_items["build_wrappers"]:
+                    print_warning(f"    - {item}")
+
+            if removed_items["compiler_translation"]:
+                print_info(f"  Compiler Translation ({len(removed_items['compiler_translation'])}):")
+                for item in removed_items["compiler_translation"]:
+                    print_info(f"    - {item}")
+
+            if removed_items["suspicious_args"]:
+                print_warning(f"  Suspicious Arguments ({len(removed_items['suspicious_args'])}):")
+                for item in removed_items["suspicious_args"]:
+                    print_warning(f"    - {item}")
+
+            if removed_items["response_files"]:
+                print_warning(f"  Response Files ({len(removed_items['response_files'])}):")
+                for item in removed_items["response_files"]:
+                    print_warning(f"    - {item}")
+
+            if removed_items["output_flags"]:
+                print_warning(f"  Output Flags ({len(removed_items['output_flags'])}):")
+                for item in removed_items["output_flags"]:
+                    print_warning(f"    - {item}")
+
+            if removed_items["dependency_flags"]:
+                print_warning(f"  Dependency Flags ({len(removed_items['dependency_flags'])}):")
+                for item in removed_items["dependency_flags"]:
+                    print_warning(f"    - {item}")
+
+            if removed_items["linker_flags"]:
+                print_warning(f"  Linker Flags ({len(removed_items['linker_flags'])}):")
+                for item in removed_items["linker_flags"]:
+                    print_warning(f"    - {item}")
+
+            if removed_items["unknown_args"]:
+                print_warning(f"  Unknown/Unsafe ({len(removed_items['unknown_args'])}):")
+                for item in removed_items["unknown_args"]:
+                    print_warning(f"    - {item}")
+        else:
+            print_info("\n✅ No items removed (command was already clean)")
+
+        sanitized_command = shlex.join(sanitized_parts)
+        print_info(f"\n✨ SANITIZED COMMAND:")
+        print_info(f"  {sanitized_command}")
+
+        print_info(f"\n📊 SUMMARY:")
+        print_info(f"  Original parts: {len(parts)}")
+        print_info(f"  Kept parts: {len(sanitized_parts)}")
+        print_info(f"  Removed parts: {total_removed}")
+        print_info(f"  Compiler found: {'✓' if compiler_found else '✗'}")
+        print_info(f"  Source file found: {'✓' if source_file_found else '✗'}")
+        print_info("=" * 80 + "\n")
+
+    # Validation: ensure we have essential components
+    if not sanitized_parts:
+        raise ValueError(f"Sanitization removed all arguments. Original command: {command[:200]}")
+
+    if not compiler_found:
+        raise ValueError(
+            f"No compiler found after sanitization. Original command: {command[:200]}\n"
+            f"Sanitized to: {shlex.join(sanitized_parts)}\n"
+            f"Check for build wrapper contamination (ccache, distcc, etc.)"
+        )
+
+    if not source_file_found:
+        raise ValueError(
+            f"No source file found after sanitization. Original command: {command[:200]}\n"
+            f"Sanitized to: {shlex.join(sanitized_parts)}\n"
+            f"Ensure command contains a .cpp/.c source file"
+        )
+
+    return shlex.join(sanitized_parts)
 
 
 def create_filtered_compile_commands(build_dir: str) -> str:
@@ -270,7 +917,11 @@ def create_filtered_compile_commands(build_dir: str) -> str:
         file = entry.get("file", "")
         if is_valid_source_file(file) and " -c " in cmd:
             # Sanitize the command to remove ccache and other problematic arguments
-            sanitized_cmd = sanitize_compile_command(cmd)
+            try:
+                sanitized_cmd = sanitize_compile_command(cmd)
+            except ValueError as e:
+                logger.warning("Skipping entry due to sanitization failure for %s: %s", file, e)
+                continue
             # Create a new entry with the sanitized command
             sanitized_entry = entry.copy()
             sanitized_entry["command"] = sanitized_cmd
@@ -593,8 +1244,10 @@ def parse_clang_scan_deps_output(output: str, all_headers: Set[str]) -> Dict[str
     current_deps: List[str] = []
 
     for line in output.splitlines():
-        # Check if this is a target line (ends with :)
-        if ":" in line and not line.strip().startswith("/"):
+        # Check if this is a target line (has colon and is not indented)
+        # Target lines: /path/to/file.o: \
+        # Dependency lines:   /path/to/dep.cpp \
+        if ":" in line and not line.startswith((" ", "\t")):
             # Save previous target if exists
             if current_target and current_deps:
                 source_to_deps[current_target] = current_deps
@@ -785,8 +1438,10 @@ def build_include_graph(build_dir: str, verbose: bool = True) -> IncludeGraphSca
         current_deps: List[str] = []
 
         for line in output.splitlines():
-            # Check if this is a target line (ends with :)
-            if ":" in line and not line.strip().startswith("/"):
+            # Check if this is a target line (has colon and is not indented)
+            # Target lines: /path/to/file.o: \
+            # Dependency lines:   /path/to/dep.cpp \
+            if ":" in line and not line.startswith((" ", "\t")):
                 # This is a target line
                 parts = line.split(":", 1)
                 # Save previous target if exists
@@ -799,19 +1454,32 @@ def build_include_graph(build_dir: str, verbose: bool = True) -> IncludeGraphSca
                 if len(parts) > 1:
                     remainder = parts[1].strip()
                     if remainder and remainder != "\\":
-                        current_deps.append(remainder.rstrip("\\").strip())
+                        # Split by spaces to handle multiple deps on one line
+                        deps_on_line = remainder.rstrip("\\").strip().split()
+                        current_deps.extend(deps_on_line)
             else:
                 # This is a dependency line
                 line = line.strip()
                 if line and line != "\\":
-                    # Remove trailing backslash and whitespace
-                    dep = line.rstrip("\\").strip()
-                    if dep:
-                        current_deps.append(dep)
+                    # Remove trailing backslash and split by spaces
+                    deps_on_line = line.rstrip("\\").strip().split()
+                    current_deps.extend(deps_on_line)
 
         # Save last target
         if current_target and current_deps:
             source_to_deps[current_target] = current_deps
+
+        # Map targets back to source files for clearer output
+        # The first dependency is typically the source file itself
+        remapped_source_to_deps = {}
+        for target, deps in source_to_deps.items():
+            if deps and is_valid_source_file(deps[0]):
+                # Use the source file (first dep) as the key instead of the .o file
+                remapped_source_to_deps[deps[0]] = deps
+            else:
+                # Fallback to original target if we can't identify the source
+                remapped_source_to_deps[target] = deps
+        source_to_deps = remapped_source_to_deps
 
         # Collect all unique project headers from the dependency lists
         for deps in source_to_deps.values():
@@ -828,13 +1496,59 @@ def build_include_graph(build_dir: str, verbose: bool = True) -> IncludeGraphSca
 
         total_edges = sum(len(deps) for deps in header_to_direct_includes.values())
 
+        # Classify all discovered files (headers + sources) at discovery time
+        logger.info("Classifying files by type (system/third-party/generated/project)...")
+
+        # Get actually generated files from build.ninja
+        from lib.ninja_utils import parse_ninja_generated_files
+
+        build_ninja = os.path.join(build_dir, "build.ninja")
+        if os.path.exists(build_ninja):
+            _, generated_file_info = parse_ninja_generated_files(build_ninja)
+            # Get set of output files (actually generated)
+            ninja_generated_files = set(generated_file_info.keys())
+            logger.debug("Found %d generated files from build.ninja", len(ninja_generated_files))
+        else:
+            ninja_generated_files = set()
+            logger.warning("build.ninja not found, falling back to pattern-based generated file detection")
+
+        # Compute project root from source file paths in compile_commands.json
+        # Include both source files and headers to get accurate project root
+        source_files = extract_source_files_from_compile_commands(filtered_db)
+        all_project_files = source_files + list(all_headers)
+        project_root = find_project_root_from_sources(all_project_files)
+        logger.debug("Detected project root: %s (from %d source files and %d headers)", project_root, len(source_files), len(all_headers))
+
+        all_files: Set[str] = set(all_headers)
+        all_files.update(source_to_deps.keys())  # Add source files
+
+        file_types: Dict[str, FileType] = {}
+        for file_path in all_files:
+            file_types[file_path] = classify_file_with_project_root(file_path, project_root, ninja_generated_files)
+
+        # Log classification statistics
+        type_counts = {FileType.SYSTEM: 0, FileType.THIRD_PARTY: 0, FileType.GENERATED: 0, FileType.PROJECT: 0}
+        for file_type in file_types.values():
+            type_counts[file_type] += 1
+
+        logger.info(
+            "Classified %d files: %d system, %d third-party, %d generated, %d project",
+            len(file_types),
+            type_counts[FileType.SYSTEM],
+            type_counts[FileType.THIRD_PARTY],
+            type_counts[FileType.GENERATED],
+            type_counts[FileType.PROJECT],
+        )
+
         if verbose:
             print_success(f"Scanned {len(source_to_deps)} source files in {elapsed:.2f}s")
             print_info("Building include graph from clang-scan-deps output...")
             print_highlight(f"Found {len(all_headers)} unique project headers")
             print_success(f"Built dependency graph with {len(all_headers)} headers and {total_edges} dependencies")
 
-        return IncludeGraphScanResult(source_to_deps=source_to_deps, include_graph=header_to_direct_includes, all_headers=all_headers, scan_time=elapsed)
+        return IncludeGraphScanResult(
+            source_to_deps=source_to_deps, include_graph=header_to_direct_includes, all_headers=all_headers, scan_time=elapsed, file_types=file_types
+        )
     except Exception as e:
         logger.error("Error building include graph: %s", e)
         raise

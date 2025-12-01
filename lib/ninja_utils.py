@@ -657,12 +657,15 @@ def get_relative_build_path(full_path: str, build_dir: str) -> str:
         return os.path.basename(full_path)
 
 
-def validate_and_prepare_build_dir(build_dir: str, verbose: bool = False) -> Tuple[str, str]:
+def validate_and_prepare_build_dir(build_dir: str, verbose: bool = False, skip_generated_files_check: bool = False) -> Tuple[str, str]:
     """Validate build directory and ensure compile_commands.json exists.
 
     Args:
         build_dir: Path to ninja build directory
         verbose: Whether to print progress messages
+        skip_generated_files_check: If True, skip generated file cache validation and ninja builds.
+            Use this for tools that only analyze ninja's build graph (e.g., buildCheckSummary, buildCheckImpact)
+            and don't need clang-scan-deps or generated file tracking. Default False for backward compatibility.
 
     Returns:
         Tuple of (validated build_dir path, compile_commands.json path)
@@ -686,7 +689,29 @@ def validate_and_prepare_build_dir(build_dir: str, verbose: bool = False) -> Tup
     except (ValueError, OSError) as exc:
         raise ValueError(f"Path traversal detected: {COMPILE_COMMANDS_JSON}") from exc
 
-    # Parse build.ninja to identify generated files and their dependencies
+    # Fast path: skip generated file validation for tools that only need ninja's build graph
+    if skip_generated_files_check:
+        # Just ensure compile_commands.json exists, generate if needed
+        if not os.path.exists(compile_commands) or (os.path.exists(build_ninja) and os.path.getmtime(build_ninja) > os.path.getmtime(compile_commands)):
+            logger.info("Generating compile_commands.json...")
+            if verbose:
+                print(f"{Colors.CYAN}Generating compile_commands.json...{Colors.RESET}")
+            try:
+                result = subprocess.run(["ninja", "-t", "compdb"], capture_output=True, text=True, cwd=build_dir, check=True)
+                with open(compile_commands, "w", encoding="utf-8") as f:
+                    f.write(result.stdout)
+                logger.debug("Generated: %s", compile_commands)
+            except subprocess.CalledProcessError as e:
+                raise RuntimeError(f"Failed to generate compile_commands.json: {e.stderr}") from e
+            except IOError as e:
+                raise IOError(f"Failed to write compile_commands.json: {e}") from e
+
+        if not os.path.isfile(compile_commands):
+            raise ValueError(f"compile_commands.json not found in {build_dir}")
+
+        return build_dir, compile_commands
+
+    # Full path: parse build.ninja to identify generated files and their dependencies
     all_tracked_files, output_to_info = parse_ninja_generated_files(build_ninja)
 
     # Load cache of previous generated file hashes
@@ -854,7 +879,7 @@ def validate_and_prepare_build_dir(build_dir: str, verbose: bool = False) -> Tup
     return build_dir, compile_commands
 
 
-def validate_build_directory_with_feedback(build_directory: str, verbose: bool = False) -> Tuple[str, str]:
+def validate_build_directory_with_feedback(build_directory: str, verbose: bool = False, skip_generated_files_check: bool = False) -> Tuple[str, str]:
     """Validate and prepare build directory with user-friendly error messages.
 
     This is a wrapper around validate_and_prepare_build_dir that provides
@@ -863,6 +888,9 @@ def validate_build_directory_with_feedback(build_directory: str, verbose: bool =
     Args:
         build_directory: Path to build directory to validate
         verbose: Whether to print verbose messages
+        skip_generated_files_check: If True, skip generated file cache validation.
+            Use this for tools that only analyze ninja's build graph and don't need
+            clang-scan-deps or generated file tracking. Default False.
 
     Returns:
         Tuple of (validated build_dir path, compile_commands.json path)
@@ -883,7 +911,7 @@ def validate_build_directory_with_feedback(build_directory: str, verbose: bool =
 
     # Validate and prepare build directory
     try:
-        build_dir, compile_commands = validate_and_prepare_build_dir(build_directory, verbose=verbose)
+        build_dir, compile_commands = validate_and_prepare_build_dir(build_directory, verbose=verbose, skip_generated_files_check=skip_generated_files_check)
         logger.info("Using build directory: %s", build_dir)
         return build_dir, compile_commands
     except (ValueError, RuntimeError) as e:

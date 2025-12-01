@@ -40,7 +40,7 @@ import socket
 import logging
 import subprocess
 from datetime import datetime
-from typing import Dict, Set, List, Any, Optional, DefaultDict, Tuple
+from typing import Dict, Set, List, Any, Optional, DefaultDict, Tuple, TypedDict
 from collections import defaultdict
 
 from networkx.readwrite import json_graph
@@ -48,11 +48,41 @@ from networkx.readwrite import json_graph
 from .dsm_types import DSMAnalysisResults, MatrixStatistics
 from .graph_utils import DSMMetrics
 from .color_utils import print_success
+from .clang_utils import FileType
+from .constants import BuildCheckError, EXIT_INVALID_ARGS
 
 logger = logging.getLogger(__name__)
 
 # Current schema version - increment when format changes
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
+
+
+class FileRecord(TypedDict):
+    """File record with path and classification type.
+
+    Used in baseline serialization (v1.2+) to store file classifications.
+
+    Attributes:
+        path: Absolute file path
+        type: FileType as integer (SYSTEM=1, THIRD_PARTY=2, GENERATED=3, PROJECT=4)
+    """
+
+    path: str
+    type: int
+
+
+class SchemaVersionError(BuildCheckError):
+    """Baseline schema version is incompatible.
+
+    Raised when attempting to load a baseline with an outdated schema version.
+    No automatic migration is supported - user must regenerate the baseline.
+    """
+
+    def __init__(self, version: str):
+        super().__init__(
+            f"Baseline schema v{version} is outdated. " f"Please regenerate baseline with current buildCheckDSM.py (v{SCHEMA_VERSION}+)",
+            exit_code=EXIT_INVALID_ARGS,
+        )
 
 
 def _get_git_commit() -> str:
@@ -93,7 +123,14 @@ def _serialize_dsm_metrics(metrics: DSMMetrics) -> Dict[str, Any]:
     Returns:
         Dictionary representation with sorted keys
     """
-    return {"coupling": metrics.coupling, "fan_in": metrics.fan_in, "fan_out": metrics.fan_out, "stability": metrics.stability}
+    return {
+        "coupling": metrics.coupling,
+        "fan_in": metrics.fan_in,
+        "fan_out": metrics.fan_out,
+        "fan_out_external": metrics.fan_out_external,
+        "fan_out_project": metrics.fan_out_project,
+        "stability": metrics.stability,
+    }
 
 
 def _serialize_matrix_statistics(stats: MatrixStatistics) -> Dict[str, Any]:
@@ -118,22 +155,25 @@ def _serialize_matrix_statistics(stats: MatrixStatistics) -> Dict[str, Any]:
 
 def save_dsm_results(
     results: DSMAnalysisResults,
-    unfiltered_headers: Set[str],
+    all_files: Set[str],
     unfiltered_include_graph: DefaultDict[str, Set[str]],
+    file_types: Dict[str, FileType],
     filename: str,
     build_directory: str,
     filter_pattern: Optional[str] = None,
     exclude_patterns: Optional[List[str]] = None,
 ) -> None:
-    """Save DSM analysis results to compressed JSON file.
+    """Save DSM analysis results to compressed JSON file (schema v1.2).
 
-    Saves the UNFILTERED header set and include graph to allow applying different
-    filters when loading the baseline. This makes baselines more flexible and reusable.
+    Saves the UNFILTERED file set with classifications and include graph to allow
+    applying different filters when loading the baseline. This makes baselines more
+    flexible and reusable.
 
     Args:
         results: DSMAnalysisResults to save (computed from filtered headers)
-        unfiltered_headers: Complete set of headers before any filtering
+        all_files: Complete set of files (headers + sources) before any filtering
         unfiltered_include_graph: Complete include graph before any filtering
+        file_types: Pre-computed file type classifications for all files
         filename: Output filename (will be gzip compressed)
         build_directory: Absolute path to build directory
         filter_pattern: Optional filter pattern that was applied (saved for reference)
@@ -152,7 +192,7 @@ def save_dsm_results(
         "git_commit": _get_git_commit(),
         "hostname": _get_hostname(),
         "timestamp": datetime.now().isoformat(),
-        "unfiltered_header_count": len(unfiltered_headers),
+        "unfiltered_file_count": len(all_files),
         "filtered_header_count": len(results.sorted_headers),
     }
 
@@ -172,8 +212,9 @@ def save_dsm_results(
     # Serialize layers (already lists, just ensure determinism)
     layers_list = [sorted(layer) for layer in results.layers]
 
-    # Serialize unfiltered data (for re-applying filters on load)
-    unfiltered_headers_list = sorted(list(unfiltered_headers))
+    # Serialize unfiltered data with file classifications (schema v1.2)
+    # FileRecord format: {"path": str, "type": int}
+    files_list: List[FileRecord] = [{"path": p, "type": int(file_types[p])} for p in sorted(all_files)]
     unfiltered_include_graph_dict = {header: sorted(list(deps)) for header, deps in sorted(unfiltered_include_graph.items())}
 
     # Build complete data structure with sorted keys
@@ -182,6 +223,7 @@ def save_dsm_results(
         "_schema_version": SCHEMA_VERSION,
         "cycles": cycles_list,
         "feedback_edges": sorted([list(edge) for edge in results.feedback_edges]),
+        "files": files_list,
         "graph": graph_data,
         "has_cycles": results.has_cycles,
         "header_to_headers": {header: sorted(list(deps)) for header, deps in sorted(results.header_to_headers.items())},
@@ -193,7 +235,6 @@ def save_dsm_results(
         "reverse_deps": {header: sorted(list(deps)) for header, deps in sorted(results.reverse_deps.items())},
         "sorted_headers": results.sorted_headers,
         "stats": _serialize_matrix_statistics(results.stats),
-        "unfiltered_headers": unfiltered_headers_list,
         "unfiltered_include_graph": unfiltered_include_graph_dict,
     }
 
@@ -221,7 +262,14 @@ def _deserialize_dsm_metrics(data: Dict[str, Any]) -> DSMMetrics:
     Returns:
         DSMMetrics instance
     """
-    return DSMMetrics(fan_out=data["fan_out"], fan_in=data["fan_in"], coupling=data["coupling"], stability=data["stability"])
+    return DSMMetrics(
+        fan_out=data["fan_out"],
+        fan_in=data["fan_in"],
+        fan_out_project=data["fan_out_project"],
+        fan_out_external=data["fan_out_external"],
+        coupling=data["coupling"],
+        stability=data["stability"],
+    )
 
 
 def _deserialize_matrix_statistics(data: Dict[str, Any]) -> MatrixStatistics:
@@ -244,11 +292,13 @@ def _deserialize_matrix_statistics(data: Dict[str, Any]) -> MatrixStatistics:
     )
 
 
-def load_dsm_results(filename: str, current_build_directory: str, project_root: str) -> Tuple[Set[str], DefaultDict[str, Set[str]]]:
+def load_dsm_results(filename: str, current_build_directory: str, project_root: str) -> Tuple[Set[str], DefaultDict[str, Set[str]], Dict[str, FileType]]:
     """Load DSM analysis results from compressed JSON file (returns unfiltered data).
 
     Loads the unfiltered baseline data for re-filtering by caller. This ensures
     100% identical filtering logic is applied to both current and baseline analysis.
+
+    Schema v1.2+ includes file type classifications pre-computed at baseline creation.
 
     Args:
         filename: Input filename (gzip compressed JSON)
@@ -256,10 +306,14 @@ def load_dsm_results(filename: str, current_build_directory: str, project_root: 
         project_root: Project root directory
 
     Returns:
-        Tuple of (unfiltered_headers, unfiltered_include_graph)
+        Tuple of (unfiltered_headers, unfiltered_include_graph, file_types)
+        - unfiltered_headers: Set of all headers before filtering
+        - unfiltered_include_graph: Include graph before filtering
+        - file_types: Pre-computed file classifications
 
     Raises:
-        ValueError: If schema version mismatches or validation fails
+        SchemaVersionError: If schema version is outdated (< 1.2)
+        ValueError: If validation fails
         IOError: If file cannot be read
     """
     logger.info("Loading DSM results from %s", filename)
@@ -274,14 +328,10 @@ def load_dsm_results(filename: str, current_build_directory: str, project_root: 
         logger.error("Invalid JSON in DSM file: %s", e)
         raise ValueError(f"Invalid JSON in {filename}: {e}") from e
 
-    # Validate schema version (strict check)
+    # Validate schema version (strict check - no backward compatibility)
     file_version = data.get("_schema_version", "unknown")
     if file_version != SCHEMA_VERSION:
-        raise ValueError(
-            f"Schema version mismatch: file has version {file_version}, "
-            f"but this tool requires version {SCHEMA_VERSION}. "
-            f"Please regenerate the baseline with the current version of buildCheckDSM.py"
-        )
+        raise SchemaVersionError(file_version)
 
     # Extract and validate metadata
     metadata = data.get("metadata", {})
@@ -305,9 +355,23 @@ def load_dsm_results(filename: str, current_build_directory: str, project_root: 
     logger.debug("Baseline timestamp: %s", metadata.get("timestamp", "unknown"))
     logger.debug("Baseline git commit: %s", metadata.get("git_commit", "unknown"))
 
-    # Load unfiltered data
-    unfiltered_headers = set(data.get("unfiltered_headers", data["sorted_headers"]))
-    unfiltered_include_graph_data = data.get("unfiltered_include_graph", data["header_to_headers"])
+    # Load unfiltered data with file classifications (schema v1.2)
+    files_list: List[FileRecord] = data["files"]
+
+    # Extract headers (filter out source files) and file_types
+    unfiltered_headers: Set[str] = set()
+    file_types: Dict[str, FileType] = {}
+
+    for file_record in files_list:
+        path = file_record["path"]
+        file_type = FileType(file_record["type"])
+        file_types[path] = file_type
+
+        # Add to headers if it's a header file (has header extension)
+        if any(path.endswith(ext) for ext in (".h", ".hpp", ".hxx", ".hh")):
+            unfiltered_headers.add(path)
+
+    unfiltered_include_graph_data = data["unfiltered_include_graph"]
 
     # Rebuild include graph
     unfiltered_include_graph: DefaultDict[str, Set[str]] = defaultdict(set)
@@ -317,6 +381,6 @@ def load_dsm_results(filename: str, current_build_directory: str, project_root: 
     file_size = os.path.getsize(filename)
     size_kb = file_size / 1024
     print_success(f"Loaded baseline DSM results from {filename} ({size_kb:.1f} KB)")
-    logger.info("Baseline: %d unfiltered headers loaded", len(unfiltered_headers))
+    logger.info("Baseline: %d files, %d headers loaded", len(file_types), len(unfiltered_headers))
 
-    return unfiltered_headers, unfiltered_include_graph
+    return unfiltered_headers, unfiltered_include_graph, file_types
