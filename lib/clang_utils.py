@@ -64,8 +64,9 @@ SYSTEM_PATH_PREFIXES = ("/usr/", "/lib/", "/lib64/", "/opt/")
 # Build wrappers to remove from compile commands
 BUILD_WRAPPERS = ("ccache", "distcc", "icecc", "sccache")
 
-# Flags that take an argument and should be removed (output/dependency files)
-OUTPUT_FLAGS = ("-o", "-MF", "-MT", "-MQ", "-MJ")
+# Flags that take an argument and should be removed (dependency/debug output files)
+# Note: We keep -o because clang-scan-deps uses it to distinguish targets with same source basename
+DEPENDENCY_OUTPUT_FLAGS = ("-MF", "-MT", "-MQ", "-MJ")
 
 # Dependency generation flags that conflict with clang-scan-deps
 DEPENDENCY_FLAGS = ("-M", "-MM", "-MD", "-MMD", "-MG")
@@ -186,8 +187,8 @@ def find_project_root_from_sources(source_files: List[str]) -> str:
     if not source_files:
         return "/"
 
-    # Get absolute paths
-    abs_paths = [os.path.abspath(f) for f in source_files]
+    # Get absolute real paths (resolve symlinks)
+    abs_paths = [os.path.realpath(f) for f in source_files]
 
     # Find common prefix
     if len(abs_paths) == 1:
@@ -502,7 +503,7 @@ def _should_skip_flag_with_argument(flag: str) -> bool:
     Returns:
         True if this flag and its argument should be removed
     """
-    return flag in OUTPUT_FLAGS
+    return flag in DEPENDENCY_OUTPUT_FLAGS
 
 
 def _flag_takes_separate_argument(flag: str) -> bool:
@@ -602,7 +603,7 @@ def sanitize_compile_command(command: str, debug: bool = False) -> str:
     Removes:
     - Build wrappers (ccache, distcc, icecc, sccache)
     - Environment variable assignments and bare values
-    - Output file specifications (-o, -MF, -MT, -MQ)
+    - Dependency output specifications (-MF, -MT, -MQ, -MJ) - but KEEPS -o for target uniqueness
     - Dependency generation flags (-MD, -MMD, -M, -MM)
     - Linker-specific flags (-Wl,, -Xlinker)
     - Response files (@file) that may contain problematic options
@@ -614,6 +615,7 @@ def sanitize_compile_command(command: str, debug: bool = False) -> str:
     Keeps (preprocessing-relevant only):
     - Compiler executable (translated to clang/clang++/clang-cl)
     - Source file
+    - Output file (-o) - needed for clang-scan-deps to distinguish targets with same basename
     - Include paths (-I, -isystem, -iquote, -idirafter, --sysroot=, /I)
     - Preprocessor defines (-D, -U, /D)
     - Language standard (-std=, /std:)
@@ -689,12 +691,20 @@ def sanitize_compile_command(command: str, debug: bool = False) -> str:
             i += 1
             continue
 
-        # Skip output flags and their arguments
-        if part in OUTPUT_FLAGS:
+        # Skip dependency output flags (but keep -o for target uniqueness)
+        if part in DEPENDENCY_OUTPUT_FLAGS:
             next_arg = parts[i + 1] if i + 1 < len(parts) else "<missing>"
             removed_items["output_flags"].append(f"{part} {next_arg}")
-            logger.debug("Removing output flag: %s", part)
+            logger.debug("Removing dependency output flag: %s", part)
             # Skip this flag and next argument
+            i += 2
+            continue
+
+        # Keep -o flag (needed for target uniqueness when source files have same basename)
+        if part == "-o" and i + 1 < len(parts):
+            sanitized_parts.append(part)
+            sanitized_parts.append(parts[i + 1])
+            logger.debug("Keeping output flag: -o %s", parts[i + 1])
             i += 2
             continue
 
@@ -874,16 +884,30 @@ def create_filtered_compile_commands(build_dir: str) -> str:
         if not path.startswith(build_dir + os.sep):
             raise ValueError(f"Path traversal detected: {path}")
 
-    # Check if filtered DB exists and is newer than build.ninja
-    if os.path.exists(filtered_db) and os.path.exists(build_ninja):
-        filtered_age = os.path.getmtime(filtered_db)
-        build_age = os.path.getmtime(build_ninja)
-        if filtered_age > build_age:
-            cache_age_hours = (os.path.getctime(filtered_db) - filtered_age) / 3600
+    # Check if filtered DB exists and is newer than both build.ninja and compile_commands.json
+    if os.path.exists(filtered_db):
+        filtered_mtime = os.path.getmtime(filtered_db)
+        rebuild_needed = False
+
+        # Check against build.ninja
+        if os.path.exists(build_ninja):
+            build_mtime = os.path.getmtime(build_ninja)
+            if build_mtime > filtered_mtime:
+                logger.debug("Filtered DB outdated (build.ninja is newer), regenerating...")
+                rebuild_needed = True
+
+        # Check against compile_commands.json
+        if not rebuild_needed and os.path.exists(compile_db):
+            compile_db_mtime = os.path.getmtime(compile_db)
+            if compile_db_mtime > filtered_mtime:
+                logger.debug("Filtered DB outdated (compile_commands.json is newer), regenerating...")
+                rebuild_needed = True
+
+        # If filtered DB is up-to-date, use it
+        if not rebuild_needed:
+            cache_age_hours = (time.time() - filtered_mtime) / 3600
             logger.debug("Using cached filtered compile commands: %s (cache age: %.1fh)", filtered_db, cache_age_hours)
             return filtered_db
-
-        logger.debug("Filtered DB outdated (build.ninja is newer), regenerating...")
 
     # Generate compile_commands.json if needed
     if not os.path.exists(compile_db) or (os.path.exists(build_ninja) and os.path.getmtime(build_ninja) > os.path.getmtime(compile_db)):
@@ -1166,6 +1190,7 @@ def run_clang_scan_deps(build_dir: str, filtered_db: str, timeout: int = 300) ->
 
     # Get cache path
     cache_path = get_cache_path(build_dir, CLANG_SCAN_DEPS_CACHE_FILE)
+    logger.debug("Cache path: %s for build_dir: %s", cache_path, build_dir)
 
     # Get build.ninja path for validation
     build_ninja_path: Optional[str]
@@ -1219,6 +1244,7 @@ def run_clang_scan_deps(build_dir: str, filtered_db: str, timeout: int = 300) ->
     # Save to cache
     cache_result = (result.stdout, elapsed)
     if save_cache(cache_path, cache_result, filtered_db, build_ninja_path):
+        logger.debug("Saved cache to: %s (build_dir: %s)", cache_path, build_dir)
         print_success(f"💾 Saved results to cache ({elapsed:.2f}s scan time)")
 
     # Periodic cleanup of old caches
@@ -1387,7 +1413,9 @@ def compute_transitive_deps(header: str, include_graph: Dict[str, Set[str]], _vi
     return set()
 
 
-def build_include_graph(build_dir: str, verbose: bool = True) -> IncludeGraphScanResult:
+def build_include_graph(
+    build_dir: str, verbose: bool = True, ninja_sources_override: Optional[List[str]] = None, ninja_headers_override: Optional[List[str]] = None
+) -> IncludeGraphScanResult:
     """Build a complete include graph from clang-scan-deps output.
 
     This function uses clang-scan-deps to obtain complete dependency information
@@ -1398,6 +1426,10 @@ def build_include_graph(build_dir: str, verbose: bool = True) -> IncludeGraphSca
     Args:
         build_dir: Path to the build directory
         verbose: If True, print progress messages to console (default: True)
+        ninja_sources_override: Optional list of source files to use for project root calculation
+            instead of reading from build.ninja. Used when reconstructing baseline from git.
+        ninja_headers_override: Optional list of header files to use for project root calculation
+            instead of reading from build.ninja. Used when reconstructing baseline from git.
 
     Returns:
         IncludeGraphScanResult with source dependencies, include graph, headers, and scan time
@@ -1512,21 +1544,30 @@ def build_include_graph(build_dir: str, verbose: bool = True) -> IncludeGraphSca
             ninja_generated_files = set()
             logger.warning("build.ninja not found, falling back to pattern-based generated file detection")
 
-        # Compute project root from source file paths in compile_commands.json
-        # Use only files directly mentioned in ninja (source_to_deps), not all discovered headers
-        source_files = extract_source_files_from_compile_commands(filtered_db)
+        # Compute project root from build.ninja ONLY (pure ninja build data)
+        # Use ONLY build.ninja source/header files to calculate project root.
+        # DO NOT use clang-scan-deps all_headers as it includes third-party dependencies.
+        # We need both sources and headers because they may be in different directories
+        # (e.g., src/ and include/), and we need the common root of both.
 
-        # Extract headers directly from source_to_deps (ninja-mentioned files only)
-        ninja_headers = set()
-        for deps in source_to_deps.values():
-            for dep in deps:
-                if is_valid_header_file(dep) and not is_system_header(dep):
-                    ninja_headers.add(dep)
+        # Use overrides if provided (for git baseline reconstruction), otherwise read from build.ninja
+        if ninja_sources_override is not None and ninja_headers_override is not None:
+            ninja_sources = ninja_sources_override
+            ninja_headers = ninja_headers_override
+            logger.debug("Using provided ninja sources/headers for project root (git baseline reconstruction)")
+        else:
+            from lib.ninja_utils import extract_source_and_header_files_from_ninja
 
-        all_project_files = source_files + list(ninja_headers)
-        project_root = find_project_root_from_sources(all_project_files)
-        logger.debug("Detected project root: %s (from %d source files and %d ninja headers)", project_root, len(source_files), len(ninja_headers))
+            build_ninja = os.path.join(build_dir, "build.ninja")
+            ninja_sources, ninja_headers = extract_source_and_header_files_from_ninja(build_ninja)
 
+        all_ninja_files = ninja_sources + ninja_headers
+
+        # Use ninja files ONLY to calculate project root
+        project_root = find_project_root_from_sources(all_ninja_files)
+        logger.debug("Detected project root: %s (from %d sources + %d headers)", project_root, len(ninja_sources), len(ninja_headers))
+
+        # Use all_headers from clang-scan-deps for the actual dependency analysis
         all_files: Set[str] = set(all_headers)
         all_files.update(source_to_deps.keys())  # Add source files
 

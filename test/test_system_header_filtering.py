@@ -170,7 +170,9 @@ class TestGitImpactSystemHeaderFiltering:
 
             # Baseline with system headers mixed in
             baseline_headers_with_system = {"/usr/include/stdio.h", "/home/user/project/src/myheader.h", "/lib/gcc/include/string.h"}
-            mock_reconstruct.return_value = (baseline_headers_with_system, mock_graph)
+            mock_baseline_sources = ["/home/user/project/src/main.cpp"]
+            mock_project_root = "/home/user/project"
+            mock_reconstruct.return_value = (baseline_headers_with_system, mock_graph, mock_baseline_sources, mock_project_root)
 
             # Track what headers were filtered
             filtered_headers_calls = []
@@ -273,7 +275,9 @@ class TestGitImpactSystemHeaderFiltering:
             mock_build_graph.return_value = Mock(include_graph=mock_graph, all_headers=all_headers, scan_time=0.1, source_to_deps={}, file_types=file_types)
 
             baseline_headers = {"/usr/include/stdio.h", "/home/user/project/src/myheader.h"}
-            mock_reconstruct.return_value = (baseline_headers, mock_graph)
+            mock_baseline_sources = ["/home/user/project/src/main.cpp"]
+            mock_project_root = "/home/user/project"
+            mock_reconstruct.return_value = (baseline_headers, mock_graph, mock_baseline_sources, mock_project_root)
 
             # Mock DSM analysis results
             mock_dsm_result = Mock()

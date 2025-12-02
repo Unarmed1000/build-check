@@ -3550,13 +3550,11 @@ def run_git_working_tree_analysis(
             if total > 50:  # Only show progress for substantial operations
                 print(f"  {message} ({current}/{total})")
 
-        baseline_headers, baseline_graph = reconstruct_head_graph(
+        baseline_headers, baseline_graph, baseline_sources, baseline_project_root = reconstruct_head_graph(
             working_tree_headers=current_headers,
             working_tree_graph=current_graph,
             base_ref=git_from_ref,
             repo_path=repo_dir,
-            compile_commands_db=None,  # TODO: Pass actual compilation database
-            project_root=project_root,
             progress_callback=baseline_progress if verbose else None,
         )
         print_success(f"Reconstructed baseline with {len(baseline_headers)} headers", prefix=False)

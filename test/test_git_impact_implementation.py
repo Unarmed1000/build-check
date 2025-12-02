@@ -279,7 +279,7 @@ if __name__ == "__main__":
         working_tree_graph[derived_path].add(os.path.join(repo_path, "include", "utils.h"))
 
         # Reconstruct baseline (should have original derived.h without utils.h dependency)
-        baseline_headers, baseline_graph = reconstruct_head_graph(
+        baseline_headers, baseline_graph, baseline_sources, baseline_project_root = reconstruct_head_graph(
             working_tree_headers=working_tree_headers, working_tree_graph=working_tree_graph, base_ref="HEAD", repo_path=repo_path
         )
 
@@ -327,7 +327,7 @@ if __name__ == "__main__":
         working_tree_graph[new_header_path].add(os.path.join(repo_path, "include", "base.h"))
 
         # Reconstruct baseline (should not have new_feature.h)
-        baseline_headers, baseline_graph = reconstruct_head_graph(
+        baseline_headers, baseline_graph, _baseline_sources, _baseline_project_root = reconstruct_head_graph(
             working_tree_headers=working_tree_headers, working_tree_graph=working_tree_graph, base_ref="HEAD", repo_path=repo_path
         )
 
@@ -413,7 +413,7 @@ if __name__ == "__main__":
         working_tree_graph[os.path.join(repo_path, "include", "derived.h")].add(base_path)
 
         # Reconstruct baseline - should restore base.h
-        baseline_headers, baseline_graph = reconstruct_head_graph(
+        baseline_headers, baseline_graph, _baseline_sources, _baseline_project_root = reconstruct_head_graph(
             working_tree_headers=working_tree_headers, working_tree_graph=working_tree_graph, base_ref="HEAD", repo_path=repo_path
         )
 

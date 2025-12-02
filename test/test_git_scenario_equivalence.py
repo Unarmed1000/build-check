@@ -8,6 +8,7 @@ produces equivalent results to DSM-direct analysis (programmatic graphs).
 
 import sys
 from pathlib import Path
+from typing import Dict, List
 
 import pytest
 
@@ -18,7 +19,93 @@ from lib.dsm_analysis import compare_dsm_results, run_dsm_analysis
 from lib.scenario_creators import BASELINE_CREATORS, SCENARIO_CREATORS, create_git_repo_from_scenario
 from lib.git_utils import reconstruct_head_graph
 from lib.clang_utils import build_include_graph
-from typing import Any
+from typing import Any, Generator
+
+
+@pytest.fixture(autouse=True)
+def clear_module_caches() -> Generator[None, None, None]:
+    """Clear any module-level caches between tests."""
+    import importlib
+    import sys
+
+    # Reload modules that might have caches
+    if "lib.clang_utils" in sys.modules:
+        importlib.reload(sys.modules["lib.clang_utils"])
+    if "lib.ninja_utils" in sys.modules:
+        importlib.reload(sys.modules["lib.ninja_utils"])
+
+    yield
+
+    # Cleanup after test
+    pass
+
+
+def log_test_details(scenario_id: int, repo_path: Path, scan_result: Any, current_dsm: Any, baseline_dsm: Any, delta: Any, log_suffix: str) -> None:
+    """Log detailed test information for debugging."""
+    import json
+
+    log_file = f"/tmp/test_scenario_{scenario_id}_{log_suffix}.log"
+
+    with open(log_file, "w") as f:
+        f.write(f"=== Test Scenario {scenario_id} - {log_suffix} ===\n\n")
+        f.write(f"Repo path: {repo_path}\n")
+        f.write(f"Repo exists: {repo_path.exists()}\n\n")
+
+        f.write(f"Scan result:\n")
+        f.write(f"  All headers: {len(scan_result.all_headers)}\n")
+        f.write(f"  Total edges: {sum(len(deps) for deps in scan_result.include_graph.values())}\n")
+        f.write(f"  Source files: {len(scan_result.source_to_deps)}\n")
+
+        # File type counts
+        from lib.clang_utils import FileType
+
+        type_counts = {ft: 0 for ft in FileType}
+        for ft in scan_result.file_types.values():
+            type_counts[ft] += 1
+        f.write(f"  File types: {dict(type_counts)}\n\n")
+
+        # Sample headers
+        f.write(f"Sample headers (first 10):\n")
+        for i, h in enumerate(sorted(scan_result.all_headers)[:10]):
+            ft = scan_result.file_types.get(h, "UNKNOWN")
+            f.write(f"  {i+1}. {h} [{ft}]\n")
+        f.write("\n")
+
+        f.write(f"Current DSM:\n")
+        f.write(f"  Headers: {len(current_dsm.metrics)}\n")
+        f.write(f"  Cycles: {len(current_dsm.cycles)}\n")
+        f.write(f"  Sample metrics (first 5):\n")
+        for header, metrics in list(current_dsm.metrics.items())[:5]:
+            f.write(f"    {header}: coupling={metrics.coupling}, fan_in={metrics.fan_in}, fan_out={metrics.fan_out}\n")
+        f.write("\n")
+
+        f.write(f"Baseline DSM:\n")
+        f.write(f"  Headers: {len(baseline_dsm.metrics)}\n")
+        f.write(f"  Cycles: {len(baseline_dsm.cycles)}\n\n")
+
+        f.write(f"Delta:\n")
+        f.write(f"  Headers added: {len(delta.headers_added)}\n")
+        f.write(f"  Headers removed: {len(delta.headers_removed)}\n")
+        f.write(f"  Coupling increased: {dict(delta.coupling_increased)}\n")
+        f.write(f"  Coupling decreased: {dict(delta.coupling_decreased)}\n")
+
+        coupling_increase = sum(delta.coupling_increased.values())
+        coupling_decrease = sum(abs(v) for v in delta.coupling_decreased.values())
+        net = coupling_increase - coupling_decrease
+        f.write(f"  Net coupling change: {net}\n\n")
+
+        # Build.ninja check
+        build_ninja = repo_path / "build.ninja"
+        if build_ninja.exists():
+            f.write(f"build.ninja exists, first 50 lines:\n")
+            with open(build_ninja) as bn:
+                for i, line in enumerate(bn):
+                    if i < 50:
+                        f.write(f"  {line.rstrip()}\n")
+                    else:
+                        break
+
+    print(f"Logged details to {log_file}")
 
 
 def normalize_dsm_results_paths(dsm_results: Any, repo_path: str) -> Any:
@@ -77,6 +164,8 @@ def test_git_scenario_equivalence(scenario_id: int, tmp_path: Path) -> None:
     state in working tree, runs FULL git-based DSM analysis using the same
     build_include_graph pipeline as buildCheckDSM.py, and compares metrics.
     """
+    import shutil
+
     # Get DSM-direct results for comparison baseline
     baseline_creator = BASELINE_CREATORS.get(scenario_id)
     scenario_creator = SCENARIO_CREATORS.get(scenario_id)
@@ -89,7 +178,11 @@ def test_git_scenario_equivalence(scenario_id: int, tmp_path: Path) -> None:
     dsm_direct_delta = compare_dsm_results(dsm_direct_baseline, dsm_direct_current)
 
     # Create physical git repo with baseline committed and current in working tree
-    repo_path = tmp_path / f"scenario_{scenario_id}_repo"
+    # Use unique directory for complete test isolation
+    import uuid
+
+    unique_id = uuid.uuid4().hex[:8]
+    repo_path = tmp_path / f"scenario_{scenario_id}_repo_{unique_id}"
     create_git_repo_from_scenario(scenario_id=scenario_id, repo_path=str(repo_path), baseline_as_head=True, current_as_working=True)
 
     # Verify git repo structure
@@ -117,18 +210,51 @@ def test_git_scenario_equivalence(scenario_id: int, tmp_path: Path) -> None:
     )
 
     # Reconstruct baseline (HEAD) dependency graph using git utils
-    baseline_all_headers, baseline_header_to_headers = reconstruct_head_graph(
+    baseline_all_headers, baseline_header_to_headers, baseline_sources, baseline_project_root = reconstruct_head_graph(
         working_tree_headers=current_all_headers, working_tree_graph=current_header_to_headers, base_ref="HEAD", repo_path=str(repo_path)
     )
 
+    # DEBUG: Log what was reconstructed from HEAD
+    if scenario_id in [8, 9]:
+        import os
+
+        log_suffix = f"after_test_8" if scenario_id == 9 and os.path.exists("/tmp/test_scenario_8_isolated.log") else "isolated"
+        debug_log = f"/tmp/test_scenario_{scenario_id}_{log_suffix}_baseline_reconstruction.log"
+        with open(debug_log, "w") as f:
+            f.write(f"=== Baseline Reconstruction Debug - Scenario {scenario_id} ===\n\n")
+            f.write(f"Working tree (current):\n")
+            f.write(f"  Headers: {len(current_all_headers)}\n")
+            f.write(f"  Sample headers (first 10):\n")
+            for h in sorted(current_all_headers)[:10]:
+                f.write(f"    {h}\n")
+            f.write(f"\nBaseline from HEAD:\n")
+            f.write(f"  Headers: {len(baseline_all_headers)}\n")
+            f.write(f"  Sources: {len(baseline_sources)}\n")
+            f.write(f"  Project root: {baseline_project_root}\n")
+            f.write(f"  Sample headers (first 10):\n")
+            for h in sorted(baseline_all_headers)[:10]:
+                f.write(f"    {h}\n")
+            f.write(f"\n  Sample sources (first 10):\n")
+            for s in sorted(baseline_sources)[:10]:
+                f.write(f"    {s}\n")
+            f.write(f"\n  Graph edges: {sum(len(v) for v in baseline_header_to_headers.values())}\n")
+            f.write(f"  Sample edges (first 10 headers):\n")
+            for h in sorted(baseline_header_to_headers.keys())[:10]:
+                deps = baseline_header_to_headers[h]
+                f.write(f"    {h} -> {deps}\n")
+        print(f"Baseline reconstruction logged to {debug_log}")
+
+    # Derive baseline headers from sources
+    baseline_headers_derived = [src.replace("/src/", "/include/").replace(".cpp", ".hpp") for src in baseline_sources]
+
     # Build source_to_deps for baseline
-    baseline_source_to_deps = {}
+    baseline_source_to_deps: Dict[str, List[str]] = {}
     for header in baseline_all_headers:
         source_file = header.replace("/include/", "/src/").replace(".hpp", ".cpp")
-        deps = [header]
+        header_deps: List[str] = [header]
         if header in baseline_header_to_headers:
-            deps.extend(list(baseline_header_to_headers[header]))
-        baseline_source_to_deps[source_file] = deps
+            header_deps.extend(list(baseline_header_to_headers[header]))
+        baseline_source_to_deps[source_file] = header_deps
 
     # Run DSM analysis on baseline (HEAD)
     git_baseline_dsm = run_dsm_analysis(
@@ -156,6 +282,13 @@ def test_git_scenario_equivalence(scenario_id: int, tmp_path: Path) -> None:
     git_coupling_decrease = sum(abs(v) for v in git_based_delta.coupling_decreased.values())
     git_coupling_net = git_coupling_increase - git_coupling_decrease
 
+    # Log detailed information for debugging (especially for scenarios 8 and 9)
+    if scenario_id in [8, 9]:
+        import os
+
+        log_suffix = f"after_test_8" if scenario_id == 9 and os.path.exists("/tmp/test_scenario_8_isolated.log") else "isolated"
+        log_test_details(scenario_id, repo_path, scan_result, git_current_dsm, git_baseline_dsm, git_based_delta, log_suffix)
+
     assert dsm_coupling_net == git_coupling_net, f"Coupling net change mismatch: DSM-direct={dsm_coupling_net}, Git-based={git_coupling_net}"
 
     # Compare cycle counts
@@ -167,6 +300,10 @@ def test_git_scenario_equivalence(scenario_id: int, tmp_path: Path) -> None:
     dsm_header_count = len(dsm_direct_current.metrics)
     git_header_count = len(git_current_dsm.metrics)
     assert dsm_header_count == git_header_count, f"Header count mismatch: DSM-direct={dsm_header_count}, Git-based={git_header_count}"
+
+    # Explicit cleanup - remove the test repo directory
+    if repo_path.exists():
+        shutil.rmtree(repo_path, ignore_errors=True)
 
 
 if __name__ == "__main__":

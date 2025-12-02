@@ -63,22 +63,22 @@ class TestOutputFileRemoval:
     """Tests for output file specification removal."""
 
     def test_remove_output_file_with_o_flag(self) -> None:
-        """Test removal of -o output.o specification."""
+        """Test that -o flag is kept for target uniqueness (prevents basename collisions)."""
         command = "/usr/bin/g++ -std=c++17 -I/inc -c source.cpp -o output.o"
         result = sanitize_compile_command(command)
 
-        assert "-o" not in result
-        assert "output.o" not in result
+        assert "-o" in result
+        assert "output.o" in result
         assert "-c" in result
         assert "source.cpp" in result
 
     def test_remove_output_file_o_flag_separate(self) -> None:
-        """Test removal of -o with space-separated argument."""
+        """Test that -o with space-separated argument is kept."""
         command = "/usr/bin/g++ -c source.cpp -o output.o"
         result = sanitize_compile_command(command)
 
-        assert "-o" not in result
-        assert "output.o" not in result
+        assert "-o" in result
+        assert "output.o" in result
 
     def test_remove_dependency_file_flags(self) -> None:
         """Test removal of dependency generation flags."""

@@ -224,7 +224,7 @@ def load_cache(cache_path: str, filtered_db_path: str, build_ninja_path: Optiona
             logger.debug("Cache invalid: %s", cache_path)
             return None
 
-        logger.debug("Cache hit: %s", cache_path)
+        logger.debug("Cache hit: %s (filtered_db: %s)", cache_path, filtered_db_path)
         return cached_data.data
 
     except (OSError, IOError, pickle.UnpicklingError, AttributeError, EOFError) as e:

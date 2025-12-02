@@ -46,6 +46,11 @@ def _validate_and_convert_path(relative_path: str, repo_dir: str) -> Optional[st
     Returns:
         Absolute path if valid and exists, None otherwise
     """
+    # Reject empty paths
+    if not relative_path or not relative_path.strip():
+        logger.warning("Skipping empty path")
+        return None
+
     # Security: Reject paths attempting traversal outside repo
     if ".." in relative_path or relative_path.startswith("/"):
         logger.warning("Skipping potentially malicious path: %s", relative_path)
@@ -656,6 +661,47 @@ def parse_includes_from_content(content: str, skip_system_headers: bool = True) 
     return includes
 
 
+def _resolve_include_to_header(include_path: str, available_headers: Set[str]) -> Optional[str]:
+    """Resolve an include path to an absolute header file path.
+
+    Uses a two-strategy approach:
+    1. Suffix matching: Matches if available header ends with the include path
+    2. Basename matching: Fallback to matching just the filename
+
+    Args:
+        include_path: Raw include path from #include directive (e.g., "my_header.h", "subfolder/header.hpp")
+        available_headers: Set of absolute header file paths to match against
+
+    Returns:
+        Absolute path to matched header, or None if no match found
+
+    Example:
+        >>> headers = {"/project/include/utils/helper.h", "/project/include/core.h"}
+        >>> _resolve_include_to_header("utils/helper.h", headers)
+        '/project/include/utils/helper.h'
+        >>> _resolve_include_to_header("core.h", headers)
+        '/project/include/core.h'
+        >>> _resolve_include_to_header("nonexistent.h", headers)
+        None
+    """
+    # Reject empty include paths
+    if not include_path or not include_path.strip():
+        return None
+
+    # Strategy 1: Try to match by relative path suffix (more accurate)
+    for header in available_headers:
+        if header.endswith(include_path) or header.endswith(os.path.sep + include_path):
+            return header
+
+    # Strategy 2: Fallback to basename matching
+    include_basename = os.path.basename(include_path)
+    for header in available_headers:
+        if os.path.basename(header) == include_basename:
+            return header
+
+    return None
+
+
 def get_working_tree_changes_from_commit_batched(
     base_ref: str = "HEAD", repo_path: Optional[str] = None, batch_size: int = 100, progress_callback: Optional[Callable[[int, int, str], None]] = None
 ) -> Tuple[List[str], str]:
@@ -716,7 +762,7 @@ def reconstruct_head_graph(
     compile_commands_db: Optional[Any] = None,
     project_root: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
-) -> Tuple[Set[str], DefaultDict[str, Set[str]]]:
+) -> Tuple[Set[str], DefaultDict[str, Set[str]], List[str], str]:
     """Reconstruct the baseline dependency graph from git history.
 
     Builds the dependency graph as it existed at base_ref by:
@@ -724,6 +770,7 @@ def reconstruct_head_graph(
     2. Removing files added in working tree (not in baseline)
     3. Restoring files deleted in working tree (were in baseline)
     4. For modified files: fetch HEAD version, parse includes, resolve dependencies
+    5. Collects baseline sources and calculates baseline project root
 
     Args:
         working_tree_headers: Set of headers in working tree build
@@ -735,7 +782,7 @@ def reconstruct_head_graph(
         progress_callback: Optional callback(current, total, message) for progress
 
     Returns:
-        Tuple of (baseline_headers, baseline_graph)
+        Tuple of (baseline_headers, baseline_graph, baseline_sources, baseline_project_root)
 
     Raises:
         ValueError: If base_ref is invalid
@@ -770,8 +817,9 @@ def reconstruct_head_graph(
         deleted_files = []  # In baseline, removed in working tree
         modified_files = []  # In both, but content differs
 
-        # Track all headers that exist in HEAD
+        # Track all headers and sources that exist in HEAD
         headers_in_head = set()
+        sources_in_head = []
 
         for diff_item in diffs:
             path = diff_item.b_path if diff_item.b_path else diff_item.a_path
@@ -794,6 +842,7 @@ def reconstruct_head_graph(
 
         # Also check for untracked headers (not in git diff, but in working_tree_headers)
         # These are headers detected by clang-scan-deps that don't exist in HEAD
+        # ALSO collect all source files that exist in HEAD
         try:
             # Get all files tracked in HEAD
             for item in base_commit.tree.traverse():
@@ -806,6 +855,8 @@ def reconstruct_head_graph(
                 abs_path = os.path.abspath(os.path.join(repo_dir, item_path))
                 if abs_path.endswith((".h", ".hpp", ".hxx", ".hh")):
                     headers_in_head.add(abs_path)
+                elif abs_path.endswith((".cpp", ".cc", ".cxx", ".c")):
+                    sources_in_head.append(abs_path)
         except Exception as e:
             logger.warning("Failed to enumerate HEAD tree: %s", e)
 
@@ -850,21 +901,9 @@ def reconstruct_head_graph(
                 # Resolve includes to absolute paths
                 resolved_deps = set()
                 for include_path in includes:
-                    # Try to match by relative path suffix first (more accurate)
-                    matched = False
-                    for header in working_tree_headers:
-                        if header.endswith(include_path) or header.endswith(os.path.sep + include_path):
-                            resolved_deps.add(header)
-                            matched = True
-                            break
-
-                    # Fallback to basename matching if suffix match fails
-                    if not matched:
-                        include_basename = os.path.basename(include_path)
-                        for header in working_tree_headers:
-                            if os.path.basename(header) == include_basename:
-                                resolved_deps.add(header)
-                                break
+                    resolved_header = _resolve_include_to_header(include_path, working_tree_headers)
+                    if resolved_header:
+                        resolved_deps.add(resolved_header)
 
                 # Add to baseline
                 baseline_headers.add(deleted_file)
@@ -889,21 +928,9 @@ def reconstruct_head_graph(
                 # Resolve includes to absolute paths
                 resolved_deps = set()
                 for include_path in includes:
-                    # Try to match by relative path suffix first (more accurate)
-                    matched = False
-                    for header in baseline_headers:
-                        if header.endswith(include_path) or header.endswith(os.path.sep + include_path):
-                            resolved_deps.add(header)
-                            matched = True
-                            break
-
-                    # Fallback to basename matching if suffix match fails
-                    if not matched:
-                        include_basename = os.path.basename(include_path)
-                        for header in baseline_headers:
-                            if os.path.basename(header) == include_basename:
-                                resolved_deps.add(header)
-                                break
+                    resolved_header = _resolve_include_to_header(include_path, baseline_headers)
+                    if resolved_header:
+                        resolved_deps.add(resolved_header)
 
                 # Update baseline graph with HEAD version dependencies
                 baseline_graph[abs_path] = resolved_deps
@@ -916,15 +943,24 @@ def reconstruct_head_graph(
             if progress_callback and total_operations > 50:
                 progress_callback(current_operation, total_operations, f"Parsing modified files: {os.path.basename(abs_path)}")
 
+        # Calculate baseline project root from baseline sources and headers
+        from lib.clang_utils import find_project_root_from_sources
+
+        # Use headers_in_head (from git HEAD), not baseline_headers (which starts from working tree)
+        baseline_all_files = sources_in_head + list(headers_in_head)
+        baseline_project_root = find_project_root_from_sources(baseline_all_files)
+
         logger.info(
-            "Reconstructed baseline graph: %d headers, %d added, %d deleted, %d modified",
+            "Reconstructed baseline graph: %d headers, %d sources, %d added, %d deleted, %d modified",
             len(baseline_headers),
+            len(sources_in_head),
             len(added_files),
             len(deleted_files),
             len(modified_files),
         )
+        logger.info("Baseline project root: %s", baseline_project_root)
 
-        return baseline_headers, baseline_graph
+        return baseline_headers, baseline_graph, sources_in_head, baseline_project_root
 
     except (ValueError, InvalidGitRepositoryError):
         raise

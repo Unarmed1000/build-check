@@ -183,6 +183,7 @@ def generate_build_ninja(build_dir: str, source_files: List[str], include_dir: s
     """Generate build.ninja file directly (no CMake).
 
     Creates a minimal ninja build file with compilation rules for all source files.
+    Includes implicit header dependencies (like real CMake-generated build.ninja).
 
     Args:
         build_dir: Path to build directory
@@ -193,7 +194,7 @@ def generate_build_ninja(build_dir: str, source_files: List[str], include_dir: s
         rule cxx
           command = clang++ -std=c++17 -I$include_dir -c $in -o $out
 
-        build obj/Engine/Core.o: cxx src/Engine/Core.cpp
+        build obj/Engine/Core.o: cxx src/Engine/Core.cpp | include/Engine/Core.hpp
     """
     ninja_path = os.path.join(build_dir, "build.ninja")
     os.makedirs(build_dir, exist_ok=True)
@@ -207,14 +208,21 @@ def generate_build_ninja(build_dir: str, source_files: List[str], include_dir: s
         "",
     ]
 
-    # Add build rules for each source file
+    # Add build rules for each source file with implicit header dependencies
     for source_file in source_files:
         # Ensure source_file has src/ prefix
         if not source_file.startswith("src/"):
             source_file = f"src/{source_file}"
+
         # Convert src/Engine/Core.cpp -> obj/Engine/Core.o
         obj_file = source_file.replace("src/", "obj/").replace(".cpp", ".o")
-        lines.append(f"build {obj_file}: cxx {source_file}")
+
+        # Derive corresponding header file: src/Engine/Core.cpp -> include/Engine/Core.hpp
+        header_file = source_file.replace("src/", "include/").replace(".cpp", ".hpp")
+
+        # Add build rule with implicit header dependency (after |)
+        # Format: build output: rule explicit_input | implicit_input1 implicit_input2
+        lines.append(f"build {obj_file}: cxx {source_file} | {header_file}")
 
     lines.append("")  # Trailing newline
 
